@@ -143,6 +143,31 @@ TOOLS = [
             },
             "required": ["reason"]
         }
+    },
+    {
+        "name": "read_terminal",
+        "description": "Baca ISI LAYAR sebuah tab workstation (qoder | antigravity | shell) secara seketika lewat tmux capture-pane. Pakai ini untuk melihat jawaban mesin lain tanpa menunggu apa pun (~3 ms). Pasangkan dengan send_to_terminal untuk bertanya.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab": {"type": "string", "enum": ["qoder", "antigravity", "shell"], "description": "tab yang dibaca"},
+                "tail_lines": {"type": "integer", "description": "berapa baris terakhir diambil (default 60)"}
+            },
+            "required": ["tab"]
+        }
+    },
+    {
+        "name": "send_to_terminal",
+        "description": "Ketik ke tab CLI workstation lalu tekan Enter di sana (CR, bukan LF — TUI tidak mengenali LF). Dipakai untuk meminta mesin lain meninjau pekerjaan, mis. Gemini. Balasnya dibaca dengan read_terminal.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "tab": {"type": "string", "enum": ["qoder", "antigravity", "shell"], "description": "tab tujuan"},
+                "text": {"type": "string", "description": "isi yang diketik"},
+                "submit": {"type": "boolean", "description": "tekan Enter setelah mengetik (default true)"}
+            },
+            "required": ["tab", "text"]
+        }
     }
 ]
 
@@ -204,6 +229,49 @@ def handle_call_tool(name, args):
         return (f"Daemon di-restart (alasan: {reason}). {body}\n"
                 "Tab qoder/antigravity/shell hidup di tmux dan tidak ikut mati. "
                 "Verifikasi: systemctl --user is-active irsofka-ai-workstation.service")
+
+    elif name == "read_terminal":
+        tab = args.get("tab") or "qoder"
+        tail = int(args.get("tail_lines") or 60)
+        sock = os.environ.get("STATION_TMUX_SOCKET", "irsofka")
+        try:
+            res = subprocess.run(["tmux", "-L", sock, "capture-pane", "-p", "-t", f"station-{tab}"],
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                 text=True, timeout=10)
+        except FileNotFoundError:
+            return "tmux tidak tersedia — tab workstation tidak bisa dibaca."
+        if res.returncode != 0:
+            return f"tab '{tab}' tidak dapat dibaca: {res.stderr.strip()[:200]}"
+        screen = res.stdout
+        body = [l.rstrip() for l in screen.splitlines() if l.strip()]
+        busy = (any(ch in screen for ch in "⠁⠂⠄⡀⢀⠐⠈⠋⠙⠹⠸⠼⠴⠦⠇⠏⣾⣽⢿⣷")
+                or "esc to cancel" in screen.lower())
+        return (f"tab {tab} | {len(body)} baris konten | status={'BEKERJA' if busy else 'IDLE'}\n"
+                + "\n".join(body[-tail:]))
+
+    elif name == "send_to_terminal":
+        tab = args.get("tab") or "antigravity"
+        text = str(args.get("text") or "")
+        submit = args.get("submit", True)
+        if not text.strip():
+            return "DITOLAK: teks kosong."
+        sock = os.environ.get("STATION_TMUX_SOCKET", "irsofka")
+        target = f"station-{tab}"
+        try:
+            # -l = literal, supaya karakter khusus tidak ditafsir sebagai nama tombol
+            subprocess.run(["tmux", "-L", sock, "send-keys", "-t", target, "-l", text],
+                           check=True, timeout=10)
+            if submit:
+                # Enter = CR. tmux menormalkannya sendiri; mengirim "\n" manual tidak akan
+                # dianggap Enter oleh TUI (penyebab bug dispatch yang diperbaiki 2026-10-06).
+                subprocess.run(["tmux", "-L", sock, "send-keys", "-t", target, "Enter"],
+                               check=True, timeout=10)
+        except FileNotFoundError:
+            return "tmux tidak tersedia — tidak bisa mengirim ke tab."
+        except subprocess.CalledProcessError as exc:
+            return f"gagal mengirim ke tab '{tab}': {exc.stderr.strip()[:200] if exc.stderr else exc}"
+        return (f"Terkirim ke tab {tab}{' + Enter' if submit else ''}. "
+                f"Baca jawabannya dengan read_terminal(tab='{tab}').")
 
     elif name == "send_desktop_notification":
         title = args.get("title", "Irsofka AI Workstation")

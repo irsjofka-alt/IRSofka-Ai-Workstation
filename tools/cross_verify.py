@@ -238,7 +238,7 @@ def run_via_pane(tab, prompt, timeout):
     seen_prompt = False
     quiet_since, best = None, ""
     while time.time() - started < timeout:
-        time.sleep(4)
+        time.sleep(1.5)
         screen = capture_pane(tab)
         if screen is None:
             return "UNAVAILABLE", f"tmux capture-pane gagal untuk tab {tab}."
@@ -255,7 +255,7 @@ def run_via_pane(tab, prompt, timeout):
         best = answer
         if quiet_since is None:
             quiet_since = time.time()
-        elif time.time() - quiet_since >= 10:
+        elif time.time() - quiet_since >= 3:
             return "COMPLETED", answer[:8000]
     if best:
         return "TIMEOUT", "Jawaban belum selesai. Terakhir terbaca:\n\n" + best[:4000]

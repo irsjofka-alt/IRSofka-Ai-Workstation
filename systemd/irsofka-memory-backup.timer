@@ -1,0 +1,14 @@
+[Unit]
+Description=Cadangkan memori workstation tiap jam (dan susulan setelah mesin mati)
+Documentation=https://github.com/irsjofka-alt/IRSofka-Ai-Workstation
+
+[Timer]
+# Persistent=true penting: kalau mesin mati saat jam cadangan, ia mengejar
+# begitu dinyalakan lagi. Tanpa ini, semalam mesin mati = tanpa cadangan.
+OnCalendar=*-*-* *:05:00
+Persistent=true
+RandomizedDelaySec=180
+Unit=irsofka-memory-backup.service
+
+[Install]
+WantedBy=timers.target

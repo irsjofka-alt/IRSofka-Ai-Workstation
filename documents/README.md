@@ -19,6 +19,9 @@ ke `brain/`.
 
 ## Berkas di sini
 
+Pasang dari nol di mesin baru: lihat [`../INSTALL.md`](../INSTALL.md). Folder ini menjelaskan
+ke mana AI harus menulis; `INSTALL.md` menjelaskan cara membuat mesinnya ada.
+
 | Berkas | Untuk siapa | Fungsi |
 |---|---|---|
 | `AGENTS.md` | semua engine | kontrak bersama; menang kalau bertabrakan dengan berkas lain |

@@ -9,6 +9,38 @@ Bukan IDE. Tidak ada editor, pohon berkas, atau debugger di sini. Fokusnya: bebe
 AI bekerja bersamaan, saling memverifikasi, dan semuanya meninggalkan jejak yang bisa dibaca
 kembali.
 
+## Instal
+
+Panduan lengkap dan berurutan ada di **[INSTALL.md](INSTALL.md)** — prasyarat, cara memasang
+dua CLI AI tanpa mengotori `$HOME`, workspace bersama, database, unit systemd, dan cara
+memeriksa bahwa semuanya benar-benar hidup. Ringkasnya:
+
+```bash
+# 1. CLI yang di-host (installer resmi; sebaiknya dibaca dulu sebelum dieksekusi)
+curl -fsSL https://qoder.com/install | bash
+curl -fsSL https://antigravity.google/cli/install.sh | bash
+
+# 2. Workstation-nya
+git clone https://github.com/irsjofka-alt/IRSofka-Ai-Workstation.git ~/.ai-station
+```
+
+Kalau kamu memang baru mau mencoba Qoder dan tidak keberatan membantu mesin ini tetap
+berjalan, daftar lewat tautan referral ini — kamu dapat 500 kredit, pemilik repo dapat
+1.000 saat pembayaran pertama kamu:
+<https://qoder.com/activities?referral_code=bBfZBkx5dhkUBQDRBYz29LOXv59SLZiB>
+
+> When your friend registers via your link and makes their first payment within 30 days,
+> you get 1,000 Credits and your friend gets 500 Credits.
+
+Tautan di atas adalah referral milik pemilik repo. Tidak ada kewajiban memakai kode apa pun
+untuk menggunakan proyek ini, dan lisensinya tetap berlaku sama persis kalau kamu mendaftar
+langsung.
+
+Yang **tidak** ikut ter-clone: `brain/` (memori & skill), `config/db_local.json` (kredensial),
+`logs/`, dan `engines/` (state milik CLI). Repo ini sengaja hanya membawa kode, aturan, dan
+templat — hasilnya, clone yang bersih gagal terhubung ke database secara terang-terangan
+daripada membawa password orang lain.
+
 ## Arsitektur
 
 ```

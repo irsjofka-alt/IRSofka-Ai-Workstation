@@ -1,0 +1,18 @@
+[Unit]
+Description=Irsofka AI Workstation Core Daemon (Native Rust Engine)
+Documentation=https://github.com/irsjofka-alt/IRSofka-Ai-Workstation
+After=network.target default.target
+
+[Service]
+Type=simple
+WorkingDirectory=%h/.ai-station
+ExecStart=%h/.ai-station/bin/irsofka-station-core --headless
+Restart=always
+RestartSec=2
+# %h = home user, jadi unit yang sama berlaku di mesin siapa pun.
+# ~/runtime adalah tempat hasil install berbasis user mendarat (lihat INSTALL.md).
+Environment=PATH=%h/.cargo/bin:%h/runtime/local/bin:%h/.local/bin:%h/.gemini/antigravity/bin:/usr/local/bin:/usr/bin:/bin
+Environment=HOME=%h
+
+[Install]
+WantedBy=default.target

@@ -5,8 +5,12 @@ import os
 import subprocess
 import sys
 
-GUARD = "/home/irsofka/.ai-station/hooks/self_preservation.py"
-PRODUCTION_BIN = "/home/irsofka/.ai-station/bin/irsofka-station-core"
+HOME = os.path.expanduser("~")
+# Tidak ada nama orang di berkas uji: suite ini harus jalan di mesin hasil clone,
+# bukan hanya di mesin tempat guard ini lahir.
+STATION = os.path.join(HOME, ".ai-station")
+GUARD = os.path.join(STATION, "hooks/self_preservation.py")
+PRODUCTION_BIN = os.path.join(STATION, "bin/irsofka-station-core")
 
 
 def live_daemon_pid() -> str:
@@ -34,7 +38,7 @@ BLOCK = [
     'tmux -L irsofka kill-session -t station-qoder',
     'pkill -f "irsofka-station-core --headless"',
     'pkill -9 -f station-core',
-    'rm -rf /home/irsofka/.ai-station/brain',
+    f'rm -rf {HOME}/.ai-station/brain',
     'rm -rf ~/.ai-station/config',
     KILL_DAEMON,
     # aturan keras pemilik: jangan melahirkan entri titik baru setingkat di $HOME
@@ -42,7 +46,7 @@ BLOCK = [
     'touch ~/.newtoolrc',
     'ln -s /opt/tool ~/.tool',
     'echo x > ~/.zshrc',
-    'mkdir -p /home/irsofka/.docker',
+    f'mkdir -p {HOME}/.docker',
     # keduanya TERBUKTI benar diblokir: file-file ini memang sudah tidak ada di home
     # karena kita pindahkan ke ~/runtime — membuatnya lagi = menentang aturan pemilik
     'touch ~/.bash_history',
@@ -57,14 +61,14 @@ BLOCK = [
     'psql -c "TRUNCATE TABLE action_log"',
     'psql -c "delete from action_log"',
     'echo x > ~/.ai-station/brain/schema_postgresql.sql',
-    'echo x >> /dev/null; echo y > /home/irsofka/.ai-station/logs/handoff_deploy_1125.md',
+    f'echo x >> /dev/null; echo y > {HOME}/.ai-station/logs/handoff_deploy_1125.md',
     'git checkout .',
     # berbahaya SESUNGGUHNYA tetap tertangkap walau ada heredoc di depannya
     'echo x <<PY\naman\nPY\ntmux -L irsofka kill-server',
 ]
 
 ALLOW = [
-    'ls -la /home/irsofka/.ai-station',
+    f'ls -la {HOME}/.ai-station',
     'git status',
     'kill 999999',
     # proses BUKAN biner produksi harus boleh dibunuh — aturan proyek menyuruh
@@ -80,7 +84,7 @@ ALLOW = [
     'echo halo  # catatan: jangan jalankan tmux kill-server atau DROP TABLE',
     'cat <<EOF > /tmp/note.md\nPerintah berbahaya: rm -rf ~/.ai-station/brain\nEOF',
     # salah tembak ketiga: membuat berkas KONFIGURASI BARU adalah pekerjaan normal
-    'cat > /home/irsofka/.ai-station/config/berkas_baru_sekali_pakai.json <<JSON\n{"a": 1}\nJSON',
+    f'cat > {HOME}/.ai-station/config/berkas_baru_sekali_pakai.json <<JSON\n{{"a": 1}}\nJSON',
     'echo x > ~/.ai-station/brain/berkas_memori_yang_belum_ada.md',
     'echo x > ~/.ai-station/hooks/berkas_baru.py',
     # aturan home TIDAK boleh salah tembak: ini semua pekerjaan normal

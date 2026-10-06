@@ -1,0 +1,13 @@
+[Unit]
+Description=Irsofka AI Workstation - Cadangan Memori Jangka Panjang
+Documentation=https://github.com/irsjofka-alt/IRSofka-Ai-Workstation
+After=irsofka-ai-workstation.service
+
+[Service]
+Type=oneshot
+# pg_dump + tar saja; tidak menyentuh daemon maupun tab.
+Nice=10
+IOSchedulingClass=idle
+ExecStart=%h/.ai-station/bin/station_backup.sh
+StandardOutput=journal
+StandardError=journal

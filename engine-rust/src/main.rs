@@ -75,7 +75,20 @@ fn station_port() -> u16 {
 }
 
 fn home_dir() -> PathBuf {
-    PathBuf::from(std::env::var("HOME").unwrap_or_else(|_| "/home/irsofka".to_string()))
+    // $HOME praktis selalu terisi (systemd user maupun shell mengisinya). Fallback-nya
+    // tidak boleh berupa nama orang tertentu — hasil clone tidak boleh membawa home
+    // directory milik mesin saya. Urutannya: $HOME, lalu /home/$USER, lalu direktori kerja.
+    if let Ok(h) = std::env::var("HOME") {
+        if !h.is_empty() {
+            return PathBuf::from(h);
+        }
+    }
+    if let Ok(u) = std::env::var("USER") {
+        if !u.is_empty() {
+            return PathBuf::from(format!("/home/{u}"));
+        }
+    }
+    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
 }
 
 fn station_dir() -> PathBuf {

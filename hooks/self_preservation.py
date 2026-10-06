@@ -237,8 +237,12 @@ HOME_DIR = os.path.expanduser("~")
 # Aturan keras pemilik mesin (2026-10-06): JANGAN menambah apa pun setingkat di $HOME.
 # Install, data, dan hasil generate apa pun menuju ~/runtime. Entri yang sudah ada
 # dibiarkan utuh — makanya pengecekannya "apakah nama ini sudah ada di home".
+# Nama home tidak di-hardcode. Kalau regex ini hanya mengenali /home/satu-orang, aturan
+# "$HOME bukan tempat sampah" di mesin orang lain diam-diam tidak melindungi apa pun —
+# dan guard yang tidak melindungi lebih berbahaya daripada tidak ada guard, karena orang
+# mengira ada.
 HOME_DOT_RE = re.compile(
-    r"(?:\$HOME|~|/home/irsofka)/(\.[A-Za-z0-9][A-Za-z0-9._-]*)\b"
+    r"(?:\$HOME|~|" + re.escape(HOME_DIR) + r")/(\.[A-Za-z0-9][A-Za-z0-9._-]*)\b"
 )
 CREATION_RE = re.compile(
     r"\b(mkdir|touch|install\s+-d|ln\s+-s|tee|wget\s+-O|curl\s+-o|tar\s+[^|;]*-C|cp\s|mv\s|rsync\s)"

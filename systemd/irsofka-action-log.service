@@ -1,0 +1,18 @@
+[Unit]
+Description=Irsofka AI Workstation - Session Action Log Ingestor (rekam jejak prompt/perintah AI ke SQL)
+Documentation=https://github.com/irsjofka-alt/IRSofka-Ai-Workstation
+After=default.target
+
+[Service]
+Type=simple
+ExecStart=/usr/bin/env python3 %h/.ai-station/tools/session_ingestor.py watch --interval 3
+Environment=HOME=%h
+Restart=always
+RestartSec=3
+Nice=10
+MemoryMax=300M
+StandardOutput=append:%h/.ai-station/logs/action_log_ingestor.log
+StandardError=append:%h/.ai-station/logs/action_log_ingestor.log
+
+[Install]
+WantedBy=default.target

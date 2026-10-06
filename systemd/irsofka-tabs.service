@@ -1,0 +1,21 @@
+[Unit]
+Description=Irsofka AI Workstation - Persistent PTY Host (tmux server di luar cgroup daemon)
+Documentation=https://github.com/irsjofka-alt/IRSofka-Ai-Workstation
+After=default.target irsofka-ai-workstation.service
+
+[Service]
+Type=oneshot
+RemainAfterExit=yes
+# Socket khusus "-L irsofka" supaya tidak bertabrakan dengan tmux pribadi pengguna.
+# "-f /dev/null" = tanpa configfile, perilaku deterministik untuk otomasi.
+# "-d" wajib: mode attach butuh TTY dan gagal di dalam service tanpa terminal.
+# Server tmux yang di-fork tetap berada di cgroup unit ini, BUKAN di cgroup daemon.
+# Inilah yang membuat restart daemon tidak lagi membunuh sesi AI.
+ExecStart=/usr/bin/tmux -L irsofka -f /dev/null new-session -d -s boot -x 120 -y 32 bash -i
+# Stop eksplisit = matikan server (dan seluruh pane). Restart daemon TIDAK menyentuh unit ini.
+ExecStop=/usr/bin/tmux -L irsofka kill-server
+Environment=HOME=%h
+Environment=TERM=screen-256color
+
+[Install]
+WantedBy=default.target

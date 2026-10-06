@@ -1,0 +1,57 @@
+# AI Workstation Team & Capability Slots Configuration
+version: "1.0.0"
+
+active_team: "programmer_squad"
+
+teams:
+  - id: "programmer_squad"
+    name: "Team Programmers (Antigravity & Qoder)"
+    description: "Kolaborasi antara Antigravity CLI untuk arsitektur/implementasi dan Qoder CLI untuk review/audit"
+    roles:
+      - role_id: "architect"
+        title: "Lead Architect"
+        model: "gemini-3.1-pro"
+        effort: "high"
+      - role_id: "implementer"
+        title: "Code Implementer"
+        engine: "antigravity_cli"
+        instruction_ref: "skills/coding_standards.md"
+      - role_id: "auditor"
+        title: "QA & Code Auditor"
+        engine: "qoder_cli"
+        instruction_ref: "skills/coding_standards.md"
+
+  - id: "visual_operator"
+    name: "Visual & Desktop Automation Squad"
+    description: "Tim 'Mata & Tangan' untuk mengoperasikan aplikasi GUI saat MCP tidak tersedia"
+    roles:
+      - role_id: "eye"
+        title: "Visual Observer"
+        model: "gemini-3.8-flash"
+        effort: "medium"
+      - role_id: "hand"
+        title: "Wayland Input Actuator"
+        driver: "ydotool"
+
+  - id: "daily_assistant"
+    name: "Pop!_OS Desktop Companion"
+    description: "Asisten percakapan cepat dan eksekusi tugas sehari-hari Linux"
+    roles:
+      - role_id: "companion"
+        title: "System Companion"
+        model: "qwen2.5:7b"
+        provider: "ollama"
+        tools:
+          - "xdg-open"
+          - "pactl"
+          - "notify-send"
+          - "system_timers"
+
+  - id: "analysis_team"
+    name: "Deep Analysis & Business Intelligence"
+    description: "Membaca data, log, atau dokumen besar dengan context window raksasa"
+    roles:
+      - role_id: "analyst"
+        title: "High-Context Analyst"
+        model: "qwen-3.8-flash"
+        context_window: "1M"

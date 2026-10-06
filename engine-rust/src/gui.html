@@ -1,0 +1,1074 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Irsofka AI Workstation - Live Studio</title>
+    <link rel="stylesheet" href="/assets/vendor/xterm.css">
+    <script src="/assets/vendor/xterm.js"></script>
+    <script src="/assets/vendor/addon-fit.js"></script>
+
+    <style>
+        /* Font dilayani dari disk sendiri: tanpa CDN, UI tetap hidup saat jaringan mati. */
+        @font-face { font-family: 'Inter'; font-weight: 400; font-display: swap; src: url('/assets/fonts/inter-400.woff2') format('woff2'); }
+        @font-face { font-family: 'Inter'; font-weight: 500; font-display: swap; src: url('/assets/fonts/inter-500.woff2') format('woff2'); }
+        @font-face { font-family: 'Inter'; font-weight: 600; font-display: swap; src: url('/assets/fonts/inter-600.woff2') format('woff2'); }
+        @font-face { font-family: 'Inter'; font-weight: 700; font-display: swap; src: url('/assets/fonts/inter-700.woff2') format('woff2'); }
+        @font-face { font-family: 'JetBrains Mono'; font-weight: 400; font-display: swap; src: url('/assets/fonts/jb-400.woff2') format('woff2'); }
+        @font-face { font-family: 'JetBrains Mono'; font-weight: 500; font-display: swap; src: url('/assets/fonts/jb-500.woff2') format('woff2'); }
+        @font-face { font-family: 'JetBrains Mono'; font-weight: 600; font-display: swap; src: url('/assets/fonts/jb-600.woff2') format('woff2'); }
+
+        :root {
+            --bg-deep: #07090e;
+            --bg-surface: #0e121d;
+            --bg-card: #141926;
+            --bg-elevated: #1a2133;
+            --border-subtle: rgba(255, 255, 255, 0.08);
+            --border-focus: rgba(56, 189, 248, 0.4);
+            --accent-cyan: #38bdf8;
+            --accent-glow: rgba(56, 189, 248, 0.25);
+            --accent-amber: #f59e0b;
+            --accent-emerald: #10b981;
+            --accent-violet: #818cf8;
+            --accent-rose: #f43f5e;
+            --text-main: #f1f5f9;
+            --text-muted: #94a3b8;
+            --text-dim: #64748b;
+        }
+
+        * { box-sizing: border-box; margin: 0; padding: 0; }
+        body {
+            background-color: var(--bg-deep);
+            color: var(--text-main);
+            font-family: 'Inter', -apple-system, sans-serif;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            user-select: text;
+            -webkit-user-select: text;
+        }
+
+        /* Topbar Header */
+        header {
+            height: 52px;
+            background: var(--bg-surface);
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 16px;
+            z-index: 20;
+        }
+        .brand {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            font-weight: 700;
+            font-size: 0.92rem;
+        }
+        .brand-badge {
+            width: 28px;
+            height: 28px;
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
+            border-radius: 8px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            box-shadow: 0 0 14px var(--accent-glow);
+        }
+        .header-actions {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+        }
+        .pill {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            padding: 4px 10px;
+            border-radius: 6px;
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .pill b { color: var(--text-main); font-weight: 600; }
+        .refresh-btn {
+            background: var(--bg-elevated);
+            border: 1px solid var(--border-subtle);
+            color: var(--accent-cyan);
+            padding: 5px 12px;
+            border-radius: 6px;
+            font-size: 0.75rem;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+        }
+        .refresh-btn:hover {
+            border-color: var(--accent-cyan);
+            background: rgba(56, 189, 248, 0.15);
+        }
+
+        /* Main Workspace Layout */
+        .workspace {
+            flex: 1;
+            display: grid;
+            grid-template-columns: 290px 1fr 280px;
+            height: calc(100vh - 52px);
+            overflow: hidden;
+        }
+
+        /* Left Rail: Controls & Parameters */
+        .sidebar-left {
+            background: var(--bg-surface);
+            border-right: 1px solid var(--border-subtle);
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            overflow-y: auto;
+        }
+        .section-label {
+            font-size: 0.7rem;
+            text-transform: uppercase;
+            letter-spacing: 0.6px;
+            color: var(--text-muted);
+            font-weight: 700;
+            margin-bottom: 6px;
+        }
+        .select-input {
+            width: 100%;
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-main);
+            padding: 8px 10px;
+            border-radius: 6px;
+            font-size: 0.8rem;
+            outline: none;
+            margin-bottom: 10px;
+            cursor: pointer;
+        }
+        .select-input:focus { border-color: var(--accent-cyan); }
+
+        /* Auto-Approve Toggle Card */
+        .toggle-card {
+            background: rgba(16, 185, 129, 0.08);
+            border: 1px solid rgba(16, 185, 129, 0.3);
+            border-radius: 8px;
+            padding: 10px 12px;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            margin-bottom: 10px;
+            cursor: pointer;
+        }
+        .toggle-card.off {
+            background: var(--bg-card);
+            border-color: var(--border-subtle);
+        }
+        .toggle-title {
+            font-size: 0.78rem;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+        }
+        .switch-indicator {
+            font-size: 0.7rem;
+            font-weight: 700;
+            color: var(--accent-emerald);
+            background: rgba(16, 185, 129, 0.2);
+            padding: 2px 8px;
+            border-radius: 10px;
+        }
+        .toggle-card.off .switch-indicator {
+            color: var(--text-dim);
+            background: rgba(255, 255, 255, 0.05);
+        }
+
+        /* Center Stage: Studio Live Terminal */
+        .center-stage {
+            display: flex;
+            flex-direction: column;
+            background: #05070c;
+            height: 100%;
+            overflow: hidden;
+            position: relative;
+        }
+
+        /* Terminal Top Bar (Tabs & Status) */
+        .term-header {
+            height: 42px;
+            background: var(--bg-surface);
+            border-bottom: 1px solid var(--border-subtle);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            padding: 0 12px;
+        }
+        .term-tabs {
+            display: flex;
+            gap: 4px;
+        }
+        .term-tab {
+            padding: 6px 14px;
+            border-radius: 6px 6px 0 0;
+            font-size: 0.76rem;
+            font-weight: 600;
+            cursor: pointer;
+            color: var(--text-muted);
+            background: transparent;
+            border: 1px solid transparent;
+            border-bottom: none;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: all 0.15s;
+        }
+        .term-tab:hover { color: var(--text-main); }
+        .term-tab.active {
+            color: var(--text-main);
+            background: #05070c;
+            border-color: var(--border-subtle);
+        }
+        .term-tab.qoder.active { border-top: 2px solid var(--accent-amber); }
+        .term-tab.antigravity.active { border-top: 2px solid var(--accent-cyan); }
+        .term-tab.shell.active { border-top: 2px solid var(--accent-emerald); }
+
+        .term-actions {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .term-btn {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-muted);
+            padding: 4px 10px;
+            border-radius: 4px;
+            font-size: 0.7rem;
+            cursor: pointer;
+            transition: all 0.15s;
+        }
+        .term-btn:hover { color: var(--text-main); border-color: var(--accent-cyan); }
+
+        /* The Live Terminal Viewport */
+        .terminal-container {
+            flex: 1;
+            width: 100%;
+            padding: 8px;
+            background: #05070c;
+            overflow: hidden;
+        }
+
+        /* Action Chips */
+        .action-chips {
+            padding: 6px 14px;
+            display: flex;
+            gap: 8px;
+            overflow-x: auto;
+            background: rgba(14, 18, 29, 0.85);
+            border-top: 1px solid var(--border-subtle);
+        }
+        .chip {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            color: var(--text-muted);
+            padding: 4px 10px;
+            border-radius: 14px;
+            font-size: 0.72rem;
+            cursor: pointer;
+            white-space: nowrap;
+            transition: all 0.2s;
+        }
+        .chip:hover { border-color: var(--accent-cyan); color: var(--text-main); background: rgba(56, 189, 248, 0.1); }
+
+        /* Bottom Prompt Bar */
+        .prompt-bar {
+            background: var(--bg-surface);
+            border-top: 1px solid var(--border-subtle);
+            display: flex;
+            align-items: flex-end;
+            padding: 10px 14px;
+            gap: 10px;
+        }
+        .prompt-input {
+            flex: 1;
+            min-height: 46px;
+            max-height: 32vh;
+            overflow-y: auto;
+            resize: none;
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            color: var(--text-main);
+            padding: 10px 14px;
+            font-size: 0.85rem;
+            line-height: 1.55;
+            outline: none;
+            font-family: inherit;
+            /* Perintah panjang turun baris, tidak terpotong ke tepi jendela */
+            white-space: pre-wrap;
+            word-break: break-word;
+            overflow-wrap: anywhere;
+        }
+        .prompt-input:focus { border-color: var(--accent-cyan); }
+        .composer-wrap { flex: 1; display: flex; flex-direction: column; }
+        .key-hint {
+            font-size: 0.66rem; color: var(--text-dim);
+            display: flex; gap: 10px; align-items: center; margin-top: 5px; flex-wrap: wrap;
+        }
+        kbd {
+            background: var(--bg-elevated); border: 1px solid var(--border-subtle);
+            border-radius: 4px; padding: 1px 6px; font-size: 0.64rem;
+            font-family: 'JetBrains Mono', monospace; color: var(--text-muted);
+        }
+        .btn-send {
+            background: linear-gradient(135deg, var(--accent-cyan), var(--accent-violet));
+            color: #000;
+            font-weight: 700;
+            border: none;
+            padding: 10px 20px;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 0.85rem;
+            display: flex;
+            align-items: center;
+            gap: 6px;
+            transition: opacity 0.2s;
+        }
+        .btn-send:hover { opacity: 0.9; }
+
+        /* Right Rail: Inspector */
+        .sidebar-right {
+            background: var(--bg-surface);
+            border-left: 1px solid var(--border-subtle);
+            padding: 14px;
+            display: flex;
+            flex-direction: column;
+            gap: 14px;
+            overflow-y: auto;
+        }
+        .card-aux {
+            background: var(--bg-card);
+            border: 1px solid var(--border-subtle);
+            border-radius: 8px;
+            padding: 12px;
+        }
+        .card-aux h4 {
+            font-size: 0.72rem;
+            color: var(--text-muted);
+            text-transform: uppercase;
+            letter-spacing: 0.5px;
+            margin-bottom: 8px;
+            display: flex;
+            justify-content: space-between;
+        }
+        .screen-preview {
+            width: 100%;
+            height: 125px;
+            background: #0b0d14;
+            border-radius: 6px;
+            border: 1px dashed var(--border-subtle);
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+        }
+        .screen-preview img { width: 100%; height: 100%; object-fit: contain; }
+        .quick-btn {
+            background: var(--bg-elevated);
+            color: var(--text-main);
+            border: 1px solid var(--border-subtle);
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 0.74rem;
+            cursor: pointer;
+            width: 100%;
+            margin-bottom: 6px;
+            transition: all 0.15s;
+            text-align: left;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .quick-btn:hover { border-color: var(--accent-cyan); background: rgba(56, 189, 248, 0.1); }
+    </style>
+</head>
+<body>
+    <!-- Main Header -->
+    <header>
+        <div class="brand">
+            <div class="brand-badge">⚛</div>
+            <span>IRSOFKA AI WORKSTATION</span>
+            <span class="pill" style="font-size: 0.68rem;">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--accent-emerald); display: inline-block;"></span>
+                COSMIC Wayland
+            </span>
+        </div>
+
+        <div class="header-actions">
+            <div class="pill" style="border-color: rgba(245, 158, 11, 0.4);">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--accent-amber); display: inline-block;"></span>
+                <span>QODER CLI</span> <b id="qoder-cli-badge" style="color: var(--accent-amber);">v1.1.65</b>
+            </div>
+            <div class="pill" style="border-color: rgba(56, 189, 248, 0.4);">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--accent-cyan); display: inline-block;"></span>
+                <span>AGY CLI</span> <b id="agy-cli-badge" style="color: var(--accent-cyan);">v1.2.17</b>
+            </div>
+            <div class="pill" style="border-color: rgba(16, 185, 129, 0.4);">
+                <span style="width: 7px; height: 7px; border-radius: 50%; background: var(--accent-emerald); display: inline-block;"></span>
+                <span>DB</span> <b id="header-db-pill" style="color: var(--accent-emerald);">🐘 PostgreSQL</b>
+            </div>
+            <div class="pill">
+                <span>GPU</span> <b id="gpu-info">RTX 3060</b>
+            </div>
+            <div class="pill">
+                <span>RAM</span> <b id="ram-info">32 GB</b>
+            </div>
+            <button class="refresh-btn" onclick="refreshUI()" title="Muat ulang tampilan">🔄 Refresh UI</button>
+            <button class="refresh-btn" style="border-color: rgba(244, 63, 94, 0.4); color: var(--accent-rose);" onclick="restartServerDaemon()" title="Restart server service">⚡ Restart Daemon</button>
+        </div>
+    </header>
+
+    <div class="workspace">
+        <!-- Left: Model & Execution Controls -->
+        <div class="sidebar-left">
+            <div>
+                <div class="section-label">Active AI Model</div>
+                <select id="model-select" class="select-input" onchange="onModelChange()">
+                    <option value="qwen-3.8-flash" selected>🌟 Qwen 3.8 Flash (1M Context • 0 Pts • Qoder)</option>
+                    <option value="qwen-3.8-max">🚀 Qwen 3.8 Max (Qoder)</option>
+                    <option value="deepseek-v4-pro">🛡️ DeepSeek V4 Pro (Qoder)</option>
+                    <option value="glm-5.3-flash">⚡ GLM 5.3 Flash (Qoder)</option>
+                    <option value="kimi-k3">🌙 Kimi K3 (Qoder)</option>
+                    <option value="gemini-3.8-flash">⚡ Gemini 3.8 Flash High (1M Context • Antigravity)</option>
+                    <option value="gemini-3.1-pro">🧠 Gemini 3.1 Pro High (2M Context • Antigravity)</option>
+                    <option value="claude-sonnet">🔮 Claude Sonnet 5.5 High (Antigravity)</option>
+                    <option value="local-ollama">💻 Local Model (RTX 3060 Offline)</option>
+                </select>
+
+                <div class="section-label">Reasoning Effort (Pemikiran)</div>
+                <select id="effort-select" class="select-input" onchange="onModelChange()">
+                    <option value="xhigh" selected>🔥 Extra High (xhigh) - Maksimal & Teliti</option>
+                    <option value="high">🧠 High - Analisis Mendalam</option>
+                    <option value="medium">⚖️ Medium - Standar Seimbang</option>
+                    <option value="low">⚡ Low - Cepat & Ringkas</option>
+                    <option value="auto">🔄 Auto - Adaptif</option>
+                </select>
+
+                <div class="section-label">Context Window (Tokens)</div>
+                <select id="context-select" class="select-input" onchange="onModelChange()">
+                    <option value="1000000" selected>1,000,000 Tokens (1M Context)</option>
+                    <option value="500000">500,000 Tokens (500k Context)</option>
+                    <option value="200000">200,000 Tokens (200k Context)</option>
+                    <option value="128000">128,000 Tokens (128k Context)</option>
+                    <option value="32000">32,768 Tokens (32k Default)</option>
+                </select>
+
+                <div class="section-label">Permissions & Execution</div>
+                <div id="auto-approve-card" class="toggle-card" onclick="toggleAutoApprove()">
+                    <div class="toggle-title">
+                        <span>⚡ Auto-Approve Tools</span>
+                    </div>
+                    <div id="auto-approve-indicator" class="switch-indicator">ON</div>
+                </div>
+                <div style="font-size: 0.68rem; color: var(--text-dim); margin-top: -6px; margin-bottom: 12px; line-height: 1.4;">
+                    Saat ON: Tool & pembacaan file otomatis diizinkan tanpa jeda konfirmasi di terminal.
+                </div>
+            </div>
+
+            <div>
+                <div class="section-label">Database & RPG Save State</div>
+                <div class="card-aux" style="padding: 10px; font-size: 0.72rem; color: var(--text-muted); line-height: 1.6;">
+                    <div>💾 <b>Save State:</b> <span id="db-engine-badge" style="color: var(--accent-emerald);">🐘 POSTGRESQL Active</span></div>
+                    <div>📁 <b>Skills:</b> <span id="skills-count">4</span> unlocked</div>
+                    <div>📁 <b>Quests:</b> <span id="quests-count">0</span> logged</div>
+                    <div>🛡️ <b>Guardrails:</b> <span id="rules-count">2</span> rules active</div>
+                    <div id="db-path-badge" style="margin-top: 4px; color: var(--accent-cyan); font-family: monospace; font-size: 0.68rem;">postgresql://irsofka@localhost:5432/irsofka_ai_workstation</div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Center: Studio Live Terminal -->
+        <div class="center-stage">
+            <!-- Terminal Header & Tabs -->
+            <div class="term-header">
+                <div class="term-tabs">
+                    <div id="tab-qoder" class="term-tab qoder active" onclick="switchTab('qoder')">
+                        <span>🌟 Qoder CLI (Qwen 1M • 0 Pts)</span>
+                    </div>
+                    <div id="tab-antigravity" class="term-tab antigravity" onclick="switchTab('antigravity')">
+                        <span>⚡ Antigravity CLI (Gemini)</span>
+                    </div>
+                    <div id="tab-shell" class="term-tab shell" onclick="switchTab('shell')">
+                        <span>🐧 COSMIC Shell</span>
+                    </div>
+                </div>
+
+                <div class="term-actions">
+                    <span style="font-size: 0.7rem; color: var(--accent-emerald); display: flex; align-items: center; gap: 4px;">
+                        <span style="width: 6px; height: 6px; border-radius: 50%; background: var(--accent-emerald);"></span>
+                        Live Stream (60 FPS)
+                    </span>
+                    <button class="term-btn" onclick="clearActiveTerm()">🧹 Clear</button>
+                    <button class="term-btn" onclick="resetActiveSession()">🔄 Reset Session</button>
+                </div>
+            </div>
+
+            <!-- The Live xterm.js Terminal Viewport (Independent Persistent Panes) -->
+            <div class="terminal-container" id="terminal-box">
+                <div id="term-qoder" class="term-pane" style="width: 100%; height: 100%;"></div>
+                <div id="term-antigravity" class="term-pane" style="width: 100%; height: 100%; display: none;"></div>
+                <div id="term-shell" class="term-pane" style="width: 100%; height: 100%; display: none;"></div>
+            </div>
+
+            <!-- Action Chips for 1-Click Execution -->
+            <div class="action-chips">
+                <div class="chip" onclick="quickRun('coba kamu baca file ~/.ai-station/brain/PROJECT_SUMMARY_IRSOFKA_AI_WORKSTATION.md dan ~/.ai-station/brain/ai_workstation_master_plan.md, lalu buat ringkasan status terkini workstation kita')">📄 Baca Project Summary & Master Plan</div>
+                <div class="chip" style="border-color: rgba(245, 158, 11, 0.4); color: var(--accent-amber);" onclick="startReplSession('qoder')">💬 Mulai Chat Interaktif Qoder (REPL)</div>
+                <div class="chip" style="border-color: rgba(56, 189, 248, 0.4); color: var(--accent-cyan);" onclick="startReplSession('antigravity')">💬 Mulai Chat Interaktif Antigravity (REPL)</div>
+                <div class="chip" onclick="execAction('see_screen')">📸 Ambil Screenshot Desktop</div>
+            </div>
+
+            <!-- Bottom Prompt Dispatcher -->
+            <div class="prompt-bar">
+                <div class="composer-wrap">
+                    <textarea id="prompt-input" class="prompt-input" rows="1" spellcheck="false"
+                        placeholder="Ketik instruksi AI… Enter untuk baris baru, Ctrl+Enter untuk mengirim"
+                        oninput="autoGrowPrompt(this)" onkeydown="handleKey(event)"></textarea>
+                    <div class="key-hint">
+                        <span><kbd>Enter</kbd> baris baru</span>
+                        <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> kirim ke CLI</span>
+                        <span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> kirim baris demi baris</span>
+                        <span id="composer-state" style="color: var(--accent-cyan);"></span>
+                    </div>
+                </div>
+                <button class="btn-send" onclick="sendPromptToCLI()">
+                    <span>🚀 Kirim</span>
+                </button>
+            </div>
+            <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 4px; padding: 0 2px;">
+                💡 Ketik bebas multi-baris di atas (perintah panjang otomatis turun baris, tidak terpotong).
+                Untuk chat langsung di layar terminal, klik <b>[💬 Mulai Chat Interaktif]</b> lalu ketik di pane.
+            </div>
+        </div>
+
+        <!-- Right: Inspector & Visual Eye -->
+        <div class="sidebar-right">
+            <div class="card-aux">
+                <h4>
+                    <span>Active Workspace</span>
+                    <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="refreshWorkspace()">🔄</button>
+                </h4>
+                <div id="workspace-rows" style="display: flex; flex-direction: column; gap: 8px;">
+                    <div style="font-family: monospace; font-size: 0.7rem; color: var(--text-dim);">Detecting…</div>
+                </div>
+            </div>
+
+            <div class="card-aux">
+                <h4>
+                    <span>Session Memory (SQL)</span>
+                    <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="refreshRecovery()">🔄</button>
+                </h4>
+                <div id="recovery-box" style="font-size: 0.68rem; color: var(--text-muted); line-height: 1.5;">
+                    Memuat riwayat aksi…
+                </div>
+            </div>
+
+            <div class="card-aux">
+                <h4>
+                    <span>Visual Eye (Wayland)</span>
+                    <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="captureScreen()">📸 Ambil</button>
+                </h4>
+                <div class="screen-preview" id="screen-box">
+                    <span style="font-size: 0.72rem; color: var(--text-dim);">Klik 'Ambil' untuk intip layar</span>
+                </div>
+            </div>
+
+            <div class="card-aux">
+                <h4>Self-Healing Tracker</h4>
+                <div style="font-size: 0.75rem; color: var(--accent-emerald);">
+                    ● 0 Repeat Crash (Stabil)
+                </div>
+                <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 4px;">
+                    5x repeat trigger auto-synthesizes new skill ke workstation.db
+                </div>
+            </div>
+
+            <div class="card-aux">
+                <h4>OS Quick Actions</h4>
+                <button class="quick-btn" onclick="execAction('open_youtube')">📺 Buka YouTube</button>
+                <button class="quick-btn" onclick="execAction('notify_test')">🔔 Kirim Test Notifikasi</button>
+                <button class="quick-btn" onclick="execAction('vol_up')">🔊 Volume Up (+10%)</button>
+                <button class="quick-btn" onclick="execAction('vol_down')">🔉 Volume Down (-10%)</button>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let activeTab = 'qoder';
+        let isAutoApprove = true;
+        const TABS = ['qoder', 'antigravity', 'shell'];
+        const terms = {};
+        const fitAddons = {};
+
+        async function initTerminal() {
+            for (const t of TABS) {
+                const termInstance = new Terminal({
+                    cursorBlink: true,
+                    fontFamily: "'JetBrains Mono', 'Fira Code', monospace",
+                    fontSize: 13,
+                    lineHeight: 1.25,
+                    theme: {
+                        background: '#05070c',
+                        foreground: '#f1f5f9',
+                        cursor: '#38bdf8',
+                        selectionBackground: 'rgba(56, 189, 248, 0.3)',
+                        black: '#000000',
+                        red: '#f43f5e',
+                        green: '#10b981',
+                        yellow: '#f59e0b',
+                        blue: '#38bdf8',
+                        magenta: '#818cf8',
+                        cyan: '#22d3ee',
+                        white: '#ffffff'
+                    }
+                });
+                const fit = new FitAddon.FitAddon();
+                termInstance.loadAddon(fit);
+
+                const container = document.getElementById('term-' + t);
+                termInstance.open(container);
+                fit.fit();
+
+                termInstance.onData(data => {
+                    fetch('/api/term/write', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({tab: t, data: data})
+                    });
+                });
+
+                terms[t] = termInstance;
+                fitAddons[t] = fit;
+
+                // Load initial screen history
+                try {
+                    const res = await fetch('/api/term/history?tab=' + t);
+                    if (res.ok) {
+                        const hist = await res.text();
+                        if (hist && hist.length > 0) {
+                            termInstance.write(hist);
+                        }
+                    }
+                } catch(e) {}
+            }
+
+            window.addEventListener('resize', syncPtySize);
+            setTimeout(syncPtySize, 200);
+
+            pollTerminal();
+        }
+
+        function syncPtySize() {
+            const fit = fitAddons[activeTab];
+            const term = terms[activeTab];
+            if (!fit || !term) return;
+            try {
+                fit.fit();
+                fetch('/api/term/resize', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ tab: activeTab, cols: term.cols, rows: term.rows })
+                }).catch(() => {});
+            } catch(e) {}
+        }
+
+        function startReplSession(cli) {
+            switchTab(cli);
+            if (terms[cli]) terms[cli].focus();
+        }
+
+        async function pollTerminal() {
+            for (const t of TABS) {
+                try {
+                    const res = await fetch('/api/term/read?tab=' + t);
+                    if (res.ok) {
+                        const text = await res.text();
+                        if (text.length > 0 && terms[t]) {
+                            terms[t].write(text);
+                        }
+                    }
+                } catch (err) {}
+            }
+            setTimeout(pollTerminal, 60);
+        }
+
+        function switchTab(tab) {
+            activeTab = tab;
+            document.querySelectorAll('.term-tab').forEach(t => t.classList.remove('active'));
+            document.getElementById('tab-' + tab).classList.add('active');
+
+            // Hide other panes, show active pane without clearing
+            for (const t of TABS) {
+                const pane = document.getElementById('term-' + t);
+                if (pane) pane.style.display = (t === tab) ? 'block' : 'none';
+            }
+
+            if (fitAddons[tab]) fitAddons[tab].fit();
+            if (terms[tab]) terms[tab].focus();
+            syncPtySize();
+        }
+
+        function toggleAutoApprove() {
+            isAutoApprove = !isAutoApprove;
+            const card = document.getElementById('auto-approve-card');
+            const ind = document.getElementById('auto-approve-indicator');
+            if (isAutoApprove) {
+                card.classList.remove('off');
+                ind.innerText = 'ON';
+            } else {
+                card.classList.add('off');
+                ind.innerText = 'OFF';
+            }
+        }
+
+        async function onModelChange() {
+            const engine = targetEngine();
+            const tab = engine === 'agy' ? 'antigravity' : (engine === 'qoder' ? 'qoder' : activeTab);
+            switchTab(tab);
+            const sel = document.getElementById('model-select');
+            const model = sel.value;
+            // Antigravity menolak --effort bersamaan dengan sebagian nama model
+            // (penyebab quest "Test GDD Architecture" FAILED), jadi kirim effort kosong.
+            const effort = engine === 'agy' ? '' : document.getElementById('effort-select').value;
+            const context = engine === 'agy' ? '' : document.getElementById('context-select').value;
+            try {
+                const res = await fetch('/api/cli/config', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tab: tab, model: model, effort: effort,
+                                           context_window: context, restart: false })
+                });
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                flagProfileSaved(`✓ profil ${tab} = ${model} — berlaku saat tab spawn ulang`, false);
+            } catch (e) {
+                flagProfileSaved(`✗ gagal menyimpan profil ${tab}`, true);
+            }
+        }
+
+        // Enter = turun baris (perilaku default textarea).
+        // Ctrl/Cmd+Enter = kirim. Tambah Shift = kirim baris demi baris apa adanya (untuk shell).
+        function handleKey(e) {
+            if (e.key !== 'Enter') return;
+            if (e.ctrlKey || e.metaKey) {
+                e.preventDefault();
+                sendPromptToCLI({ verbatim: e.shiftKey });
+            }
+        }
+
+        function autoGrowPrompt(el) {
+            el.style.height = 'auto';
+            const cap = Math.round(window.innerHeight * 0.32);
+            el.style.height = Math.min(el.scrollHeight, cap) + 'px';
+            updateComposerState();
+        }
+
+        function updateComposerState() {
+            const el = document.getElementById('prompt-input');
+            const st = document.getElementById('composer-state');
+            if (!el || !st) return;
+            st.innerText = el.value.trim()
+                ? `${(el.value.match(/\n/g) || []).length + 1} baris • ${el.value.length} karakter`
+                : '';
+        }
+
+        function targetEngine() {
+            const sel = document.getElementById('model-select');
+            const opt = sel && sel.selectedOptions ? sel.selectedOptions[0] : null;
+            const declared = opt ? (opt.getAttribute('data-engine') || '') : '';
+            if (declared) return declared;
+            const m = (sel ? sel.value : '').toLowerCase();
+            if (m.includes('gemini') || m.includes('claude')) return 'agy';
+            if (m.includes('ollama') || m.includes('local')) return 'local';
+            return 'qoder';
+        }
+
+        function quickRun(text) {
+            const el = document.getElementById('prompt-input');
+            el.value = text;
+            autoGrowPrompt(el);
+            sendPromptToCLI({ verbatim: false });
+        }
+
+        async function sendPromptToCLI(opts = {}) {
+            const inp = document.getElementById('prompt-input');
+            const prompt = inp.value.trim();
+            if (!prompt) return;
+
+            const engine = targetEngine();
+            if (engine === 'agy') {
+                if (activeTab !== 'antigravity') switchTab('antigravity');
+            } else if (engine === 'qoder') {
+                if (activeTab !== 'qoder') switchTab('qoder');
+            }
+
+            // REPL Qoder/Antigravity menganggap baris baru sebagai "kirim", jadi rata
+            // lebih dulu, kecuali pengguna meminta multi-baris atau tab-nya shell.
+            const verbatim = opts.verbatim === true || activeTab === 'shell';
+            const payload = verbatim ? prompt : prompt.replace(/\s*\n\s*/g, ' ');
+            inp.value = '';
+            autoGrowPrompt(inp);
+
+            const model = document.getElementById('model-select').value;
+            const effort = document.getElementById('effort-select').value;
+            const context_size = document.getElementById('context-select').value;
+
+            try {
+                await fetch('/api/cli/run', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({
+                        prompt: payload,
+                        model: model,
+                        effort: effort,
+                        context_size: context_size,
+                        auto_approve: isAutoApprove,
+                        target_cli: activeTab
+                    })
+                });
+                if (terms[activeTab]) terms[activeTab].focus();
+            } catch(e) {
+                if (terms[activeTab]) terms[activeTab].write('\r\n\x1b[1;31m[Error Dispatching Command]\x1b[0m\r\n');
+            }
+        }
+
+        function clearActiveTerm() {
+            if (terms[activeTab]) terms[activeTab].clear();
+        }
+
+        async function resetActiveSession() {
+            if (!confirm(`Batalkan / Kirim interrupt ke sesi ${activeTab.toUpperCase()}?`)) return;
+            await fetch('/api/term/reset', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({tab: activeTab})
+            });
+        }
+
+        async function fetchStats() {
+            try {
+                const res = await fetch('/api/stats');
+                const d = await res.json();
+                if (d.gpu) document.getElementById('gpu-info').innerText = `${d.gpu.used_mb}/${d.gpu.total_mb} MB (${d.gpu.load}%)`;
+                if (d.ram) document.getElementById('ram-info').innerText = `${d.ram.used_gb}/${d.ram.total_gb} GB`;
+                
+                if (d.antigravity_cli) {
+                    const el = document.getElementById('agy-cli-badge');
+                    if (el) {
+                        el.innerText = d.antigravity_cli.connected ? `v${d.antigravity_cli.version}` : 'OFFLINE';
+                        el.style.color = d.antigravity_cli.connected ? 'var(--accent-cyan)' : 'var(--accent-rose)';
+                    }
+                }
+                if (d.qoder_cli) {
+                    const el = document.getElementById('qoder-cli-badge');
+                    if (el) {
+                        el.innerText = d.qoder_cli.connected ? `v${d.qoder_cli.version}` : 'OFFLINE';
+                        el.style.color = d.qoder_cli.connected ? 'var(--accent-amber)' : 'var(--accent-rose)';
+                    }
+                }
+
+                document.getElementById('skills-count').innerText = d.skills_count;
+                if (document.getElementById('quests-count')) document.getElementById('quests-count').innerText = d.total_quests || 0;
+                // Active workspace dirender dari /api/workspace (cwd live tiap tab),
+                // bukan dari field phantom yang tidak pernah dikirim backend.
+
+                if (d.db_engine) {
+                    const hPill = document.getElementById('header-db-pill');
+                    const dbBadge = document.getElementById('db-engine-badge');
+                    const dbPath = document.getElementById('db-path-badge');
+                    if (d.db_engine === 'POSTGRESQL') {
+                        if (hPill) { hPill.innerText = '🐘 PostgreSQL'; hPill.style.color = 'var(--accent-emerald)'; }
+                        if (dbBadge) { dbBadge.innerText = '🐘 POSTGRESQL Active'; dbBadge.style.color = 'var(--accent-emerald)'; }
+                        if (dbPath) dbPath.innerText = 'postgresql://irsofka@localhost:5432/irsofka_ai_workstation';
+                    } else {
+                        if (hPill) { hPill.innerText = '⚡ SQLite'; hPill.style.color = 'var(--accent-amber)'; }
+                        if (dbBadge) { dbBadge.innerText = '⚡ SQLITE Fallback'; dbBadge.style.color = 'var(--accent-amber)'; }
+                        if (dbPath) dbPath.innerText = '~/.ai-station/brain/workstation.db';
+                    }
+                }
+            } catch(e) {}
+        }
+
+        function esc(s) {
+            return String(s == null ? '' : s).replace(/[&<>"']/g, c => ({
+                '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+            }[c]));
+        }
+
+        function flagProfileSaved(text, isError) {
+            const st = document.getElementById('composer-state');
+            if (!st) return;
+            st.innerText = text;
+            st.style.color = isError ? 'var(--accent-rose)' : 'var(--accent-emerald)';
+            setTimeout(updateComposerState, 4000);
+        }
+
+        const TAB_LABELS = { qoder: '🌟 Qoder', antigravity: '⚡ Antigravity', shell: '🐧 Shell' };
+
+        async function refreshWorkspace() {
+            const box = document.getElementById('workspace-rows');
+            if (!box) return;
+            try {
+                const res = await fetch('/api/workspace');
+                const d = await res.json();
+                const tabs = d.tabs || {};
+                let html = '';
+                for (const key of ['qoder', 'antigravity', 'shell']) {
+                    const t = tabs[key] || {};
+                    const dot = t.alive
+                        ? '<span style="color: var(--accent-emerald);">●</span>'
+                        : '<span style="color: var(--accent-rose);">○ mati</span>';
+                    const sess = t.session || {};
+                    const sid = (sess.session_id || '').slice(0, 8);
+                    const transcript = (sess.transcript || '').split('/').pop() || '';
+                    const upd = sess.last_updated
+                        ? new Date(Number(sess.last_updated) * 1000).toLocaleTimeString('id-ID') : '';
+                    html += `<div style="border: 1px solid var(--border-subtle); border-radius: 6px; padding: 7px 8px; background: #0c0e15;">
+                        <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted);">
+                            <b>${TAB_LABELS[key]}</b> <span>${dot} pid ${esc(t.pid || 0)}</span>
+                        </div>
+                        <div style="font-family:monospace; font-size:0.68rem; color:var(--accent-cyan); word-break:break-all; margin-top:3px;">
+                            ${esc(t.live_cwd || '—')}
+                        </div>
+                        ${t.diverged ? `<div style="font-size:0.64rem; color:var(--accent-amber); margin-top:2px;">⚠ profil menyatakan: <code>${esc(t.declared_workspace)}</code></div>` : ''}
+                        <div style="font-size:0.63rem; color:var(--text-dim); margin-top:3px; word-break:break-all;">
+                            jalan: ${esc(t.model_in_command || t.profile_model || '—')}${t.effort_in_command || t.profile_effort ? ' · effort ' + esc(t.effort_in_command || t.profile_effort) : ''}${t.context_in_command ? ' · ctx ' + esc(t.context_in_command) : ''}
+                        </div>
+                        ${sid ? `<div style="font-size:0.63rem; color:var(--text-dim); margin-top:2px; word-break:break-all;">
+                            sesi ${esc(sid)} · ${esc(transcript)}${upd ? ' · ' + esc(upd) : ''}</div>` : ''}
+                    </div>`;
+                }
+                html += `<div style="font-size:0.62rem; color:var(--text-dim); word-break:break-all;">
+                    daemon pid ${esc((d.daemon || {}).pid)} · port ${esc((d.daemon || {}).port)} ·
+                    spool ${esc((d.spool || {}).bytes)} B → ${esc((d.spool || {}).path)}</div>`;
+                box.innerHTML = html;
+            } catch (e) {
+                box.innerHTML = '<div style="font-size:0.68rem; color:var(--accent-rose);">/api/workspace tidak menjawab</div>';
+            }
+        }
+
+        async function refreshRecovery() {
+            const box = document.getElementById('recovery-box');
+            if (!box) return;
+            try {
+                const res = await fetch('/api/recovery?limit=6');
+                const d = await res.json();
+                const quest = (d.active_quests || [])[0];
+                const mem = (d.handoff_memory || [])[0];
+                const events = (d.events || []).slice(0, 6);
+                let html = `<div>💾 DB: <b style="color:var(--accent-emerald)">${esc(d.db_engine)}</b> · ${esc(d.error || '')}</div>`;
+                html += quest
+                    ? `<div style="margin-top:4px; color:var(--accent-amber);">▶ Quest: ${esc(quest.title)}</div>`
+                    : '<div style="margin-top:4px; color:var(--text-dim);">▶ tidak ada quest aktif</div>';
+                html += mem
+                    ? `<div style="font-size:0.64rem; color:var(--text-dim); margin-top:2px;">handoff: ${esc(mem.key)}</div>`
+                    : '';
+                html += '<div style="margin-top:6px; border-top:1px solid var(--border-subtle); padding-top:5px;">';
+                for (const ev of events) {
+                    html += `<div style="font-size:0.63rem; color:var(--text-muted); word-break:break-all; margin-bottom:2px;">
+                        <span style="color:var(--accent-violet)">${esc(ev.kind)}</span> ${esc((ev.summary || '').slice(0, 90))}</div>`;
+                }
+                html += '</div>';
+                box.innerHTML = html;
+            } catch (e) {
+                box.innerHTML = '<div style="color:var(--accent-rose); font-size:0.68rem;">riwayat aksi tidak tersedia</div>';
+            }
+        }
+
+        async function refreshModels() {
+            try {
+                const res = await fetch('/api/models');
+                const d = await res.json();
+                const sel = document.getElementById('model-select');
+                const current = sel.value;
+                const groups = [['qoder', 'Qoder'], ['agy', 'Antigravity']];
+                let html = '';
+                for (const [engine, label] of groups) {
+                    const list = d[engine] || [];
+                    if (!list.length) continue;
+                    html += `<optgroup label="${label}">`;
+                    for (const m of list) {
+                        html += `<option value="${esc(m.id)}" data-engine="${engine}">${esc(m.label || m.id)}</option>`;
+                    }
+                    html += '</optgroup>';
+                }
+                if (html) {
+                    sel.innerHTML = html;
+                    if ([...sel.options].some(o => o.value === current)) sel.value = current;
+                }
+                const eff = document.getElementById('effort-select');
+                const curEff = eff.value;
+                const efforts = (d.qoder_efforts || []);
+                if (efforts.length) {
+                    eff.innerHTML = efforts.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
+                    if (efforts.includes(curEff)) eff.value = curEff;
+                }
+            } catch (e) {}
+        }
+
+        function refreshUI() {
+            window.location.reload();
+        }
+
+        async function restartServerDaemon() {
+            if (!confirm('Apakah Anda yakin ingin me-restart server daemon?')) return;
+            try {
+                await fetch('/api/restart-server', {method: 'POST'});
+                alert('Server sedang di-restart. Halaman akan dimuat ulang...');
+                setTimeout(() => window.location.reload(), 2000);
+            } catch(e) {
+                window.location.reload();
+            }
+        }
+
+        async function captureScreen() {
+            const box = document.getElementById('screen-box');
+            box.innerHTML = '<span style="font-size:0.72rem; color:var(--accent-cyan);">Capturing...</span>';
+            const res = await fetch('/api/see', {method: 'POST'});
+            const data = await res.json();
+            if (data.status === 'ok') {
+                box.innerHTML = `<img src="/api/screenshot/latest?t=${Date.now()}" alt="Screen" />`;
+            }
+        }
+
+        function execAction(action) {
+            if (action === 'see_screen') {
+                captureScreen();
+                return;
+            }
+            fetch('/api/action', {
+                method: 'POST',
+                headers: {'Content-Type': 'application/json'},
+                body: JSON.stringify({action: action})
+            });
+        }
+
+        window.onload = () => {
+            initTerminal();
+            fetchStats();
+            refreshWorkspace();
+            refreshRecovery();
+            refreshModels();
+            setInterval(fetchStats, 3000);
+            setInterval(refreshWorkspace, 6000);
+            setInterval(refreshRecovery, 20000);
+            const inp = document.getElementById('prompt-input');
+            if (inp) autoGrowPrompt(inp);
+        };
+    </script>
+</body>
+</html>

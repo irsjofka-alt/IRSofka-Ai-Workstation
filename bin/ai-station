@@ -1,0 +1,59 @@
+#!/usr/bin/env bash
+# AI Workstation CLI Command Hub
+
+SCRIPT_DIR="$HOME/.ai-station"
+
+case "$1" in
+  status)
+    python3 "$SCRIPT_DIR/tools/brain_bridge.py" status
+    ;;
+  link)
+    python3 "$SCRIPT_DIR/tools/brain_bridge.py" link "$2"
+    ;;
+  ui|dashboard)
+    echo "Membuka Irsofka AI Workstation Native Studio..."
+    "$SCRIPT_DIR/bin/launch_gui.sh" &
+    ;;
+  see|screenshot)
+    python3 "$SCRIPT_DIR/tools/wayland_actor.py" screenshot
+    ;;
+  record-error)
+    python3 "$SCRIPT_DIR/tools/incident_recorder.py" "$2" "$3" "$4"
+    ;;
+  incidents)
+    python3 "$SCRIPT_DIR/tools/incident_recorder.py" list
+    ;;
+  recall)
+    python3 "$SCRIPT_DIR/tools/session_ingestor.py" recent "${2:-40}"
+    ;;
+  handoff)
+    python3 "$SCRIPT_DIR/tools/session_ingestor.py" handoff
+    ;;
+  snapshot)
+    python3 "$SCRIPT_DIR/tools/session_ingestor.py" snapshot "${2:-25}"
+    ;;
+  recovery)
+    python3 "$SCRIPT_DIR/tools/session_ingestor.py" recovery "${2:-40}"
+    ;;
+  logstats)
+    python3 "$SCRIPT_DIR/tools/session_ingestor.py" stats
+    ;;
+  help|*)
+    echo "AI Workstation Hub - Pop!_OS COSMIC"
+    echo "Usage: ai-station [command]"
+    echo ""
+    echo "Commands:"
+    echo "  status                  Menampilkan ringkasan status Brain, memori, rules, & tim aktif"
+    echo "  link [path]             Menghubungkan workspace/project ke Global Brain"
+    echo "  ui                      Membuka jendela Native Desktop Studio (Rust + Tao + WebKitGTK)"
+    echo "  see                     Mengambil screenshot layar (Wayland Eye)"
+    echo "  record-error <id> <msg> Catat error (otomatis jadi SKILL baru jika >= 5x)"
+    echo "  incidents               Tampilkan daftar tracking error & frekuensinya"
+    echo "  recall [N]              Riwayat N aksi AI terakhir dari SQL (prompt, perintah shell, tool)"
+    echo "  handoff                 Baca serah-terima pekerjaan tertunda (world_memory + quest aktif)"
+    echo "  snapshot [N]            Tulis handoff mekanis sekarang (dipanggil otomatis saat sesi mati)"
+    echo "  recovery [N]            recall + handoff sekaligus, untuk memulihkan konteks sesi baru"
+    echo "  logstats                Statistik isi action_log & save-state"
+    echo "  help                    Tampilkan pesan bantuan ini"
+    ;;
+esac

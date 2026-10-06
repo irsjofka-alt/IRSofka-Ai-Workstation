@@ -1,0 +1,87 @@
+# .gitignore — Irsofka AI Workstation
+# Repo ini PUBLIC. Aturan main: HANYA kode yang boleh masuk.
+# Ingatan, data, kredensial, log, dan artefak mesin tetap di lokal.
+
+# ============================================================
+# 1. KREDENSIAL — tidak boleh masuk repo dalam bentuk apa pun
+# ============================================================
+config/db_local.json
+.env
+.env.*
+*.pem
+*.key
+*.p12
+*credentials*
+*secret*
+# templat sudoers: membocorkan nama pengguna lokal + pola NOPASSWD
+config/sudo-*.example
+
+# ============================================================
+# 2. INGATAN & DATA — sengaja di sini, bukan di GitHub
+#    (memory, skills, identitas, save-state, dokumen pribadi)
+# ============================================================
+brain/
+logs/
+cache-workspaces/
+models/
+# symlink toolset -> tools (jejak jalur absolut, tidak berguna di repo)
+toolset
+
+# ============================================================
+# 3. BASIS DATA — PostgreSQL dump maupun SQLite, apapun itu
+# ============================================================
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.sql
+
+# ============================================================
+# 4. LOG, JEJAK SESI, CADANGAN
+# ============================================================
+*.log
+*.jsonl
+*.jsonl.*
+*.bak
+*.bak-*
+*.tmp
+*.swp
+*~
+
+# ============================================================
+# 5. ARTEFAK BUILD & DEPENDENSI MESIN (bukan tulisan manusia)
+# ============================================================
+engine-rust/target/
+tools/venv/
+**/__pycache__/
+*.py[cod]
+
+# Biner hasil compile bukan sumber. Biner produksi lama bahkan masih memuat
+# kredensial PostgreSQL yang sudah dicabut dari main.rs.
+irsofka-station-core
+*.exe
+*.so
+*.dll
+
+# CLI pihak ketiga & direktori rumah (ratusan MB, bukan kode kita)
+engines/
+
+# ============================================================
+# 6. HASIL GENERATE DAEMON — dibuat ulang saat startup
+# ============================================================
+config/run_tab.sh
+config/cli_profiles.json
+
+# ============================================================
+# 7. Repo git bersarang yang dipindah saat penggabungan
+# ============================================================
+.git.bak-*
+.gitignore.bak-*
+
+# ============================================================
+# YANG SENGAJA TETAK DIKUCUALKAN (aset yang dibutuhkan build)
+# ============================================================
+# engine-rust/assets/fonts/*.woff2  -> font UI, ~500 KB
+# icon.png                          -> ikon aplikasi desktop

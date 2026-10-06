@@ -7,7 +7,9 @@ dan Game-State SQL Database ke Google Antigravity & Qoder melalui Model Context 
 
 import sys
 import json
+import os
 import subprocess
+import urllib.request
 from pathlib import Path
 
 AI_STATION = Path.home() / ".ai-station"
@@ -29,6 +31,27 @@ READONLY_TABLES = {
 
 def db_ph(engine: str) -> str:
     return "%s" if engine == "POSTGRESQL" else "?"
+
+
+STATION_PORT = int(os.environ.get("STATION_PORT", "8999"))
+
+
+def station_api(path: str, method: str = "GET", timeout: float = 8.0):
+    """Panggil HTTP API daemon workstation itu sendiri.
+
+    Sengguh lewat API, bukan subprocess systemctl: daemon sudah punya endpoint resmi untuk
+    ini, jadi jalur izin dan pencatatan ke spool event tetap satu pintu. Kalau daemon mati,
+    kita kembalikan error yang jujur, bukan pura-pura sukses.
+    """
+    url = f"http://127.0.0.1:{STATION_PORT}{path}"
+    try:
+        req = urllib.request.Request(url, method=method, data=b"{}" if method == "POST" else None,
+                                     headers={"Content-Type": "application/json"})
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            body = resp.read().decode("utf-8", "replace").strip()
+        return True, body or "{}"
+    except Exception as exc:  # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
 
 TOOLS = [
     {
@@ -97,6 +120,29 @@ TOOLS = [
             },
             "required": ["title", "status"]
         }
+    },
+    {
+        "name": "refresh_workstation_ui",
+        "description": "Memuat ulang jendela GUI Irsofka AI Workstation agar HTML/state terbaru tampil. Aman: hanya menyuruh halaman WebView reload, tidak menyentuh tab PTY maupun sesi CLI di dalamnya.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {},
+            "required": []
+        }
+    },
+    {
+        "name": "restart_workstation_daemon",
+        "description": "Restart daemon irsofka-ai-workstation.service lewat endpoint resminya. Sejak tab berjalan di tmux (-L irsofka), sesi Qoder/Antigravity TIDAK ikut mati. Pakai bila perubahan biner atau konfigurasi butuh dimuat ulang.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "reason": {
+                    "type": "string",
+                    "description": "Alasan singkat restart, dicatat ke spool event workstation"
+                }
+            },
+            "required": ["reason"]
+        }
     }
 ]
 
@@ -141,6 +187,23 @@ def handle_call_tool(name, args):
         LOGS_DIR.mkdir(parents=True, exist_ok=True)
         res = subprocess.run(["python3", str(AI_STATION / "tools" / "wayland_actor.py"), "screenshot"], stdout=subprocess.PIPE, text=True)
         return f"Screenshot berhasil diambil dan disimpan di {SCREENSHOT_PATH}. Log: {res.stdout.strip()}"
+
+    elif name == "refresh_workstation_ui":
+        ok, body = station_api("/api/ui/reload", "POST")
+        if not ok:
+            return f"GAGAL meminta muat ulang UI (daemon di port {STATION_PORT} tidak menjawab): {body}"
+        return f"Permintaan muat ulang UI terkirim. {body}"
+
+    elif name == "restart_workstation_daemon":
+        reason = (args.get("reason") or "").strip()
+        if not reason:
+            return "DITOLAK: isi 'reason' dulu, supaya restart tercatat dan bisa ditelusuri."
+        ok, body = station_api("/api/restart-server", "POST")
+        if not ok:
+            return f"GAGAL meminta restart daemon: {body}"
+        return (f"Daemon di-restart (alasan: {reason}). {body}\n"
+                "Tab qoder/antigravity/shell hidup di tmux dan tidak ikut mati. "
+                "Verifikasi: systemctl --user is-active irsofka-ai-workstation.service")
 
     elif name == "send_desktop_notification":
         title = args.get("title", "Irsofka AI Workstation")

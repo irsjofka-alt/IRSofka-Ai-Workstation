@@ -29,6 +29,7 @@ class WaylandActor:
         """Mengambil screenshot layar di Pop!_OS COSMIC Wayland"""
         if self.has_grim:
             subprocess.run(["grim", str(output_path)], check=True)
+            self._prune_shots(output_path.parent)
             return str(output_path)
         elif self.has_cosmic_ss:
             # cosmic-screenshot save
@@ -44,8 +45,26 @@ class WaylandActor:
             if files:
                 latest = files[-1]
                 shutil.copy(latest, output_path)
+                self._prune_shots(output_path.parent)
                 return str(output_path)
         raise RuntimeError("Tidak ditemukan tool screenshot Wayland (butuh grim atau cosmic-screenshot).")
+
+    @staticmethod
+    def _prune_shots(folder, keep=1):
+        """Buang tangkapan lama; hanya `keep` terbaru yang disimpan.
+
+        Tanpa ini logs/ menumpuk puluhan MB setiap kali AI melihat layar, dan file itu
+        tidak dibaca siapa-siapa — current_screen.png sudah jadi salinan tetapnya.
+        """
+        try:
+            shots = sorted(folder.glob("Screenshot*.png"), key=os.path.getmtime, reverse=True)
+            for stale in shots[keep:]:
+                try:
+                    stale.unlink()
+                except OSError:
+                    pass
+        except OSError:
+            pass
 
     def mouse_move(self, x, y):
         """Memindahkan kursor ke koordinat absolut (x, y)"""

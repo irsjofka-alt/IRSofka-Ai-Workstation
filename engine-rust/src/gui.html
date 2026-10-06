@@ -863,6 +863,17 @@
             try {
                 const res = await fetch('/api/stats');
                 const d = await res.json();
+
+                // Muat ulang halaman saat ada permintaan dari luar (tombol GUI, MCP, curl).
+                // Halaman yang meminta reload dirinya sendiri, jadi tidak ada dialog sistem.
+                // Nilai awal diambil tanpa membandingkan supaya tidak reload berulang.
+                if (typeof d.ui_reload_tick === 'number') {
+                    if (window.__uiTick === undefined) {
+                        window.__uiTick = d.ui_reload_tick;
+                    } else if (d.ui_reload_tick !== window.__uiTick) {
+                        window.location.reload();
+                    }
+                }
                 if (d.gpu) document.getElementById('gpu-info').innerText = `${d.gpu.used_mb}/${d.gpu.total_mb} MB (${d.gpu.load}%)`;
                 if (d.ram) document.getElementById('ram-info').innerText = `${d.ram.used_gb}/${d.ram.total_gb} GB`;
                 

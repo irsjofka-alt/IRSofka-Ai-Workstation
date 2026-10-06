@@ -27,6 +27,9 @@ const FALLBACK_HOST: &str = "127.0.0.1";
 const DEFAULT_PORT: u16 = 8999;
 const TABS: [&str; 3] = ["qoder", "antigravity", "shell"];
 
+/// Penghitung permintaan muat-ulang UI; dibaca WebView lewat polling /api/stats.
+static UI_RELOAD_TICK: AtomicU64 = AtomicU64::new(0);
+
 /// Rangkaian koneksi PostgreSQL: bawaan -> config/db_local.json -> variabel lingkungan.
 ///
 /// Password dulu tertanam sebagai konstan waktu-kompilasi di berkas ini. Karena repo
@@ -1194,6 +1197,10 @@ struct TelemetryStats {
     total_turns: i64,
     player: Value,
     db_engine: String,
+    /// Naik tiap ada permintaan muat-ulang UI. WebView membandingkannya saat polling
+    /// /api/stats, sehingga `refreshUI` bisa dipicu dari luar (MCP/perintah), bukan
+    /// hanya dari tombol di dalam halaman itu sendiri.
+    ui_reload_tick: u64,
     tabs: HashMap<String, TabStatus>,
 }
 
@@ -1395,6 +1402,7 @@ async fn run_server(profiles: HashMap<String, TabProfile>) {
         .route("/api/action", post(handle_action))
         .route("/api/screenshot/latest", get(serve_screenshot))
         .route("/api/restart-server", post(restart_server))
+        .route("/api/ui/reload", post(ui_reload))
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list(allowed))
@@ -2069,6 +2077,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<TelemetryStats> {
         total_turns: save.turns,
         player: save.player,
         db_engine: save.engine,
+        ui_reload_tick: UI_RELOAD_TICK.load(Ordering::Relaxed),
         tabs,
     })
 }
@@ -2139,6 +2148,21 @@ async fn handle_action(Json(payload): Json<ActionPayload>) -> Json<Value> {
         _ => {}
     }
     Json(json!({ "status": "ok" }))
+}
+
+/// Permintaan muat ulang tampilan dari luar (MCP, `curl`, atau tombol GUI).
+/// Aman dipanggil otomatis: hanya menaikkan penghitung yang dibaca WebView, tidak menyentuh
+/// PTY maupun tmux, jadi sesi CLI di dalam tab tidak ikut berhenti.
+async fn ui_reload() -> Json<Value> {
+    let tick = UI_RELOAD_TICK.fetch_add(1, Ordering::Relaxed) + 1;
+    spool_event(
+        "ui_reload_requested",
+        "-",
+        format!("Permintaan muat ulang UI (tick={tick})"),
+        proc_cwd(std::process::id()),
+        Some("daemon"),
+    );
+    Json(json!({ "status": "ok", "ui_reload_tick": tick }))
 }
 
 async fn restart_server() -> Json<Value> {

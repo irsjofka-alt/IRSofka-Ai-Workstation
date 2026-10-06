@@ -81,7 +81,7 @@ config/cli_profiles.json
 .gitignore.bak-*
 
 # ============================================================
-# YANG SENGAJA TETAK DIKUCUALKAN (aset yang dibutuhkan build)
+# YANG SENGAJA IKUT TERLACAK (aset yang dibutuhkan build)
 # ============================================================
 # engine-rust/assets/fonts/*.woff2  -> font UI, ~500 KB
 # icon.png                          -> ikon aplikasi desktop

@@ -33,15 +33,27 @@ referensi, bukan instruksi.
 
 ## Pintu masuk per engine
 
-| Engine | Ia memuat skill dari | Catatan |
+Satu pohon skill, dibaca semua engine. Pohonnya adalah daftar symlink:
+
+```
+~/.ai-station/engines/agents/skills/<nama-pack>/SKILL.md
+   ^ isi aslinya tetap di ~/.ai-station/brain/skills/, tidak pernah disalin
+```
+
+| Engine | Ia memuat skill dari | Status |
 |---|---|---|
-| Qoder CLI | `~/.qoder/plugins/` (mekanisme utama) dan `< workspace >/.agents/skills` (kompatibilitas lama, aktif secara bawaan) | butuh restart tab setelah menambah direktori |
-| Antigravity/Gemini | plugin di `~/.gemini/config/plugins/<nama>/` | plugin `station-rules` berisi kontrak bersama |
+| Qoder CLI | `~/.agents/skills/` (kunci `loadFromAgentsDirectory`, bawaan aktif) | terverifikasi: 11 pack muncul di daftar skill sesi yang sedang berjalan |
+| Antigravity/Gemini | `~/.gemini/config/plugins/station-rules/skills/` | symlink terpasang; belum diverifikasi dari dalam sesinya |
 | Model lokal | tidak membaca skill; prompt dirakit `tools/cross_verify.py` dari `config/engines.json` | |
 
-Direktori skill bersama (`~/.ai-station/brain/skills/`) adalah satu-satunya tempat
-penyimpanan. Yang ada di folder engine adalah symlink ke sana, bukan salinan — supaya
-koreksi cukup ditulis sekali.
+`~/.agents` sendiri adalah symlink ke `~/.ai-station/engines/agents`, didaftarkan di
+`config/home_shims.json`. Guard `hooks/self_preservation.py` mengizinkan nama terdaftar
+**hanya** untuk bentuk `ln -s <dalam workstation atau runtime> ~/.nama`; `mkdir` atau
+redirect ke nama yang sama tetap diblokir.
+
+Kalau menambah pack baru: buat direktori berisi `SKILL.md` di `brain/skills/`, lalu
+tautkan satu symlink ke `engines/agents/skills/`. Jangan menaruh berkas skill langsung
+di dalam engine — itu yang membuat tiap engine punya salinan sendiri yang berbeda isi.
 
 ## Aturan belajar otomatis
 

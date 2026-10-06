@@ -1,0 +1,11 @@
+{
+  "version": 1,
+  "_catatan": "Path $HOME yang diizinkan self_preservation.py, dan hanya sebagai symlink ke dalam workstation/runtime. Ini protocol path milik CLI, bukan tempat data: datanya tetap di ~/.ai-station. Menambah nama di sini tidak membuka akses mkdir atau redirect ke home.",
+  "shims": [
+    ".qoder",
+    ".qodersec",
+    ".qmind",
+    ".gemini",
+    ".agents"
+  ]
+}

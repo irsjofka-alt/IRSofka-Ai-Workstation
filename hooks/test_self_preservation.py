@@ -120,6 +120,40 @@ def run(cmd):
     return res.returncode, warned
 
 
+def test_shim_rules():
+    """Pengecualian shim adalah bagian dari keamanan, jadi diuji sebagai fungsi — bukan
+    lewat rc — supaya tidak bergantung pada apa yang kebetulan sudah ada di $HOME asli."""
+    import tempfile
+    import self_preservation as sp
+    with tempfile.TemporaryDirectory() as tmp:
+        home, shims, roots = sp.HOME_DIR, sp.home_shims, sp.SHIM_SOURCE_ROOTS
+        os.mkdir(os.path.join(tmp, ".ai-station"))
+        os.mkdir(os.path.join(tmp, "runtime"))
+        sp.HOME_DIR = tmp
+        sp.home_shims = lambda: {".agents", ".qoder"}
+        sp.SHIM_SOURCE_ROOTS = (os.path.join(tmp, ".ai-station"), os.path.join(tmp, "runtime"))
+        cases = [
+            # (perintah, harus diblokir, alasan)
+            ("ln -sfn ~/.ai-station/engines/agents ~/.agents", False, "symlink shim resmi"),
+            ("ln -s $HOME/.ai-station/engines/agents $HOME/.agents", False, "bentuk $HOME"),
+            ("ln -s ~/.runtime/tool ~/.agents", True, "di luar akar shim yang diizinkan"),
+            ("mkdir -p ~/.agents", True, "shim tidak melegalkan mkdir"),
+            ("echo x > ~/.agents", True, "shim tidak melegalkan redirect"),
+            ("ln -s /tmp/evil-spool ~/.agents", True, "sumber di luar workstation"),
+            ("ln -s ~/.ai-station/../tmp/evil ~/.agents", True, "trik .. keluar dari workstation"),
+            ("ln -s ~/.ai-station/brain ~/.evilname", True, "nama tidak terdaftar"),
+            ("mkdir -p ~/.qoder-cache", True, "mirip shim tapi tidak terdaftar"),
+        ]
+        bad = 0
+        for cmd, want, label in cases:
+            got = bool(sp.creates_new_home_entry(cmd))
+            ok = got == want
+            bad += 0 if ok else 1
+            print(f"  {'ok  ' if ok else 'SALAH'} block={int(got)} mau={int(want)} :: {label}")
+        sp.HOME_DIR, sp.home_shims, sp.SHIM_SOURCE_ROOTS = home, shims, roots
+        return bad
+
+
 def main():
     bad = 0
     for label, cases, want in (("BLOKIR", BLOCK, 2), ("LOLOS", ALLOW, 0), ("PERINGATAN", WARN, 0)):
@@ -131,6 +165,8 @@ def main():
                 ok = rc == 0 and not warned
             print(f"  {'ok ' if ok else 'SALAH'} rc={rc} warn={int(warned)} :: {cmd[:64].replace(chr(10), ' | ')}")
             bad += 0 if ok else 1
+    print("\n--- pengecualian shim $HOME ---")
+    bad += test_shim_rules()
     print(f"\n{bad} hasil tidak sesuai harapan")
     return 1 if bad else 0
 

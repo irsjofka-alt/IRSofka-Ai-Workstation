@@ -98,11 +98,25 @@ menyalinnya ke repo — repo ini publik dan yang diunggah hanya **aturan + templ
 State milik tool tetap milik tool, tapi badannya ada di dalam workstation:
 
 ```
-~/.qoder      -> ~/.ai-station/engines/qoder       (settings, projects, memory, plugins)
-~/.qodersec   -> ~/.ai-station/engines/qodersec    (hasil security scan per sesi)
-~/.qmind      -> ~/.ai-station/engines/qmind       (agent memory)
+~/.qoder      -> ~/.ai-station/engines/qoder       settings.json, projects/, memory/, plugins/
+~/.qodersec   -> ~/.ai-station/engines/qodersec    hasil security scan per sesi
+~/.qmind      -> ~/.ai-station/engines/qmind       agent memory
+~/.agents     -> ~/.ai-station/engines/agents      pohon skill bersama (dibaca semua CLI)
 ~/.gemini     -> shim ke engines/antigravity, antigravity-cli, gemini_config
 ```
+
+Satu pohon skill, beberapa pintu masuk. Yang dibangun sekali dan ditautkan ke semua engine:
+
+```
+~/.ai-station/engines/agents/skills/<pack>/SKILL.md
+   Qoder         : ~/.agents/skills
+   Antigravity   : ~/.gemini/config/plugins/station-rules/skills
+   sumber        : symlink ke brain/skills/, tidak pernah salinan
+```
+
+Bangun/periksa ulang dengan `~/.ai-station/bin/wire_skills.sh [--check]`. Kalau engine
+menemukan skill di tempat lain (folder project, cache miliknya sendiri), itu yang harus
+dipindah ke `brain/` — bukan sebaliknya.
 
 Folder `memory/` punyanya Qoder (`~/.qoder/memory/`) jangan dipakai untuk menyimpan
 pengetahuan — ia kosong dan bukan tempat yang dibaca manusia. Satu-satunya tempat yang

@@ -195,6 +195,10 @@ pub struct TabProfile {
 
 fn default_profiles() -> HashMap<String, TabProfile> {
     let home = home_dir().display().to_string();
+    // Profil ini hanya FALLBACK. Kalau config/cli_profiles.json terhapus, tab tidak boleh
+    // jatuh ke $HOME atau folder proyek acak — keduanya memutus kontrak bahwa semua AI
+    // membaca dokumen dan workspace yang sama.
+    let workspace = format!("{}/Documents/ai-workstation", home);
     let mut m = HashMap::new();
     m.insert(
         "qoder".to_string(),
@@ -204,7 +208,7 @@ fn default_profiles() -> HashMap<String, TabProfile> {
             effort: "xhigh".to_string(),
             context_window: "1000000".to_string(),
             permission_mode: "bypass_permissions".to_string(),
-            workspace: home.clone(),
+            workspace: workspace.clone(),
             continue_session: true,
             extra_args: vec![],
         },
@@ -217,7 +221,7 @@ fn default_profiles() -> HashMap<String, TabProfile> {
             effort: String::new(),
             context_window: String::new(),
             permission_mode: "skip".to_string(),
-            workspace: format!("{}/Documents/antigravity/splendid-hawking", home),
+            workspace: workspace,
             continue_session: true,
             extra_args: vec![],
         },

@@ -246,6 +246,48 @@ CREATION_RE = re.compile(
 # Redirect juga MELAHIRKAN berkas; tanpa ini `echo x > ~/.zshrc` lolos.
 REDIRECT_RE = re.compile(r"(?<![>])>{1,2}\s*[\"']?([^\s\"';&|<>\n]+)")
 
+# Sebagian CLI keras kepala membaca state dari path tetap (`~/.qoder`, `~/.gemini`,
+# `~/.agents`). Yang dilarang sebenarnya bukan path itu, tapi DATANYA yang menumpuk di
+# home. Jadi entri yang terdaftar di config/home_shims.json diizinkan, dan hanya untuk
+# bentuk `ln -s <dalam workstation atau runtime> ~/.nama` — mkdir atau redirect ke nama
+# yang sama tetap diblokir.
+HOME_SHIMS_FILE = os.path.join(STATION, "config", "home_shims.json")
+SHIM_SOURCE_ROOTS = (STATION, os.path.join(HOME_DIR, "runtime"))
+
+
+def home_shims():
+    try:
+        with open(HOME_SHIMS_FILE, encoding="utf-8") as fh:
+            return {str(n) for n in json.load(fh).get("shims", [])}
+    except Exception:  # noqa: BLE001 - tidak ada daftar = tidak ada pengecualian
+        return set()
+
+
+def _token_under_shim_root(token: str) -> bool:
+    """Token path harus benar-benar mendarat di dalam workstation atau ~/runtime.
+    Bentuk `~`, `$HOME`, dan path absolut diperlakukan sama. Sengaja tidak memakai
+    realpath: `~` yang tidak di-expand akan dianggap anak direktori saat ini dan
+    memberi izin palsu."""
+    expanded = token
+    if expanded.startswith("~/"):
+        expanded = HOME_DIR + expanded[1:]
+    elif expanded.startswith("$HOME/"):
+        expanded = HOME_DIR + expanded[len("$HOME"):]
+    if not expanded.startswith("/"):
+        return False
+    norm = os.path.normpath(expanded)
+    return any(norm == root or norm.startswith(root + os.sep)
+               for root in (os.path.normpath(r) for r in SHIM_SOURCE_ROOTS))
+
+
+def is_pinned_shim(command: str, name: str) -> bool:
+    """Namanya terdaftar DAN perintahnya memang symlink ke dalam workstation/runtime."""
+    if name.lstrip(".") not in {str(s).lstrip(".") for s in home_shims()}:
+        return False
+    if not re.search(r"\bln\b[^;&|\n]*-s[^;&|\n]*" + re.escape(name), command):
+        return False
+    return any(_token_under_shim_root(tok) for tok in command.split())
+
 
 def creates_new_home_entry(command: str):
     """Blokir perintah yang MELAHIRKAN entri titik baru setingkat di $HOME.
@@ -272,6 +314,8 @@ def creates_new_home_entry(command: str):
         if name in ("local", "cache", "config", "cargo", "rustup", "bun"):
             # symlink kompatibilitas yang sengaja ditinggalkan; menulis lewat path ini
             # sama dengan menulis ke ~/runtime, jadi bukan pelanggaran
+            continue
+        if is_pinned_shim(command, name):
             continue
         return name
     return None

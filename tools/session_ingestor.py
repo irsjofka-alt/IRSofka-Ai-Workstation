@@ -503,7 +503,7 @@ def stats(store: Store):
 
 def handoff(store: Store):
     rows = store.query(
-        f"SELECT key, category, substr(content,1,700), updated_at FROM world_memory "
+        f"SELECT key, category, substr(content,1,2600), updated_at FROM world_memory "
         f"WHERE key LIKE {ph(1, store.engine)} OR category = {ph(1, store.engine)} "
         f"ORDER BY updated_at DESC LIMIT 6", ("%handoff%", "rule"))
     for key, cat, content, upd in rows:
@@ -594,13 +594,22 @@ def snapshot(store: Store, session_id: str = "", limit: int = 25) -> str:
     if not quests:
         lines.append("- (tidak ada quest IN_PROGRESS)")
 
+    # Repo-nya SATU di ~/.ai-station. Dulu probe diarahkan ke engine-rust/ dan dilabeli
+    # "git engine-rust" — direktori itu tidak punya .git sendiri, jadi git hanya naik ke
+    # repo induk dan hasilnya salah dibaca sebagai repo terpisah.
+    station = HOME / ".ai-station"
+    git_branch = _probe(['git', '-C', str(station), 'rev-parse', '--abbrev-ref', 'HEAD']).strip()[:30]
+    git_head = _probe(['git', '-C', str(station), 'log', '--oneline', '-1']).strip()[:120]
+    dirty_lines = [l for l in _probe(['git', '-C', str(station), 'status', '--porcelain']).splitlines() if l.strip()]
+    contoh = ", ".join(l.split()[-1].split("/")[-1] for l in dirty_lines[:4])
+
     lines += [
         "",
         "## Keadaan mesin saat sesi mati",
-        f"- git engine-rust: `{_probe(['git', '-C', str(HOME / '.ai-station/engine-rust'),
-                                     'log', '--oneline', '-1'])[:120]}`",
-        f"- suntingan belum di-commit: "
-        f"`{_probe(['git', '-C', str(HOME / '.ai-station/engine-rust'), 'status', '--porcelain'])[:300]}`",
+        f"- waktu: `{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}`",
+        f"- repo `~/.ai-station` · branch `{git_branch or '?'}` · `{git_head or 'tidak terdeteksi'}`",
+        f"- belum di-commit: **{len(dirty_lines)} berkas**"
+        + (f" (mis. {contoh})" if dirty_lines else " — pohon kerja bersih"),
         f"- tab tmux: `{_probe(['tmux', '-L', 'irsofka', 'list-sessions'])[:300]}`",
         f"- daemon: `{_probe(['systemctl', '--user', 'is-active',
                              'irsofka-ai-workstation.service'])[:60]}`",

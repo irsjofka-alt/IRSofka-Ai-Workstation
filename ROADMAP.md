@@ -55,11 +55,13 @@ Selesai:
 - `local_llm.py` — tiga penjaga pelepasan GPU + **gerbang VRAM** dengan fallback CPU/RAM.
 
 Belum:
-- ⬜ **Model lokal belum di-pull.** Ollama 0.35.1 terpasang dan service-nya aktif dengan GPU
-  terlihat, tapi `ollama list` kosong — seluruh jalur lokal jadi `UNAVAILABLE` (jujur, bukan
-  `COMPLETED`). Setelah pull, nama tag di `engines.json` (`qwen3.5:4b`, `qwen3.5:9b`,
-  `phi4:14b`) harus dicocokkan dengan `ollama list`; jangan dipakai apa adanya.
-- ⬜ Uji beban: verifikasi saat sesi lain aktif, dan pastikan `ollama ps` kosong sesudahnya.
+- ⬜ **Tier `verify` belum terpasang.** Yang sudah di-pull dan diuji hanya `qwen3.5:4b`
+  (3,3 GB, tier `light`/`local-fallback`). `qwen3.5:9b` terpotong di 39% karena batas waktu
+  perintahnya salah hitung; `phi4:14b` belum dimulai. Nama tag ketiganya sudah dipastikan ADA
+  di registry Ollama (manifest HTTP 200), jadi tinggal unduh.
+- ⬜ Uji beban lintas engine yang sesungguhnya: verifikasi berjalan sambil ComfyUI/Unity
+  memakai GPU, dan buktikan gerbang VRAM menolak pada saat itu. Yang teruji baru
+  "sesi AI lain aktif", bukan "aplikasi GPU aktif".
 - ⬜ Monitor kuota Antigravity di GUI (`/api/usage` sudah menyediakan datanya).
 
 ### Selesai ronde ini (6 Okt sore)
@@ -83,6 +85,16 @@ Belum:
   `~/runtime/backups/db/…sqlite-stale-20261006` setelah dipastikan 0 barisnya tidak ada di
   PostgreSQL; tersimpannya file itu memberi peluang sesi fallback membaca salinan basi sebagai
   keadaan sekarang.
+- ✅ **Engine lokal teruji terhadap model nyata untuk pertama kalinya.** `qwen3.5:4b` di-pull
+  (3,3 GB) lalu dijalankan lewat dispatcher: `COMPLETED` dalam 71,4 s, `ollama ps` kosong
+  sesudahnya, dan VRAM benar-benar kembali (10.882 → 10.979 MiB bebas). Cabang penolakan ikut
+  diuji dengan memaksa kebutuhan 999999 MiB — ia menolak dan menyebut pemakai GPU-nya.
+- ✅ **Handoff berhenti melaporkan state git yang salah.** `snapshot()` mem-probe
+  `engine-rust/` dan melabelinya "git engine-rust", padahal direktori itu tidak punya repo
+  sendiri — git naik ke repo induk, sehingga sesi berikutnya membaca keadaan yang keliru.
+  Sekarang probe ke `~/.ai-station` dengan branch, cap waktu, dan hitungan berkas yang belum
+  di-commit. Bagian "Keadaan mesin" juga tidak lagi terpotong: pembaca `handoff` membatasi isi
+  pada 700 karakter — tepat di depan blok terpenting.
 
 ## F7 — Studio kreatif ⬜
 

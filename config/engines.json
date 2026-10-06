@@ -1,0 +1,69 @@
+{
+  "_comment": "Registry mesin AI workstation. Menambah perangkat cukup di sini — cross_verify.py dan local_llm.py membacanya, tidak perlu ubah kode. Nilai 'kind': pane (CLI hidup di tab tmux), cli (spawn proses baru), ollama (model lokal).",
+
+  "engines": {
+    "gemini": {
+      "kind": "pane",
+      "tab": "antigravity",
+      "role": "reviewer",
+      "model": "gemini-3.8-flash-high",
+      "breath": "sedang — akun PRO, kuota terbatas, hemat untuk pemeriksaan penting",
+      "note": "Punya tool sendiri: bisa grep/read kode Anda sebelum memberi verdict."
+    },
+    "qoder": {
+      "kind": "pane",
+      "tab": "qoder",
+      "role": "builder",
+      "model": "Qwen3.8-Flash",
+      "breath": "panjang — promo 0 poin, konteks 1M, ini yang jadi napas utama workstation",
+      "note": "Kalau Qoder kembali berbayar, pindahkan role builder ke local tier 'execute'."
+    },
+    "local": {
+      "kind": "ollama",
+      "role": "validator",
+      "tier": "verify",
+      "model": "qwen3.5:9b",
+      "min_free_mib": 6500,
+      "keep_alive": 0,
+      "breath": "tidak terbatas (offline) tapi dibatasi VRAM 12 GB",
+      "note": "Wajib lepas GPU: keep_alive=0 + 'ollama stop' + verifikasi VRAM kembali."
+    },
+    "local-heavy": {
+      "kind": "ollama",
+      "role": "deep-reviewer",
+      "tier": "heavy",
+      "model": "phi4:14b",
+      "min_free_mib": 10500,
+      "keep_alive": 0,
+      "breath": "hanya saat Unity/ComfyUI tidak berjalan",
+      "note": "Penalaran berat. Gerbang VRAM akan menolaknya bila ada aplikasi GPU lain."
+    },
+    "local-fallback": {
+      "kind": "ollama",
+      "role": "emergency",
+      "tier": "light",
+      "model": "qwen3.5:4b",
+      "min_free_mib": 3000,
+      "keep_alive": 0,
+      "breath": "muat kapan saja, ~2,5 GB",
+      "note": "Dipakai hanya saat Qoder dan Antigravity sama-sama tidak tersedia."
+    }
+  },
+
+  "local_tiers": {
+    "light":  { "model": "qwen3.5:4b",  "min_free_mib": 3000,
+                "use": "pemeriksa cepat & cadangan darurat; ~2,5 GB" },
+    "verify": { "model": "qwen3.5:9b",  "min_free_mib": 6500,
+                "use": "pemeriksa kode sehari-hari; ~5,5 GB, masih menyisakan ruang untuk Unity" },
+    "heavy":  { "model": "phi4:14b",    "min_free_mib": 10500,
+                "use": "penalaran berat; ~9 GB. HANYA saat tidak ada aplikasi GPU lain." }
+  },
+
+  "policy": {
+    "verify_code_when_unsure": ["gemini", "local-heavy", "local"],
+    "when_gemini_quota_low":   ["local", "local-heavy"],
+    "when_qoder_paid_again":   ["local-fallback"],
+    "gpu_release": "always",
+    "never_load_if": "free_vram < min_free_mib"
+  }
+}

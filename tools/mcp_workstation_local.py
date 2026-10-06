@@ -168,6 +168,46 @@ TOOLS = [
             },
             "required": ["tab", "text"]
         }
+    },
+    {
+        "name": "ask_peer",
+        "description": "Tinggalkan permintaan verifikasi untuk AI LAIN di workstation ini lewat tabel bersama ai_message. Kedua CLI memakai server MCP yang sama, jadi Qoder bisa meminta pendapat Gemini dan sebaliknya. Balasnya dibaca dengan check_messages.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "to": {"type": "string", "enum": ["qoder", "antigravity", "any"], "description": "mesin tujuan"},
+                "from_engine": {"type": "string", "description": "siapa kamu: qoder atau antigravity"},
+                "topic": {"type": "string", "description": "judul singkat"},
+                "body": {"type": "string", "description": "yang perlu diperiksa + berkas/baris terkait"},
+                "reply_to": {"type": "integer", "description": "id pesan yang dibalas (opsional)"}
+            },
+            "required": ["to", "from_engine", "body"]
+        }
+    },
+    {
+        "name": "check_messages",
+        "description": "Baca kotak masuk AI di workstation ini (tabel ai_message). Pakai untuk menjawab permintaan verifikasi dari mesin lain, atau melihat apakah pasanganmu sudah membalas.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "for_engine": {"type": "string", "enum": ["qoder", "antigravity", "all"], "description": "kotak masuk siapa"},
+                "only_open": {"type": "boolean", "description": "hanya yang belum dijawab (default true)"},
+                "limit": {"type": "integer", "description": "berapa pesan (default 10)"}
+            },
+            "required": ["for_engine"]
+        }
+    },
+    {
+        "name": "resolve_message",
+        "description": "Tandai sebuah pesan ai_message sudah dijawab, supaya kotak masuk tidak penuh oleh permintaan basi.",
+        "inputSchema": {
+            "type": "object",
+            "properties": {
+                "message_id": {"type": "integer"},
+                "status": {"type": "string", "enum": ["ANSWERED", "DISPUTED", "CANCELLED"]}
+            },
+            "required": ["message_id", "status"]
+        }
     }
 ]
 
@@ -272,6 +312,87 @@ def handle_call_tool(name, args):
             return f"gagal mengirim ke tab '{tab}': {exc.stderr.strip()[:200] if exc.stderr else exc}"
         return (f"Terkirim ke tab {tab}{' + Enter' if submit else ''}. "
                 f"Baca jawabannya dengan read_terminal(tab='{tab}').")
+
+    elif name == "ask_peer":
+        to = args.get("to") or "any"
+        frm = (args.get("from_engine") or "").strip()
+        body = (args.get("body") or "").strip()
+        if not frm or not body:
+            return "DITOLAK: 'from_engine' dan 'body' wajib diisi."
+        try:
+            conn, engine = get_db_connection()
+            cur = conn.cursor()
+            ph = db_ph(engine)
+            cur.execute(
+                f"INSERT INTO ai_message (from_engine, to_engine, topic, body, reply_to) "
+                f"VALUES ({ph}, {ph}, {ph}, {ph}, {ph}) RETURNING id"
+                if engine == "POSTGRESQL" else
+                f"INSERT INTO ai_message (from_engine, to_engine, topic, body, reply_to) "
+                f"VALUES ({ph}, {ph}, {ph}, {ph}, {ph})",
+                (frm[:32], to[:32], (args.get("topic") or "")[:120], body,
+                 args.get("reply_to")))
+            mid = None
+            try:
+                row = cur.fetchone()
+                mid = row[0] if row else None
+            except Exception:  # noqa: BLE001
+                mid = None
+            conn.commit()
+            conn.close()
+            return (f"Pesan terkirim ke {to} (id={mid}). Balas dengan check_messages "
+                    f"lagi nanti, lalu resolve_message(id, 'ANSWERED').")
+        except Exception as exc:  # noqa: BLE001
+            return f"GAGAL mengirim pesan: {exc}"
+
+    elif name == "check_messages":
+        who = args.get("for_engine") or "all"
+        only_open = args.get("only_open", True)
+        limit = int(args.get("limit") or 10)
+        try:
+            conn, engine = get_db_connection()
+            cur = conn.cursor()
+            ph = db_ph(engine)
+            q = (f"SELECT id, ts, from_engine, topic, left(body,600), status FROM ai_message "
+                 f"WHERE to_engine = {ph} OR to_engine = 'any'")
+            params = [who]
+            if who == "all":
+                q = ("SELECT id, ts, from_engine, topic, left(body,600), status FROM ai_message")
+                params = []
+            if only_open:
+                q += f" AND status = {ph}"
+                params.append("OPEN")
+            q += f" ORDER BY id DESC LIMIT {ph}"
+            params.append(limit)
+            cur.execute(q, tuple(params))
+            rows = list(cur.fetchall())
+            conn.close()
+            if not rows:
+                return f"Kotak masuk {who} kosong" + (" (tidak ada yang OPEN)" if only_open else "") + "."
+            out = [f"{len(rows)} pesan untuk {who}:"]
+            for rid, ts, frm, topic, body, status in reversed(rows):
+                out.append(f"  #{rid} [{str(ts)[:16]}] dari {frm} — {topic or '(tanpa judul)'} [{status}]")
+                for line in (body or "").splitlines()[:12]:
+                    out.append(f"      {line}")
+            return "\n".join(out)
+        except Exception as exc:  # noqa: BLE001
+            return f"GAGAL membaca kotak masuk: {exc}"
+
+    elif name == "resolve_message":
+        mid = args.get("message_id")
+        status = args.get("status") or "ANSWERED"
+        if not mid:
+            return "DITOLAK: message_id wajib diisi."
+        try:
+            conn, engine = get_db_connection()
+            cur = conn.cursor()
+            cur.execute(f"UPDATE ai_message SET status = {db_ph(engine)} WHERE id = {db_ph(engine)}",
+                        (status[:16], int(mid)))
+            conn.commit()
+            n = cur.rowcount
+            conn.close()
+            return f"Pesan #{mid} ditandai {status} ({n} baris)."
+        except Exception as exc:  # noqa: BLE001
+            return f"GAGAL memperbarui pesan: {exc}"
 
     elif name == "send_desktop_notification":
         title = args.get("title", "Irsofka AI Workstation")

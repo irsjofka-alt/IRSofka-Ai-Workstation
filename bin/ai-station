@@ -29,6 +29,9 @@ case "$1" in
   handoff)
     python3 "$SCRIPT_DIR/tools/session_ingestor.py" handoff
     ;;
+  verify)
+    python3 "$SCRIPT_DIR/tools/cross_verify.py" "${@:2}"
+    ;;
   snapshot)
     python3 "$SCRIPT_DIR/tools/session_ingestor.py" snapshot "${2:-25}"
     ;;
@@ -51,6 +54,7 @@ case "$1" in
     echo "  incidents               Tampilkan daftar tracking error & frekuensinya"
     echo "  recall [N]              Riwayat N aksi AI terakhir dari SQL (prompt, perintah shell, tool)"
     echo "  handoff                 Baca serah-terima pekerjaan tertunda (world_memory + quest aktif)"
+    echo "  verify <mesin> [--file P|teks]  Minta AI lain memeriksa pekerjaan AI ini (gemini|qoder|local)"
     echo "  snapshot [N]            Tulis handoff mekanis sekarang (dipanggil otomatis saat sesi mati)"
     echo "  recovery [N]            recall + handoff sekaligus, untuk memulihkan konteks sesi baru"
     echo "  logstats                Statistik isi action_log & save-state"

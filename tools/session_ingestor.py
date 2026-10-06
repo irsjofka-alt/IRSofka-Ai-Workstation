@@ -662,11 +662,95 @@ def ingest_station_spool(store: Store) -> int:
     return count
 
 
+def error_signature(command_text: str, exit_code) -> str:
+    """Signature stabil dari perintah gagal: nama alat + argumen pendek, TANPA jejak path.
+
+    Normalisasi ini yang membuat self-healing mungkin terjadi. Kalau signature memuat path
+    lengkap, `cd ~/.ai-station/tools && python3 ...` dan variasi lain dari kegagalan yang
+    sama tercatat sebagai insiden berbeda, ambang 5x tidak pernah tercapai, dan daftar
+    insiden berubah menjadi sampah yang tidak dibaca siapa pun.
+    """
+    text = " ".join(str(command_text or "").split())
+    # lewati pengantar yang bukan inti kegagalan (cd/export/source/set) dan potong operator
+    for chunk in re.split(r"&&|;|\||\n", text):
+        chunk = chunk.strip()
+        if not chunk or re.match(r"^(cd|export|source|\.)\b", chunk):
+            continue
+        text = chunk
+        break
+    parts = []
+    for tok in text.split(" "):
+        if len(parts) >= 3:
+            break
+        if not tok or tok.startswith("-") or tok.startswith("2>") or tok in (">", ">>", "|"):
+            continue
+        if "/" in tok or tok.startswith("~"):
+            tok = tok.rstrip("/").split("/")[-1]      # path -> nama terakhir
+        tok = re.sub(r"[^0-9A-Za-z_.]", "", tok)
+        if tok:
+            parts.append(tok[:20])
+    head = "_".join(parts) or "perintah"
+    return f"exit{exit_code}:{head}"[:255]
+
+
+def sweep_failures(store: Store) -> int:
+    """Ubah kegagalan perintah yang sudah terekam menjadi insiden.
+
+    Ini jalur yang menghubungkan 'AI gagal' menjadi 'AI belajar': incident_recorder
+    membentuk skill otomatis pada ambang 5x, tapi selama ini tidak ada yang pernah
+    memanggilnya. Event shell.finished dari CLI tidak membawa teks perintahnya, jadi
+    pemasangan dilakukan di SQL: perintah terdekat sebelum exit_code != 0 pada sesi sama.
+    """
+    try:
+        from incident_recorder import record_incident
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sweep] incident_recorder tidak tersedia: {exc}", file=sys.stderr)
+        return 0
+
+    last = store.cursor_get("incident_sweep", "action_log") or 0
+    # CATATAN: ph(n) menghasilkan n placeholder yang digabung, BUKAN placeholder ke-n.
+    rows = store.query(
+        f"SELECT id, session_id, exit_code, summary FROM action_log "
+        f"WHERE kind = 'command_exit' AND exit_code IS NOT NULL AND exit_code <> 0 "
+        f"AND id > {ph(1, store.engine)} ORDER BY id ASC LIMIT {ph(1, store.engine)}",
+        (last, 200))
+    if not rows:
+        return 0
+
+    newest = last
+    for rid, sid, exit_code, summary in rows:
+        cmd = ""
+        if sid:
+            found = store.query(
+                f"SELECT summary FROM action_log WHERE kind = 'command' "
+                f"AND session_id = {ph(1, store.engine)} AND id < {ph(1, store.engine)} "
+                f"ORDER BY id DESC LIMIT 1", (sid, rid))
+            cmd = found[0][0] if found else ""
+        if not cmd:
+            cmd = summary or ""
+        sig = error_signature(cmd, exit_code)
+        try:
+            record_incident(sig, f"perintah gagal (exit {exit_code}): {str(cmd)[:200]}",
+                            "Periksa pesan error pada baris ini, lalu putuskan apakah "
+                            "perlu skill baru atau cukup koreksi sekali jalan.")
+        except Exception as exc:  # noqa: BLE001
+            print(f"[sweep] gagal mencatat insiden {sig}: {exc}", file=sys.stderr)
+        newest = max(newest, int(rid))
+    store.cursor_set("incident_sweep", "action_log", newest)
+    return len(rows)
+
+
 def run_once(store: Store, meta: dict) -> int:
     n = ingest_qoder_segments(store, meta)
     n += ingest_qoder_transcripts(store, meta)
     n += ingest_antigravity(store)
     n += ingest_station_spool(store)
+    # Setelah baris kegagalan masuk, ubah menjadi insiden (satu siklus di belakang,
+    # supaya perintah pemicunya sudah pasti ada di tabel).
+    try:
+        sweep_failures(store)
+    except Exception as exc:  # noqa: BLE001
+        print(f"[sweep] dilewati: {exc}", file=sys.stderr)
     return n
 
 

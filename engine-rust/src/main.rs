@@ -1581,7 +1581,11 @@ async fn cli_run(
     let target_cli = payload.target_cli.unwrap_or_else(|| "qoder".to_string());
 
     if let Some(session) = state.sessions.get(&target_cli) {
-        session.send_bytes(format!("{}\n", prompt).as_bytes());
+        // Enter di terminal adalah \\r (CR), BUKAN \\n. TUI seperti Antigravity/Qoder membaca
+        // stdin dalam raw mode dan hanya mengenali \\r sebagai tombol Enter; dengan \\n teksnya
+        // masuk ke kotak input tapi tidak pernah disubmit — kegagalan dispatch yang tampak
+        // seperti "CLI tidak menjawab" padahal promptnya cuma menggantung tanpa dikirim.
+        session.send_bytes(format!("{}\r", prompt).as_bytes());
     }
     let cwd = live_tab_cwd(&state.sessions, &target_cli);
     spool_event(

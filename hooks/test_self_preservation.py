@@ -50,6 +50,9 @@ BLOCK = [
     # pengupasan pesan commit TIDAK boleh jadi lubang bypass: perintah sungguhan
     # setelahnya tetap tertangkap
     'git commit -m "pesan aman" && mkdir ~/.zshrc',
+    # eksekusi sungguhan tetap harus kena, meski kata lookup sudah dikupas
+    'dropdb irsofka_ai_workstation',
+    'dropdb --if-exists station_restore_test',
     'psql -c "DROP TABLE world_memory"',
     'psql -c "TRUNCATE TABLE action_log"',
     'psql -c "delete from action_log"',
@@ -91,6 +94,10 @@ ALLOW = [
     # pesan commit adalah narasi, bukan perintah: menyebut path tidak boleh memicu guard
     'git commit -m "contoh: echo x > ~/.zshrc sekarang diblokir, dan rm -rf brain juga"',
     'git commit -q -m \'tambah aturan: jangan mkdir ~/.aws\'',
+    # menanyakan keberadaan biner penghancur bukan tindakan penghancuran
+    'command -v pg_dump createdb dropdb psql',
+    'which dropdb',
+    'man dropdb',
 ]
 
 WARN = [

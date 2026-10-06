@@ -180,8 +180,24 @@ def strip_commit_messages(command: str) -> str:
     return COMMIT_MSG_RE.sub("-m <pesan>", command)
 
 
+LOOKUP_RE = re.compile(
+    r"\b(?:command\s+(?:-[vV]\s+)?|which\s+|type\s+-a\s+|whereis\s+|apropos\s+|man\s+)"
+    r"([A-Za-z0-9_ ./-]+)"
+)
+
+
+def strip_lookup_contexts(command: str) -> str:
+    """Buang argumen pencarian perintah (`command -v X`, `which X`, `man X`).
+
+    `command -v dropdb` hanya MENANYA apakah binernya ada; ia tidak menjalankan apa pun.
+    Tanpa pengupasan ini guard memblokir langkah diagnosis paling dasar, dan guard yang
+    menghalangi diagnosis hanya akan dimatikan.
+    """
+    return LOOKUP_RE.sub(" ", command)
+
+
 def scrub(command: str) -> str:
-    return strip_comments(strip_commit_messages(strip_heredocs(command)))
+    return strip_lookup_contexts(strip_comments(strip_commit_messages(strip_heredocs(command))))
 
 
 def truncates_memory_file(command: str):

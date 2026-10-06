@@ -552,5 +552,32 @@ def main():
             sys.stdout.write(json.dumps(res) + "\n")
             sys.stdout.flush()
 
+        else:
+            # BUG YANG MEMBUAT ANTIGRAVITY TIDAK MELIHAT SATU PUN TOOL:
+            # klien mengirim request dengan "id" dan BERHARAP ada jawaban. Kalau kita diam,
+            # ia menunggu sampai handshake timeout, lalu menganggap server ini gagal.
+            # Qoder tidak kena karena tidak memanggil metode di luar tools/*, Antigravity memanggil.
+            if msg_id is None:
+                continue  # notifikasi: memang tidak boleh dibalas
+            if method == "ping":
+                result = {}
+            elif method == "resources/list":
+                result = {"resources": []}
+            elif method == "resources/templates/list":
+                result = {"resourceTemplates": []}
+            elif method == "prompts/list":
+                result = {"prompts": []}
+            elif method in ("resources/subscribe", "resources/unsubscribe", "logging/setLevel"):
+                result = {}
+            else:
+                result = None
+            if result is not None:
+                res = {"jsonrpc": "2.0", "id": msg_id, "result": result}
+            else:
+                res = {"jsonrpc": "2.0", "id": msg_id,
+                       "error": {"code": -32601, "message": f"method not found: {method}"}}
+            sys.stdout.write(json.dumps(res) + "\n")
+            sys.stdout.flush()
+
 if __name__ == "__main__":
     main()

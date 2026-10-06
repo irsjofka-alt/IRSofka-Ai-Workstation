@@ -56,7 +56,7 @@ BLOCK = [
     'psql -c "DROP TABLE world_memory"',
     'psql -c "TRUNCATE TABLE action_log"',
     'psql -c "delete from action_log"',
-    'echo x > ~/.ai-station/brain/PROJECT_SUMMARY_IRSOFKA_AI_WORKSTATION.md',
+    'echo x > ~/.ai-station/brain/schema_postgresql.sql',
     'echo x >> /dev/null; echo y > /home/irsofka/.ai-station/logs/handoff_deploy_1125.md',
     'git checkout .',
     # berbahaya SESUNGGUHNYA tetap tertangkap walau ada heredoc di depannya

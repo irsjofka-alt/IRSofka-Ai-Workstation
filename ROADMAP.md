@@ -1,75 +1,92 @@
-# 🗺️ AI Workstation Development Roadmap: Status & Realisasi Penuh
+# 🗺️ Roadmap — Irsofka AI Workstation
 
-Dokumen ini adalah peta jalan (roadmap) pengembangan **Irsofka AI Workstation Hub** di Pop!_OS 24.04 LTS COSMIC Desktop.
+Status terakhir: **6 Oktober 2026, 15:4x WIB.** Setiap tanda di bawah punya bukti yang bisa
+diuji ulang; yang belum teruji ditandai jelas. Dokumen ini menggantikan `ai_workstation_master_plan.md`
+dan `PROJECT_SUMMARY_IRSOFKA_AI_WORKSTATION.md` yang sudah digabung ke sini + `README.md`.
 
----
+## Fase
 
-## 🎯 Target Akhir (The End State - TERCAPAI 100% ✓)
-
-Aplikasi GUI Desktop Native mandiri di Pop!_OS COSMIC:
-1. **Live Embedded Multi-Viewport Terminal (xterm.js + Portable-PTY)**: Antigravity CLI, Qoder CLI, dan Bash Shell berjalan interaktif secara berdampingan dengan streaming proses berpikir (*live thought process / reasoning tokens*).
-2. **Live Telemetry & Resource Bar**: Meteran VRAM NVIDIA RTX 3060, CPU/RAM, active workspace, dan status database.
-3. **Mata & Tangan (Local Machine MCP & Wayland Actor)**: Pengambilan screenshot layar COSMIC dan kontrol audio/notifikasi melalui MCP server `local-workstation`.
-4. **PostgreSQL 16 & SQLite Game-Like Save State**: Pelacakan level skill, quest log, dan turn-by-turn history.
-5. **100% Native Rust Window (Jalur A: Tao + Wry + WebKitGTK 4.1)**: Mandiri tanpa ketergantungan pada browser web (Brave Flatpak dieliminasi total).
-6. **Sesi kerja resmi aktif berjalan di dalam aplikasi desktop native ini.**
-
----
-
-## 🗺️ Status Tahapan Eksekusi
-
-```mermaid
-flowchart TD
-    P1["Fase 1: Global Brain Foundation (SELESAI ✓)"] --> P2["Fase 2: Terminal PTY Engine Rust (SELESAI ✓)"]
-    P2 --> P3["Fase 3: Telemetry & PostgreSQL State (SELESAI ✓)"]
-    P3 --> P4["Fase 4: Standalone Native Rust Window (SELESAI ✓)"]
-    P4 --> P5["Fase 5: Operasional Penuh & Game-Dev Swarm (AKTIF ✓)"]
+```
+F1 Fondasi Brain & Rules      ✅ selesai
+F2 Mesin Terminal PTY Rust    ✅ selesai
+F3 Telemetri & State SQL      ✅ selesai
+F4 Jendela Native Rust        ✅ selesai
+F5 Integritas Memori & Sesi   ✅ selesai 6 Okt (baru)
+F6 Ekosistem Verifikasi Silang 🟡 berjalan
+F7 Studio Kreatif (Unity/ComfyUI) ⬜ belum mulai
 ```
 
----
+## F1–F4 — fondasi (selesai, diverifikasi ulang 6 Okt)
 
-### 🟢 Fase 1: Fondasi Global Brain & Rules (SELESAI ✓)
-- [x] Struktur direktori terisolasi `~/.ai-station/`.
-- [x] Sentralisasi memori dan skill modular (1 filter = 1 file Markdown di `brain/skills/`).
-- [x] Sistem self-healing: Error insiden >= 5x otomatis menjadi skill baru.
-- [x] CLI hub global `ai-station` di PATH terminal.
+Daemon Rust `irsofka-station-core` dual-mode (`--headless` + jendela tao/wry), tiga tab
+interaktif, telemetri RTX 3060/RAM/disk, PostgreSQL 16 dengan fallback SQLite otomatis,
+server MCP hardware, tanpa ketergantungan browser eksternal.
 
----
+## F5 — Integritas memori & sesi ✅ (dikerjakan & diuji 6 Okt)
 
-### 🟢 Fase 2: Terminal PTY Engine & Dual Native Interactive CLI (SELESAI ✓)
-- [x] **Rust Native PTY Core**: Biner Rust terkompilasi menggunakan `portable-pty` dan `tokio` multi-thread runtime.
-- [x] **Multi-Viewport Independent Terminal**: 3 container DOM terpisah (`#term-qoder`, `#term-antigravity`, `#term-shell`) dengan `xterm.js` rendering 60 FPS.
-- [x] **Dual Native Interactive REPL**:
-  - Tab 1: Qoder CLI (Qwen 1M Context • 0 Pts) dengan live streaming `Thinking... [reasoning tokens]`.
-  - Tab 2: Antigravity CLI (Gemini 3.8 Flash High) dengan live streaming `▾ Thought Process`.
-  - Tab 3: COSMIC Shell (`bash -i`).
-- [x] **Auto-Recovery Loop**: Sesi CLI yang ditutup otomatis dihidupkan kembali dalam 1 detik.
-- [x] **Circular History Buffer**: Replay buffer 128 KB via `/api/term/history` mencegah layar blank saat berpindah tab.
-- [x] **PTY Dynamic Resizing**: Endpoint `/api/term/resize` menyesuaikan grid terminal dengan resolusi jendela.
+Masalah awal: dua keluhan pengguna — sesi tereset tiap restart daemon, dan composer Enter
+mengirim alih-alih turun baris. Akar tunggal: build baru tidak pernah dipasang; restart
+service bukan install build baru.
 
----
+Yang selesai dan **terbukti**:
 
-### 🟢 Fase 3: Telemetry Bar, Quota & Database Save State (SELESAI ✓)
-- [x] Header telemetry bar: Deteksi versi Qoder CLI (`v1.1.65`) dan AGY CLI (`v1.2.17`).
-- [x] Monitor hardware real-time: NVIDIA RTX 3060 VRAM, RAM sistem (32 GB), dan disk NVMe.
-- [x] Database Enterprise: PostgreSQL 16 berjalan di port `5432` (`irsofka_ai_workstation`) dengan tabel `player_profile`, `skills_inventory`, `quest_tasks`, `world_memory`, dan `session_turns`.
-- [x] Dual-engine fallback: Auto-fallback ke SQLite (`~/.ai-station/brain/workstation.db`) jika PostgreSQL offline.
+| Perbaikan | Bukti |
+|---|---|
+| Composer: Enter = baris baru, Ctrl+Enter = kirim, Ctrl+Shift+Enter = per baris | `curl :8999/` memuat `<textarea>` + `handleKey()` dengan `e.ctrlKey` |
+| Tab pindah ke tmux di luar cgroup daemon | `/api/workspace` semua tab `backend:"tmux"`; daemon baru **mengadopsi** pane (`tmux_adopt`, `pane_pid` tetap) |
+| Sesi tahan restart | 5× restart daemon pada 6 Okt, `session_id` tetap `63313f58`; cgroup shell pindah dari unit daemon ke `irsofka-tabs.service` |
+| `--continue` sebagai jaring kedua | `cli_profiles.json` `continue_session:true` → `run_tab.sh` menambah flag |
+| Enter dikirim sebagai `\r`, bukan `\n` | bug lama: prompt masuk kotak input tapi **tidak pernah disubmit** — akar kegagalan dispatch Antigravity |
+| Handoff otomatis | hook `SessionEnd` + `PreCompact` → `world_memory` + `brain/memory/projects/handoff_auto_*.md` |
+| Guard anti-bunuh-diri | `hooks/self_preservation.py`, **57/57** uji lulus |
+| Self-healing benar-benar hidup | `incident_log` dulu 0 baris; kini 16 kegagalan nyata → 14 insiden, satu capai 7× → skill `auto_learned=TRUE` terbentuk |
+| Dispatcher jujur | `COMPLETED` palsu untuk engine absen → kini `UNAVAILABLE`; tulis lewat adapter PostgreSQL, bukan SQLite mentah |
+| Cadangan + uji restore | timer tiap jam; `station_restore.sh --check` memulihkan ke DB sementara: 2.973 `action_log`, 20 `world_memory`, 16 quest |
+| Kredensial dicabut dari sumber | `db_local.json` (di-ignore) + env; 0 password di seluruh riwayat git publik |
+| `$HOME` dirapikan | 4,7 GB ke `~/runtime`; guard menolak entri baru di `$HOME` |
 
----
+## F6 — Ekosistem verifikasi silang 🟡
 
-### 🟢 Fase 4: Standalone Native Rust Desktop Window - Jalur A (SELESAI ✓)
-- [x] **Pemberantasan Dependensi Browser**: Ketergantungan pada Brave Browser Flatpak dihapus 100%.
-- [x] **Kompilasi Window Manager Rust**: Menggunakan pustaka Rust `tao` (v0.37) dan `wry` (v0.57) berbasis `webkit2gtk-4.1` dan `gtk+-3.0`.
-- [x] **Biner Mandiri 4.9 MB**: `~/.ai-station/bin/irsofka-station-core` dapat berjalan sebagai background daemon (`--headless`) maupun native window.
-- [x] **Launcher & Desktop Entry**:
-  - `~/.ai-station/bin/launch_gui.sh` membuka biner native secara langsung.
-  - Shortcut desktop `~/Desktop/Irsofka AI Workstation.desktop` dan menu aplikasi Pop!_OS COSMIC terhubung ke native launcher dengan `icon.png`.
-- [x] **Wayland Native**: Tampilan berjalan halus dan tajam di Pop!_OS COSMIC Wayland session.
+Selesai:
+- `ai-station verify` — Qoder ↔ Gemini, dua arah. Gemini terbukti **menolak klaim salah**
+  dan mengiyakan klaim benar, dengan merujuk baris kode (`main.rs:1384`, `1426-1431`).
+- `config/engines.json` — registry berbasis konfigurasi; menambah mesin tanpa ubah kode.
+- Kotak pesan `ai_message` + MCP `ask_peer` / `check_messages` / `resolve_message`.
+- `local_llm.py` — tiga penjaga pelepasan GPU + **gerbang VRAM** dengan fallback CPU/RAM.
 
----
+Belum:
+- ⬜ **Ollama belum terpasang.** Seluruh jalur lokal baru teruji logikanya, bukan terhadap
+  model nyata. Perintahnya ada di `README.md`; setelah terpasang, nama tag model di
+  `engines.json` (`qwen3.5:4b`, `qwen3.5:9b`, `phi4:14b`) harus dicocokkan dengan
+  `ollama list`.
+- ⬜ Uji beban: verifikasi saat sesi lain aktif, dan pastikan `ollama ps` kosong sesudahnya.
+- ⬜ Monitor kuota Antigravity di GUI (`/api/usage` sudah menyediakan datanya).
+- ⬜ `parallel_tri_engine.py` masih memakai daftar engine lamanya sendiri; seharusnya baca
+  `engines.json` dan tier `local_llm`.
 
-### 🚀 Fase 5: Operasional Penuh & Game-Dev Tri-Engine Swarm (AKTIF ✓)
-- [x] **Toolset Centralized**: Seluruh skrip pendukung terkonsolidasi di `~/.ai-station/toolset/`.
-- [x] **Local Machine MCP**: Server MCP hardware `toolset/mcp_workstation_local.py` aktif di kedua CLI.
-- [x] **Tri-Engine Concurrency**: Siap menjalankan 3 tugas sekaligus (Antigravity Arsitek GDD + Qoder Heavy Code Synthesizer 1M + Ollama RTX 3060 offline).
-- [x] **Lingkungan Kerja Matang**: Studio mandiri telah aktif berjalan di desktop pengguna.
+## F7 — Studio kreatif ⬜
+
+Belum ada sama sekali: `~/Creative-Studio` tidak ditemukan, ComfyUI belum terpasang.
+Rencana sinkronisasi: ComfyUI membuka API HTTP di `:8188`, jadi titik tempelnya jelas —
+satu tool MCP `comfy_workflow` yang **memakai gerbang VRAM yang sama**, supaya generatif
+dan LLM lokal tidak berebut GPU dengan engine grafis.
+
+## Batas yang diketahui (jangan di-"perbaiki" tanpa perlu)
+
+- **Akuntansi token tidak tersedia.** Kolom `input_tokens`/`output_tokens` terisi tapi
+  bernilai 0, karena **CLI-nya sendiri yang menulis 0** ke lognya (dipindai 527 event mentah).
+  Ingestor tidak membuang data. `duration_ms` dan `exit_code` tetap akurat.
+- **Sesi CLI terikat direktori kerja.** `--continue` tidak menyeberang antar folder;
+  jembatannya PostgreSQL + handoff, yang terbukti lintas-direktori.
+- **Sebagian dotfile di `$HOME` tidak bisa dipindah** (`.bashrc`, `.config`, `.var`, `.nv`,
+  `.qoder`) — aplikasinya membaca path persis. Yang bisa sudah pindah ke `~/runtime`.
+- **Guard hanya mengikat tindakan AI lewat shell**, bukan niat mengakali (`base64 | bash`
+  tetap mungkin) dan bukan aplikasi yang membuat `~/.nama` saat dijalankan manusia.
+
+## Riwayat singkat
+
+Dokumen `ai_workstation_master_plan.md` (v2.3.0) dan `PROJECT_SUMMARY_...md` pernah menandai
+"Fase 5 TERCAPAI 100%" sementara Engine-3 tidak terpasang, `logs/server.log` 0 byte,
+`incident_log` kosong, dan `world_memory` tidak terisi. Keduanya dipensiunkan 6 Oktober dan
+isinya digabung ke `README.md` + roadmap ini, dengan klaim yang tidak terbukti dicabut.
+Salinan aslinya disimpan di `~/.ai-station/archive/`.

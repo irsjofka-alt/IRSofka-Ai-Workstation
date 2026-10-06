@@ -89,6 +89,8 @@ config/cli_profiles.json
 tools/pty_station_server.py
 tools/static/
 tools/archive/
+# cadangan berkas yang dipindah dari $HOME (bukan kode, hanya jejak lokal)
+/archive/
 
 # ============================================================
 # YANG SENGAJA IKUT TERLACAK (aset yang dibutuhkan build)

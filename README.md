@@ -155,7 +155,7 @@ python3 tools/local_llm.py --tier verify "..."
 |---|---|---|
 | Qoder | builder | konteks besar; jalur utama penulisan kode |
 | Antigravity / Gemini | reviewer | punya tool sendiri: membaca kode Anda sebelum memberi verdict |
-| Local LLM (Ollama) | validator | offline; tier `light`/`verify`/`heavy` |
+| Local LLM (Ollama) | validator | offline; tier `light`/`verify`/`heavy`. Di mesin referensi ini Ollama terpasang tapi **belum ada model di-pull**, jadi jalurnya sengaja mengembalikan `UNAVAILABLE` — bukan `COMPLETED` |
 
 Kedua CLI memakai server MCP yang sama, jadi verifikasi berjalan **dua arah** lewat tabel
 `ai_message`: `ask_peer`, `check_messages`, `resolve_message`. Ketidaksepakatan ditandai

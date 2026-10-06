@@ -55,14 +55,21 @@ Selesai:
 - `local_llm.py` — tiga penjaga pelepasan GPU + **gerbang VRAM** dengan fallback CPU/RAM.
 
 Belum:
-- ⬜ **Ollama belum terpasang.** Seluruh jalur lokal baru teruji logikanya, bukan terhadap
-  model nyata. Perintahnya ada di `README.md`; setelah terpasang, nama tag model di
-  `engines.json` (`qwen3.5:4b`, `qwen3.5:9b`, `phi4:14b`) harus dicocokkan dengan
-  `ollama list`.
+- ⬜ **Model lokal belum di-pull.** Ollama 0.35.1 terpasang dan service-nya aktif dengan GPU
+  terlihat, tapi `ollama list` kosong — seluruh jalur lokal jadi `UNAVAILABLE` (jujur, bukan
+  `COMPLETED`). Setelah pull, nama tag di `engines.json` (`qwen3.5:4b`, `qwen3.5:9b`,
+  `phi4:14b`) harus dicocokkan dengan `ollama list`; jangan dipakai apa adanya.
 - ⬜ Uji beban: verifikasi saat sesi lain aktif, dan pastikan `ollama ps` kosong sesudahnya.
 - ⬜ Monitor kuota Antigravity di GUI (`/api/usage` sudah menyediakan datanya).
-- ⬜ `parallel_tri_engine.py` masih memakai daftar engine lamanya sendiri; seharusnya baca
-  `engines.json` dan tier `local_llm`.
+
+Selesai ronde ini:
+- ✅ `parallel_tri_engine.py` membaca `config/engines.json` (2026-10-06). Model default
+  `qwen2.5-coder:7b` — yang tidak pernah ada di registry — dibuang; `gemini`, `qoder`, dan
+  `local` kini diambil dari registry, dan tier lokal bisa dipilih lewat `STATION_LOCAL_ENGINE`.
+  Kebijakan `never_load_if` ditegakkan: saat VRAM kosong tidak cukup, engine menolak dan
+  menyebut pemakai GPU-nya ("brave 137 MiB, antigravity 104 MiB"), dengan status `UNAVAILABLE`
+  yang tercatat ke PostgreSQL. Payload Ollama sekarang mengirim `keep_alive` dari registry —
+  sebelumnya tidak, jadi model tertahan di VRAM lima menit setelah tugas selesai.
 
 ## F7 — Studio kreatif ⬜
 

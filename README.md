@@ -25,8 +25,8 @@ git clone https://github.com/irsjofka-alt/IRSofka-Ai-Workstation.git ~/.ai-stati
 ```
 
 Kalau kamu memang baru mau mencoba Qoder dan tidak keberatan membantu mesin ini tetap
-berjalan, daftar lewat tautan referral ini — kamu dapat 500 kredit, pemilik repo dapat
-1.000 saat pembayaran pertama kamu:
+berjalan, daftar lewat tautan referral ini — **1.000 kredit** saat pembayaran pertama
+dalam 30 hari:
 <https://qoder.com/activities?referral_code=bBfZBkx5dhkUBQDRBYz29LOXv59SLZiB>
 
 > When your friend registers via your link and makes their first payment within 30 days,

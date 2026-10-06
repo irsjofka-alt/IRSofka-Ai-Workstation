@@ -91,9 +91,8 @@ curl -fsSL https://qoder.com/install | bash
 curl -fsSL https://antigravity.google/cli/install.sh | bash
 ```
 
-Kalau kamu baru mau mencoba Qoder, pemilik repo menyimpan tautan referral di
-[README](README.md#instal) — mendaftar lewat itu memberi kamu 500 kredit dan dia 1.000
-saat pembayaran pertama. Tidak wajib, dan lisensi proyek ini tidak berubah karenanya.
+Kalau kamu baru mau mencoba Qoder, pemilik repo menaruh tautan referral di
+[README](README.md#instal). Tidak wajib, dan lisensi proyek ini tidak berubah karenanya.
 
 Sebelum mengeksekusi apa pun dari internet, bacalah dulu:
 

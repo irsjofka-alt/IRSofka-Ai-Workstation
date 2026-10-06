@@ -1,10 +1,33 @@
 #!/usr/bin/env python3
 """Uji self_preservation.py: apa yang harus diblokir, apa yang harus lolos."""
 import json
+import os
 import subprocess
 import sys
 
 GUARD = "/home/irsofka/.ai-station/hooks/self_preservation.py"
+PRODUCTION_BIN = "/home/irsofka/.ai-station/bin/irsofka-station-core"
+
+
+def live_daemon_pid() -> str:
+    """PID daemon produksi yang SEDANG berjalan.
+
+    Sengguh dicari saat uji, bukan ditulis tetap: PID berubah tiap restart, dan angka
+    usang membuat kasus 'kill' lolos sehingga suite memberi hasil palsu.
+    """
+    import glob
+    for stat in glob.glob("/proc/[0-9]*/cmdline"):
+        try:
+            with open(stat, "rb") as fh:
+                cmd = fh.read().replace(b"\0", b" ").decode("utf-8", "replace")
+        except OSError:
+            continue
+        if "--headless" in cmd and PRODUCTION_BIN in cmd:
+            return stat.split("/")[2]
+    return ""
+
+
+KILL_DAEMON = f"kill -9 {live_daemon_pid()}" if live_daemon_pid() else "kill -9 1"
 
 BLOCK = [
     'tmux -L irsofka kill-server',
@@ -13,7 +36,7 @@ BLOCK = [
     'pkill -9 -f station-core',
     'rm -rf /home/irsofka/.ai-station/brain',
     'rm -rf ~/.ai-station/config',
-    'kill -9 377055',
+    KILL_DAEMON,
     'psql -c "DROP TABLE world_memory"',
     'psql -c "TRUNCATE TABLE action_log"',
     'psql -c "delete from action_log"',
@@ -28,6 +51,9 @@ ALLOW = [
     'ls -la /home/irsofka/.ai-station',
     'git status',
     'kill 999999',
+    # proses BUKAN biner produksi harus boleh dibunuh — aturan proyek menyuruh
+    # mematikan proses uji lewat PID spesifik
+    f"kill -9 {os.getpid()}",
     'rm -rf /tmp/station-sandbox',
     'psql -c "delete from action_log where id=1"',
     'cat notes.md >> log.md',

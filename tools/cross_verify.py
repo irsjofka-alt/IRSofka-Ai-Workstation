@@ -294,10 +294,21 @@ def run_engine(spec, prompt, timeout):
 
     if kind == "ollama":
         try:
+            # num_ctx TIDAK boleh diwarisi dari default Ollama (4096). Pemeriksaan kode
+            # menghasilkan jawaban panjang + konteks berkas, dan kehabisan konteks tampil
+            # sebagai "jawaban kosong" yang mudah disalahartikan sebagai model bodoh.
+            opts = {"num_ctx": int(spec.get("num_ctx", 12288)),
+                    "num_predict": int(spec.get("num_predict", 1200)),
+                    "temperature": float(spec.get("temperature", 0.2))}
             req = urllib.request.Request(
                 spec.get("url") or "http://127.0.0.1:11434/api/generate",
                 data=json.dumps({"model": spec.get("model"), "prompt": prompt,
-                                 "stream": False,
+                                 "stream": False, "options": opts,
+                                 # qwen3.5 adalah model berpikir: tanpa think=False, seluruh
+                                 # anggaran token habis di kolom `thinking` dan `response`
+                                 # kembali KOSONG — terlihat seperti model bodoh padahal
+                                 # kehabisan ruang. Pemeriksa kode butuh jawaban, bukan monolog.
+                                 "think": bool(spec.get("think", False)),
                                  # Aturan GPU workstation: jangan menahan VRAM. Tanpa ini
                                  # model tinggal di kartu sampai 5 menit setelah pemeriksaan.
                                  "keep_alive": spec.get("keep_alive", 0)}).encode(),
@@ -312,6 +323,9 @@ def run_engine(spec, prompt, timeout):
             # atau endpoint tidak cocok.
             sebab = data.get("error") or ", ".join(f"{k}={str(v)[:40]}" for k, v in data.items()
                                                    if k in ("done_reason", "prompt_eval_count", "eval_count"))
+            cuma_pikir = len((data.get("thinking") or "").strip())
+            if cuma_pikir and not out:
+                sebab += f" · model hanya menghasilkan monolog berpikir ({cuma_pikir} karakter) tanpa jawaban"
             return "FAILED", (f"Model {spec.get('model')} menjawab kosong"
                               + (f" ({sebab})" if sebab else "") + ". Hasil ini BELUM diverifikasi.")
         except Exception as exc:  # noqa: BLE001

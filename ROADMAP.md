@@ -55,10 +55,9 @@ Selesai:
 - `local_llm.py` — tiga penjaga pelepasan GPU + **gerbang VRAM** dengan fallback CPU/RAM.
 
 Belum:
-- ⬜ **Tier `verify` belum terpasang.** Yang sudah di-pull dan diuji hanya `qwen3.5:4b`
-  (3,3 GB, tier `light`/`local-fallback`). `qwen3.5:9b` terpotong di 39% karena batas waktu
-  perintahnya salah hitung; `phi4:14b` belum dimulai. Nama tag ketiganya sudah dipastikan ADA
-  di registry Ollama (manifest HTTP 200), jadi tinggal unduh.
+- ⬜ **Tier `heavy` belum terpasang.** `phi4:14b` belum di-pull; dengan 12 GB VRAM ia butuh
+  ~10,5 GB kosong dan akan ditolak gerbang VRAM begitu ada aplikasi GPU lain — memang untuk itu
+  ia ada, tapi belum pernah diuji dalam keadaan itu.
 - ⬜ Uji beban lintas engine yang sesungguhnya: verifikasi berjalan sambil ComfyUI/Unity
   memakai GPU, dan buktikan gerbang VRAM menolak pada saat itu. Yang teruji baru
   "sesi AI lain aktif", bukan "aplikasi GPU aktif".
@@ -89,6 +88,21 @@ Belum:
   (3,3 GB) lalu dijalankan lewat dispatcher: `COMPLETED` dalam 71,4 s, `ollama ps` kosong
   sesudahnya, dan VRAM benar-benar kembali (10.882 → 10.979 MiB bebas). Cabang penolakan ikut
   diuji dengan memaksa kebutuhan 999999 MiB — ia menolak dan menyebut pemakai GPU-nya.
+- ✅ **`qwen3.5:9b` dipasang, dinilai, dan dinyatakan layak.** `model_check.py`: 5/5 — puncak
+  7.434 MiB dari kartu 11.890 MiB, 43,1 tok/s, `ollama ps` kosong sesudahnya, VRAM kembali ke
+  978 MiB. Dipertahankan; `phi4:14b` tidak diunduh karena belum ada buktinya dibutuhkan.
+- ✅ **Dua penyebab "model menjawab kosong" ditemukan dan ditutup.** `cross_verify` tidak
+  menyetel `num_ctx` (mewarisi 4096 Ollama) dan tidak menyetel `think` — qwen3.5 menghabiskan
+  seluruh anggaran token di kolom `thinking` lalu mengembalikan `response` kosong. Kini
+  `num_ctx=12288`, `num_predict=1200`, `think=false`, dan jawaban kosong melaporkan sebabnya
+  (termasuk panjang monolog berpikir). Tanpa `think=false` pemeriksaan berkas 83 baris selalu
+  `FAILED`; sesudahnya `COMPLETED` 8,7 s.
+- ✅ **Pemeriksa lokal menangkap bug nyata, lewat alasan yang salah.** Ia menuduh `--check`
+  melapor sehat padahal salah — tuduhan itu tidak benar, `--check` justru menangkapnya. Tapi
+  instingnya menunjuk direktori target yang nyata, dan di situlah bug sebenarnya: `ln -sfn` ke
+  direktori nyata MENYARANGKAN tautan (`skills/a/a`), bukan menimpanya. Diperbaiki dengan guard
+  yang menolak menyentuh direktori berisi data, plus exit code yang benar di mode tulis.
+  Diuji di `$HOME` tiruan: guard menyala, sarang tidak terbentuk, file pengguna selamat.
 - ✅ **Handoff berhenti melaporkan state git yang salah.** `snapshot()` mem-probe
   `engine-rust/` dan melabelinya "git engine-rust", padahal direktori itu tidak punya repo
   sendiri — git naik ke repo induk, sehingga sesi berikutnya membaca keadaan yang keliru.

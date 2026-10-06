@@ -47,6 +47,14 @@ link_one() { # target-pack <link> — wajib punya SKILL.md di dalamnya
 
 link_tree() { # direktori-kontainer <link> — tidak menuntut SKILL.md
   local src="$1" dst="$2"
+  # Kalau target sudah berupa direktori NYATA (bukan symlink), `ln -sfn` tidak menimpanya
+  # melainkan MENYARANGKAN tautan ke dalamnya (skills/a/a) — sunyi dan merusak. Direktori
+  # itu bisa berisi data, jadi tidak dihapus; minta manusia yang memutuskan.
+  if [ -d "$dst" ] && [ ! -L "$dst" ]; then
+    say "  BIARKAN $dst adalah direktori nyata, bukan tautan — tidak disentuh (berisi data)."
+    say "          Kalau memang sampah: pindahkan sendiri, lalu jalankan ulang."
+    problem=$((problem + 1)); return
+  fi
   if [ "$CHECK" = "1" ]; then
     if [ "$(readlink -f "$dst" 2>/dev/null)" = "$(readlink -f "$src")" ]; then
       say "  ok     ${dst/#$HOME/\~}"
@@ -81,3 +89,6 @@ if [ "$CHECK" = "1" ]; then
   exit $([ "$problem" -eq 0 ] && echo 0 || echo 1)
 fi
 say "Qoder memuat ini tanpa restart; untuk engine lain butuh respawn tab."
+# Mode tulis juga harus gagal dengan benar: kalau tidak, pemakai otomatis (CI, skrip
+# setup) membaca exit 0 padahal ada tautan yang ditolak.
+[ "$problem" -eq 0 ] || { say "ADA $problem masalah yang perlu keputusan manusia."; exit 1; }

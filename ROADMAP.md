@@ -62,7 +62,7 @@ Belum:
 - ⬜ Uji beban: verifikasi saat sesi lain aktif, dan pastikan `ollama ps` kosong sesudahnya.
 - ⬜ Monitor kuota Antigravity di GUI (`/api/usage` sudah menyediakan datanya).
 
-Selesai ronde ini:
+### Selesai ronde ini (6 Okt sore)
 - ✅ `parallel_tri_engine.py` membaca `config/engines.json` (2026-10-06). Model default
   `qwen2.5-coder:7b` — yang tidak pernah ada di registry — dibuang; `gemini`, `qoder`, dan
   `local` kini diambil dari registry, dan tier lokal bisa dipilih lewat `STATION_LOCAL_ENGINE`.
@@ -70,6 +70,19 @@ Selesai ronde ini:
   menyebut pemakai GPU-nya ("brave 137 MiB, antigravity 104 MiB"), dengan status `UNAVAILABLE`
   yang tercatat ke PostgreSQL. Payload Ollama sekarang mengirim `keep_alive` dari registry —
   sebelumnya tidak, jadi model tertahan di VRAM lima menit setelah tugas selesai.
+- ✅ **Daemon berhenti melayani identitas.** `/api/stats` dan `/api/usage` meneruskan
+  `qoder status -o json` apa adanya — email, nama lengkap, avatar URL. Daemon hanya listen di
+  127.0.0.1, tapi tiap engine di tab punya shell, jadi `curl localhost:8999` cukup untuk
+  memasukkan identitas itu ke konteks model cloud. Redaksi di satu sumber (`qoder_account`)
+  plus penyaring berbentuk; kolom `username` `player_profile` dikeluarkan (nol rujukan di
+  `gui.html`). Verifikasi: 0 temuan email/nama pada tiga endpoint.
+- ✅ **Katalog perkakas ditulis ulang.** `tools/TOOLSET_CATALOG.md` menyebut server Python lama
+  sebagai `[CORE]` dan mengklaim systemd menghidupkannya di port 8999 — yang melayani port itu
+  daemon Rust. Server Python dinyatakan arsip lokal (sudah di-gitignore sejak lama).
+- ✅ **SQLite basi diarsipkan.** `brain/workstation.db` dipindah ke
+  `~/runtime/backups/db/…sqlite-stale-20261006` setelah dipastikan 0 barisnya tidak ada di
+  PostgreSQL; tersimpannya file itu memberi peluang sesi fallback membaca salinan basi sebagai
+  keadaan sekarang.
 
 ## F7 — Studio kreatif ⬜
 

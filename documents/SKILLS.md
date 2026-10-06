@@ -31,6 +31,12 @@ Penomoran wajib dua digit dan urut. Mesin pembaca skill hanya memuat `SKILL.md`
 (lengkap) dan file bernomor (atas permintaan). Nama file yang tidak bernomor dianggap
 referensi, bukan instruksi.
 
+**Jebakan yang sudah pernah terjadi:** `description:` yang tidak diberi tanda kutip tapi
+berisi `: ` di tengah teks (mis. "Contains verified hard limits: Landscape cannot ...")
+membuat YAML frontmatter tidak terbaca, dan pack-nya **hilang diam-diam** dari daftar
+engine — tanpa pesan error. Kalau sebuah pack tidak muncul: kutip nilainya, lalu
+`python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]).read().split('---')[1])" SKILL.md`.
+
 ## Pintu masuk per engine
 
 Satu pohon skill, dibaca semua engine. Pohonnya adalah daftar symlink:
@@ -42,8 +48,8 @@ Satu pohon skill, dibaca semua engine. Pohonnya adalah daftar symlink:
 
 | Engine | Ia memuat skill dari | Status |
 |---|---|---|
-| Qoder CLI | `~/.agents/skills/` (kunci `loadFromAgentsDirectory`, bawaan aktif) | terverifikasi: 11 pack muncul di daftar skill sesi yang sedang berjalan |
-| Antigravity/Gemini | `~/.gemini/config/plugins/station-rules/skills/` | symlink terpasang; belum diverifikasi dari dalam sesinya |
+| Qoder CLI | `~/.agents/skills/` (kunci `loadFromAgentsDirectory`, bawaan aktif) | terverifikasi: 11 pack muncul di daftar skill sesi yang sedang berjalan, tanpa respawn |
+| Antigravity/Gemini | `~/.gemini/config/plugins/station-rules/skills/` | terverifikasi: 11 pack + 7 skill bawaan = 18, ditanya langsung lewat pane tmux-nya |
 | Model lokal | tidak membaca skill; prompt dirakit `tools/cross_verify.py` dari `config/engines.json` | |
 
 `~/.agents` sendiri adalah symlink ke `~/.ai-station/engines/agents`, didaftarkan di

@@ -967,10 +967,40 @@ fn agy_efforts() -> Vec<&'static str> {
 // Usage / account telemetry
 // ---------------------------------------------------------------------------
 
+/// `qoder status -o json` membawa identitas pemilik akun. Daemon ini hanya listen di
+/// 127.0.0.1, tapi yang membaca API-nya bukan cuma manusia — tiap engine di tab ini punya
+/// shell dan bisa `curl localhost:8999`. Email dan nama lengkap yang masuk ke konteks model
+/// cloud tidak bisa ditarik kembali, jadi dipangkas di sumbernya, bukan di tiap pemakai.
+fn redact_account(value: Value) -> Value {
+    const SENSITIVE: [&str; 5] = ["email", "username", "avatar_url", "user_id", "name"];
+    let mut v = value;
+    if let Some(map) = v.as_object_mut() {
+        for key in SENSITIVE {
+            map.remove(key);
+        }
+        // Kunci apa pun yang nilainya tampak seperti alamat email, walau namanya tidak
+        // ada di daftar — API pihak ketiga suka mengganti bentuknya.
+        let looks_like_mail: Vec<String> = map
+            .iter()
+            .filter(|(_, val)| {
+                val.as_str()
+                    .is_some_and(|s| s.contains('@') && s.contains('.'))
+            })
+            .map(|(k, _)| k.clone())
+            .collect();
+        for key in looks_like_mail {
+            map.remove(&key);
+        }
+        map.insert("identity_redacted".to_string(), json!(true));
+    }
+    v
+}
+
 fn qoder_account() -> Value {
     cached_json("qoder_account", Duration::from_secs(60), || {
         run_capture("qoder", &["status", "-o", "json"])
             .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
+            .map(redact_account)
             .unwrap_or_else(|| json!({ "logged_in": false }))
     })
 }
@@ -1142,13 +1172,15 @@ async fn count(client: &tokio_postgres::Client, table: &str) -> i64 {
 }
 
 async fn player_profile(client: &tokio_postgres::Client) -> Value {
-    let sql = "SELECT level, exp_points, active_title, username FROM player_profile LIMIT 1";
+    // Kolom username sengaja tidak dikeluarkan: GUI tidak membacanya (dicari di gui.html,
+    // nol hasil), sedangkan tiap engine di tab bisa membaca endpoint ini lewat shell-nya.
+    // Nama lengkap pemilik mesin tidak ada alasan melayani diri sendiri di API.
+    let sql = "SELECT level, exp_points, active_title FROM player_profile LIMIT 1";
     match client.query_opt(sql, &[]).await {
         Ok(Some(row)) => json!({
             "level": row.get::<_, i32>(0),
             "exp": row.get::<_, i32>(1),
             "title": row.get::<_, String>(2),
-            "username": row.get::<_, String>(3),
         }),
         _ => Value::Null,
     }

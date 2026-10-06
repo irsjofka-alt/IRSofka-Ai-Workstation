@@ -2,6 +2,10 @@
 name = "irsofka-station-core"
 version = "2.0.0"
 edition = "2021"
+license = "PolyForm-Noncommercial-1.0.0"
+authors = ["irsjofka-alt"]
+# Aset vendor di assets/ tetap di bawah lisensinya masing-masing, lihat
+# THIRD_PARTY_NOTICES.md di akar repo.
 
 [dependencies]
 axum = "0.7"

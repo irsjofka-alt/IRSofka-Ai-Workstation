@@ -90,3 +90,25 @@ ditegakkan oleh hook, bukan hanya ditulis sebagai imbauan:
 
 Lihat `hooks/self_preservation.py` untuk daftar blokir lengkap dan
 `hooks/test_self_preservation.py` untuk kasusnya.
+
+## Lisensi
+
+Kode dalam repo ini dilindungi **PolyForm Noncommercial License 1.0.0** — teks lengkap ada
+di [`LICENSE`](LICENSE). Ringkasnya:
+
+| Anda boleh | Contoh |
+|---|---|
+| memakai | menjalankan workstation ini di mesin sendiri |
+| memodifikasi | menambah tab, mengubah GUI, menulis ulang daemon |
+| membagikan hasil modifikasi | selama salurannya non-komersial |
+
+| Anda tidak boleh | Contoh |
+|---|---|
+| memaketkan lalu menjualnya | menjual sebagai produk, layanan berbayar, atau lisensi ulang komersial |
+
+Pengecualian penting: sebagian aset yang ikut dibagikan **bukan** karya proyek ini dan tetap
+mengikuti lisensinya sendiri yang lebih permisif — xterm.js (MIT) dan font Inter/JetBrains Mono
+(SIL OFL 1.1). Rinciannya di [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md). Batasan
+non-komersial pada `LICENSE` **tidak** menimpa bagian-bagian itu.
+
+> Required Notice: Copyright © 2026 irsjofka-alt

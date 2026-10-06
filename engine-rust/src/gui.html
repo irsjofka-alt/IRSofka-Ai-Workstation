@@ -674,24 +674,17 @@
         }
 
         function syncPtySize() {
-            // Fit SEMUA terminal, bukan hanya yang aktif. Tab tersembunyi punya ukuran
-            // xterm.js sendiri; kalau tidak ikut di-fit, ia tetap memakai kolom lama dan
-            // tmux mengirim teks yang ditata untuk lebar berbeda -> saat dibuka, isinya
-            // saling menimpa. Resize ke daemon cukup sekali: daemon menerapkannya ke semua tab.
-            let sent = false;
-            for (const name of Object.keys(terms)) {
-                const fit = fitAddons[name], term = terms[name];
-                if (!fit || !term) continue;
-                try { fit.fit(); } catch(e) {}
-                if (!sent && name === activeTab && term.cols > 0) {
-                    sent = true;
-                    fetch('/api/term/resize', {
-                        method: 'POST',
-                        headers: {'Content-Type': 'application/json'},
-                        body: JSON.stringify({ tab: name, cols: term.cols, rows: term.rows })
-                    }).catch(() => {});
-                }
-            }
+            const fit = fitAddons[activeTab];
+            const term = terms[activeTab];
+            if (!fit || !term) return;
+            try {
+                fit.fit();
+                fetch('/api/term/resize', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({ tab: activeTab, cols: term.cols, rows: term.rows })
+                }).catch(() => {});
+            } catch(e) {}
         }
 
         function startReplSession(cli) {
@@ -714,36 +707,20 @@
             setTimeout(pollTerminal, 60);
         }
 
-        async function switchTab(tab) {
+        function switchTab(tab) {
             activeTab = tab;
             document.querySelectorAll('.term-tab').forEach(t => t.classList.remove('active'));
             document.getElementById('tab-' + tab).classList.add('active');
 
+            // Hide other panes, show active pane without clearing
             for (const t of TABS) {
                 const pane = document.getElementById('term-' + t);
                 if (pane) pane.style.display = (t === tab) ? 'block' : 'none';
             }
 
-            // Urutan wajib: tampil -> fit -> sinkronkan ukuran -> reset -> gambar ulang.
-            // fit() mengubah jumlah kolom. Kalau dilakukan di atas konten yang dulu ditulis
-            // pada lebar lain, xterm.js menata ulang barisnya; TUI (Qoder/Antigravity)
-            // menggambar dengan gerak kursor absolut sehingga hasil reflow itu jadi teks
-            // saling menimpa. Karena itu kontennya dibuang lalu digambar ulang dari layar
-            // pane yang sebenarnya (capture-pane -e, termasuk 2000 baris scrollback).
-            if (fitAddons[tab]) { try { fitAddons[tab].fit(); } catch(e) {} }
+            if (fitAddons[tab]) fitAddons[tab].fit();
+            if (terms[tab]) terms[tab].focus();
             syncPtySize();
-
-            const term = terms[tab];
-            if (!term) return;
-            try {
-                const res = await fetch('/api/term/screen?tab=' + tab);
-                if (res.ok) {
-                    const screen = await res.text();
-                    term.reset();
-                    term.write(screen);
-                }
-            } catch(e) {}
-            term.focus();
         }
 
         function toggleAutoApprove() {

@@ -18,7 +18,8 @@ tools/
 ├── parallel_tri_engine.py     dispatcher tiga engine paralel
 ├── incident_recorder.py       penghitung kegagalan → skill otomatis
 ├── wayland_actor.py           screenshot & input di COSMIC/Wayland
-└── brain_bridge.py            penaut memori/skill ke workspace proyek
+├── brain_bridge.py            penaut memori/skill ke workspace proyek
+└── model_check.py             penilai kelayakan model lokal
 ```
 
 ## Isi
@@ -77,6 +78,13 @@ screenshot dari proses tanpa sesi desktop, dan `ydotool` butuh akses socket uinp
 ### `brain_bridge.py` — menautkan, tidak menyalin
 Menghubungkan workspace proyek ke `~/.ai-station/brain/` lewat berkas pointer, supaya satu
 perubahan memori cukup ditulis sekali. Menyalin isi brain ke folder proyek adalah cara tercepat mendapatkan dua AI dengan cerita berbeda.
+
+### `model_check.py` — penilai model sebelum menempati disk
+Menjawab dengan angka, bukan perasaan: apakah satu model Ollama **layak dipertahankan**.
+Diukur: jawaban tidak kosong, puncak VRAM, apakah GPU benar-benar dilepas sesudahnya
+(`ollama ps` kosong), VRAM kembali ke awal, dan kecepatan token/detik. Keluaran akhirnya
+berisi keputusan: pertahankan, atau `ollama rm`. Dipakai tiap kali menambah tier ke
+`config/engines.json`.
 
 ## Yang tidak ada di daftar ini, dan alasannya
 

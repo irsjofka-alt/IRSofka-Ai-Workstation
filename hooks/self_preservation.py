@@ -88,9 +88,10 @@ MEMORY_DIRS = ("brain", "logs")
 SOFT_RULES = [
     (
         r"\bsystemctl\s+--user\s+(restart|stop|kill|try-restart|reload-or-restart)\b[^|;]*\birsofka-",
-        "Catatan: restart/stop daemon workstation. Sejak tab berjalan di tmux (-L irsofka) "
-        "sesi CLI TIDAK ikut mati, tapi GUI window perlu dimuat ulang. Pastikan user sudah "
-        "menyetujui langkah ini sebelum lanjut.",
+        "Catatan restart/stop daemon workstation. RESTART sudah diizinkan permanen oleh pemilik "
+        "untuk menyelesaikan deploy biner baru: tab hidup di tmux (-L irsofka) dan daemon baru "
+        "mengadopsi pane, jadi sesi tidak putus. Kalau ini bagian dari `deploy_engine.sh`, lanjut "
+        "saja. Yang perlu dipikir dua kali: `stop` tanpa `start`, dan restart di luar kebutuhan deploy.",
     ),
     (
         r"\bgit\b[^|;]*\b(reset\s+--hard|clean\s+-[a-zA-Z]*f)\b",

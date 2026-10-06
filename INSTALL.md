@@ -201,7 +201,52 @@ cgroup daemon**. Itulah yang membuat restart daemon tidak lagi membunuh sesi AI 
 Jalankan GUI-nya: `~/.ai-station/bin/launch_gui.sh`. Composer-nya Enter untuk baris baru,
 Ctrl+Enter untuk mengirim.
 
-## 7. Periksa bahwa ia benar-benar hidup
+## 7. Daftarkan guard, handoff, dan MCP ke Qoder
+
+Tanpa langkah ini dua fitur utama proyek ini tidak berjalan: `self_preservation.py`
+(AI tidak bisa membunuh daemon/sesinya sendiri, dan `$HOME` tidak bisa dikotori) dan
+`auto_handoff.py` (serah-terima mekanis tiap sesi berakhir atau konteks diringkas).
+Keduanya adalah *hook*, jadi harus didaftarkan di `~/.qoder/settings.json`.
+
+```bash
+python3 - <<'PY'
+import json, os
+p = os.path.expanduser("~/.qoder/settings.json")
+cfg = json.loads(open(p).read()) if os.path.exists(p) else {}
+st = os.path.expanduser("~/.ai-station")
+h = cfg.setdefault("hooks", {})
+h["PreToolUse"] = [{"matcher": "Bash", "hooks": [{
+    "type": "command", "command": f"python3 {st}/hooks/self_preservation.py",
+    "name": "station-self-preservation", "timeout": 10}]}]
+for ev in ("SessionEnd", "PreCompact"):
+    h.setdefault(ev, []).append({"hooks": [{
+        "type": "command", "command": f"python3 {st}/hooks/auto_handoff.py",
+        "name": "station-auto-handoff", "timeout": 25}]})
+cfg.setdefault("mcpServers", {})["local-workstation"] = {
+    "command": "python3", "args": [f"{st}/tools/mcp_workstation_local.py"]}
+json.dump(cfg, open(p, "w"), indent=2)
+print("terdaftar di", p)
+PY
+```
+
+Skrip di atas **menimpa** kunci `hooks` yang sudah ada. Kalau `~/.qoder/settings.json`
+kamu sudah punya hook sendiri, gabungkan manual — jangan jalankan apa adanya.
+
+Untuk Antigravity, MCP yang sama didaftarkan di `~/.gemini/config/mcp_config.json` dan
+kontraknya diinjeksi lewat plugin:
+
+```bash
+mkdir -p ~/.gemini/config/plugins/station-rules/rules
+ln -sfn ~/Documents/ai-workstation/AGENTS.md ~/.gemini/config/plugins/station-rules/rules/AGENTS.md
+~/.ai-station/bin/wire_skills.sh
+python3 -c "import json,os;p=os.path.expanduser('~/.gemini/config/config.json');d=json.load(open(p)) if os.path.exists(p) else {};d.setdefault('plugins',{})['station-rules']={'enabled':True};json.dump(d,open(p,'w'),indent=2);print('station-rules diaktifkan')"
+```
+
+`restart_workstation_daemon` dan `refresh_workstation_ui` adalah tool MCP yang sama yang
+dipakai AI untuk memuat ulang UI dan daemon tanpa Anda suruh — restart daemon aman sejak
+tab pindah ke tmux.
+
+## 8. Periksa bahwa ia benar-benar hidup
 
 ```bash
 ai-station recovery 40                                   # riwayat aksi + handoff

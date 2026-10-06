@@ -81,6 +81,16 @@ config/cli_profiles.json
 .gitignore.bak-*
 
 # ============================================================
+# 8. KODE MATI — prototipe & server lama yang sudah digantikan mesin Rust.
+#    Tidak dirujuk siapa pun (tidak oleh systemd, tidak oleh bin/ai-station,
+#    tidak oleh daemon), jadi tidak ikut dipublish supaya repo berisi kode hidup.
+#    Berkasnya tetap ada di lokal, hanya tidak masuk riwayat git.
+# ============================================================
+tools/pty_station_server.py
+tools/static/
+tools/archive/
+
+# ============================================================
 # YANG SENGAJA IKUT TERLACAK (aset yang dibutuhkan build)
 # ============================================================
 # engine-rust/assets/fonts/*.woff2  -> font UI, ~500 KB

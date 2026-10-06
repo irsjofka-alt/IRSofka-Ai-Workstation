@@ -106,14 +106,20 @@ def engine_present(spec):
     if kind == "cli":
         return bool(shutil.which(spec.get("binary", ""))), ""
     if kind == "ollama":
-        url = str(spec.get("url", "")).replace("/api/generate", "/api/tags")
+        # Probe dan pemanggilan HARUS memakai sumber URL yang sama. Dulu probe membaca
+        # spec.get("url","") tanpa bawaan, sehingga mesin yang hanya ada di engines.json
+        # (tidak punya entri bawaan) selalu dianggap mati padahal sebenarnya hidup.
+        gen_url = spec.get("url") or "http://127.0.0.1:11434/api/generate"
+        url = gen_url.replace("/api/generate", "/api/tags")
         try:
             with urllib.request.urlopen(url, timeout=3) as resp:
                 data = json.loads(resp.read().decode())
             have = {m.get("name") for m in data.get("models", [])}
             want = spec.get("model", "")
-            if want and want not in have and want.split(":")[0] not in {h.split(":")[0] for h in have}:
-                return True, f"server hidup, model '{want}' belum di-pull"
+            if want and want not in have:
+                # Cocokkan nama tag persis. Pencocokan "keluarga" (qwen3.5:9b dianggap ada
+                # karena qwen3.5:4b terpasang) melapor 'siap' untuk mesin yang pasti gagal.
+                return False, f"server hidup, model '{want}' belum di-pull (ada: {', '.join(sorted(h for h in have if h)) or '-'})"
             return True, ""
         except Exception as exc:  # noqa: BLE001
             return False, f"server tidak menjawab ({type(exc).__name__})"
@@ -289,13 +295,25 @@ def run_engine(spec, prompt, timeout):
     if kind == "ollama":
         try:
             req = urllib.request.Request(
-                spec.get("url", "http://127.0.0.1:11434/api/generate"),
+                spec.get("url") or "http://127.0.0.1:11434/api/generate",
                 data=json.dumps({"model": spec.get("model"), "prompt": prompt,
-                                 "stream": False}).encode(),
+                                 "stream": False,
+                                 # Aturan GPU workstation: jangan menahan VRAM. Tanpa ini
+                                 # model tinggal di kartu sampai 5 menit setelah pemeriksaan.
+                                 "keep_alive": spec.get("keep_alive", 0)}).encode(),
                 headers={"Content-Type": "application/json"})
             with urllib.request.urlopen(req, timeout=timeout) as resp:
-                out = json.loads(resp.read().decode()).get("response", "")
-            return ("COMPLETED" if out.strip() else "FAILED"), out.strip() or "(jawaban kosong)"
+                data = json.loads(resp.read().decode())
+            out = (data.get("response") or "").strip()
+            if out:
+                return "COMPLETED", out
+            # Jawaban kosong bukan "gagal periksa" tanpa sebab: sertakan apa yang server
+            # bilang, supaya mesin/pembaca tahu bedanya model menolak, kehabisan token,
+            # atau endpoint tidak cocok.
+            sebab = data.get("error") or ", ".join(f"{k}={str(v)[:40]}" for k, v in data.items()
+                                                   if k in ("done_reason", "prompt_eval_count", "eval_count"))
+            return "FAILED", (f"Model {spec.get('model')} menjawab kosong"
+                              + (f" ({sebab})" if sebab else "") + ". Hasil ini BELUM diverifikasi.")
         except Exception as exc:  # noqa: BLE001
             return "UNAVAILABLE", (f"Engine lokal tidak aktif ({type(exc).__name__}: {exc}). "
                                    "Hasil ini BELUM diverifikasi oleh mesin kedua.")
@@ -362,7 +380,9 @@ def record(subject_ref, engine, model, status, verdict, text, duration_ms):
 
 def main():
     ap = argparse.ArgumentParser(description="Verifikasi lintas mesin")
-    ap.add_argument("engine", nargs="?", help="mesin pemeriksa: gemini | qoder | local")
+    ap.add_argument("engine", nargs="?",
+                    help="kunci mesin dari config/engines.json — jalankan `--list` untuk melihat "
+                         "yang terdaftar dan mana yang sedang terpasang")
     # nargs='*' supaya subjek boleh ditulis sebelum ATAU sesudah opsi (--focus/--timeout);
     # argparse menolak dua posisi opsional yang disela opsi.
     ap.add_argument("subject", nargs="*", default=[], help="klaim/teks yang diperiksa")

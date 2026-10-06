@@ -674,17 +674,24 @@
         }
 
         function syncPtySize() {
-            const fit = fitAddons[activeTab];
-            const term = terms[activeTab];
-            if (!fit || !term) return;
-            try {
-                fit.fit();
-                fetch('/api/term/resize', {
-                    method: 'POST',
-                    headers: {'Content-Type': 'application/json'},
-                    body: JSON.stringify({ tab: activeTab, cols: term.cols, rows: term.rows })
-                }).catch(() => {});
-            } catch(e) {}
+            // Fit SEMUA terminal, bukan hanya yang aktif. Tab tersembunyi punya ukuran
+            // xterm.js sendiri; kalau tidak ikut di-fit, ia tetap memakai kolom lama dan
+            // tmux mengirim teks yang ditata untuk lebar berbeda -> saat dibuka, isinya
+            // saling menimpa. Resize ke daemon cukup sekali: daemon menerapkannya ke semua tab.
+            let sent = false;
+            for (const name of Object.keys(terms)) {
+                const fit = fitAddons[name], term = terms[name];
+                if (!fit || !term) continue;
+                try { fit.fit(); } catch(e) {}
+                if (!sent && name === activeTab && term.cols > 0) {
+                    sent = true;
+                    fetch('/api/term/resize', {
+                        method: 'POST',
+                        headers: {'Content-Type': 'application/json'},
+                        body: JSON.stringify({ tab: name, cols: term.cols, rows: term.rows })
+                    }).catch(() => {});
+                }
+            }
         }
 
         function startReplSession(cli) {

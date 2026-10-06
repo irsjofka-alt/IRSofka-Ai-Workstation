@@ -1563,11 +1563,25 @@ async fn term_resize(
     State(state): State<AppState>,
     Json(payload): Json<ResizePayload>,
 ) -> Json<Value> {
-    let tab = payload.tab.unwrap_or_else(|| "qoder".to_string());
-    if let Some(session) = state.sessions.get(&tab) {
-        session.resize(payload.cols, payload.rows);
+    // Semua tab ditampilkan di viewport GUI yang sama, jadi geometri HARUS seragam.
+    // Sebelumnya hanya tab yang diminta yang di-resize, sehingga tab tak terlihat menyimpan
+    // ukuran basi: tmux menata teks untuk 169 kolom sementara xterm.js hanya ~110, dan saat
+    // pengguna berpindah tab teksnya saling menimpa / terpotong.
+    let requested = payload.tab.unwrap_or_else(|| "qoder".to_string());
+    let cols = payload.cols;
+    let rows = payload.rows;
+    let mut resized = Vec::new();
+    for (name, session) in state.sessions.iter() {
+        session.resize(cols, rows);
+        resized.push(name.clone());
     }
-    Json(json!({ "status": "ok" }))
+    Json(json!({
+        "status": "ok",
+        "requested_tab": requested,
+        "applied_to": resized,
+        "cols": cols,
+        "rows": rows
+    }))
 }
 
 async fn cli_run(

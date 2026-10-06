@@ -37,6 +37,19 @@ BLOCK = [
     'rm -rf /home/irsofka/.ai-station/brain',
     'rm -rf ~/.ai-station/config',
     KILL_DAEMON,
+    # aturan keras pemilik: jangan melahirkan entri titik baru setingkat di $HOME
+    'mkdir ~/.aws',
+    'touch ~/.newtoolrc',
+    'ln -s /opt/tool ~/.tool',
+    'echo x > ~/.zshrc',
+    'mkdir -p /home/irsofka/.docker',
+    # keduanya TERBUKTI benar diblokir: file-file ini memang sudah tidak ada di home
+    # karena kita pindahkan ke ~/runtime — membuatnya lagi = menentang aturan pemilik
+    'touch ~/.bash_history',
+    'cp berkas.txt ~/.bashrc.bak',
+    # pengupasan pesan commit TIDAK boleh jadi lubang bypass: perintah sungguhan
+    # setelahnya tetap tertangkap
+    'git commit -m "pesan aman" && mkdir ~/.zshrc',
     'psql -c "DROP TABLE world_memory"',
     'psql -c "TRUNCATE TABLE action_log"',
     'psql -c "delete from action_log"',
@@ -67,11 +80,28 @@ ALLOW = [
     'cat > /home/irsofka/.ai-station/config/berkas_baru_sekali_pakai.json <<JSON\n{"a": 1}\nJSON',
     'echo x > ~/.ai-station/brain/berkas_memori_yang_belum_ada.md',
     'echo x > ~/.ai-station/hooks/berkas_baru.py',
+    # aturan home TIDAK boleh salah tembak: ini semua pekerjaan normal
+    'mkdir -p ~/.config/systemd/user/station.service.d',
+    'mkdir -p ~/.ai-station/archive',
+    'mkdir -p ~/runtime/foo/bar',
+    'touch ~/.bashrc',
+    'cp berkas.txt ~/.gitconfig',
+    'ls -la ~/.docker 2>/dev/null',
+    'cat ~/.aws/credentials',
+    # pesan commit adalah narasi, bukan perintah: menyebut path tidak boleh memicu guard
+    'git commit -m "contoh: echo x > ~/.zshrc sekarang diblokir, dan rm -rf brain juga"',
+    'git commit -q -m \'tambah aturan: jangan mkdir ~/.aws\'',
 ]
 
 WARN = [
     'systemctl --user restart irsofka-ai-workstation.service',
     'git reset --hard HEAD~1',
+    # penanda: installer diarahkan ke ~/runtime, bukan diblokir
+    'pip install --user requests',
+    'cargo install ripgrep',
+    'curl -fsSL https://example.com/install.sh | sh',
+    # apt justru dijelaskan sebagai aman (tidak menulis $HOME)
+    'sudo apt install -y gh',
 ]
 
 

@@ -101,6 +101,25 @@ SOFT_RULES = [
         r"\bkill\b[^|;]*\b9?\s*\$?\(?pgrep",
         "Catatan: kill berbasis pgrep berisiko melebar ke proses daemon produksi.",
     ),
+    (
+        r"\b(pip3?\s+install|npm\s+install\s+-g|pnpm\s+add\s+-g|yarn\s+global|pipx\s+install|"
+        r"uv\s+tool\s+install|cargo\s+install|go\s+install|gem\s+install)\b",
+        "Catatan: pastikan hasil install tidak mendarat di $HOME. runtime.sh sudah menyetel "
+        "PYTHONUSERBASE, CARGO_HOME, RUSTUP_HOME, BUN_INSTALL, XDG_CACHE/DATA/STATE_HOME. "
+        "Untuk npm/pipx/uv/go, aktifkan dulu baris komentarnya di ~/runtime/shell/runtime.sh.",
+    ),
+    (
+        r"\b(curl|wget)\b[^|;]*\|\s*(sudo\s+)?(bash|sh|zsh)\b",
+        "Catatan: installer 'curl | sh' adalah sumber utama direktori titik baru di $HOME. "
+        "Setel variabel tujuannya lebih dulu (lihat ~/runtime/shell/runtime.sh), atau jalankan "
+        "instalernya dengan HOME sementara di ~/runtime bila ia keras membuat ~/.nama.",
+    ),
+    (
+        r"\bsudo\s+apt\b[^|;]*\b(install|add)\b",
+        "Info: apt memasang ke jalur sistem (/usr, /etc, /var) dan TIDAK menulis $HOME. "
+        "Yang menumpuk di home biasanya dibuat aplikasi saat PERTAMA KALI dijalankan, bukan "
+        "oleh apt — jadi langkah install-nya sendiri sudah aman.",
+    ),
 ]
 
 
@@ -147,8 +166,21 @@ def strip_comments(command: str) -> str:
     return "\n".join(cleaned)
 
 
+COMMIT_MSG_RE = re.compile(r"(?:-m|--message)\s+(\"(?:\\.|[^\"\\])*\"|'(?:\\.|[^'\\])*)")
+
+
+def strip_commit_messages(command: str) -> str:
+    """Buang ISI pesan commit (`git commit -m "..."`).
+
+    Pesan commit adalah narasi, bukan perintah — ia wajar menyebut `rm -rf`, `~/.zshrc`,
+    atau `DROP TABLE` sebagai contoh. Tanpa pengupasan ini guard memblokir commit yang
+    mendokumentasikan guard itu sendiri, dan itu membuat orang mematikan guardnya.
+    """
+    return COMMIT_MSG_RE.sub("-m <pesan>", command)
+
+
 def scrub(command: str) -> str:
-    return strip_comments(strip_heredocs(command))
+    return strip_comments(strip_commit_messages(strip_heredocs(command)))
 
 
 def truncates_memory_file(command: str):
@@ -181,6 +213,51 @@ def proc_cmdline(pid: str):
 
 
 PRODUCTION_BIN = os.path.join(STATION, "bin", "irsofka-station-core")
+
+
+HOME_DIR = os.path.expanduser("~")
+
+# Aturan keras pemilik mesin (2026-10-06): JANGAN menambah apa pun setingkat di $HOME.
+# Install, data, dan hasil generate apa pun menuju ~/runtime. Entri yang sudah ada
+# dibiarkan utuh — makanya pengecekannya "apakah nama ini sudah ada di home".
+HOME_DOT_RE = re.compile(
+    r"(?:\$HOME|~|/home/irsofka)/(\.[A-Za-z0-9][A-Za-z0-9._-]*)\b"
+)
+CREATION_RE = re.compile(
+    r"\b(mkdir|touch|install\s+-d|ln\s+-s|tee|wget\s+-O|curl\s+-o|tar\s+[^|;]*-C|cp\s|mv\s|rsync\s)"
+)
+# Redirect juga MELAHIRKAN berkas; tanpa ini `echo x > ~/.zshrc` lolos.
+REDIRECT_RE = re.compile(r"(?<![>])>{1,2}\s*[\"']?([^\s\"';&|<>\n]+)")
+
+
+def creates_new_home_entry(command: str):
+    """Blokir perintah yang MELAHIRKAN entri titik baru setingkat di $HOME.
+
+    Dua syarat harus terpenuhi: ada aksi pembuatan (kata kerja ATAU redirect), dan ada
+    path ~/.nama yang belum ada. Membaca ~/.apa pun, menulis ke ~/runtime/..., atau membuat
+    subdirektori di dalam folder yang sudah ada tetap bebas — guard yang salah tembak
+    hanya akan dimatikan orang.
+    """
+    has_creation = bool(CREATION_RE.search(command))
+    redirect_targets = [m.group(1) for m in REDIRECT_RE.finditer(command)]
+    if not has_creation and not redirect_targets:
+        return None
+    try:
+        existing = set(os.listdir(HOME_DIR))
+    except OSError:
+        return None
+    candidates = HOME_DOT_RE.findall(command) if has_creation else []
+    for target in redirect_targets:
+        candidates += HOME_DOT_RE.findall(target)
+    for name in candidates:
+        if name in existing:
+            continue
+        if name in ("local", "cache", "config", "cargo", "rustup", "bun"):
+            # symlink kompatibilitas yang sengaja ditinggalkan; menulis lewat path ini
+            # sama dengan menulis ke ~/runtime, jadi bukan pelanggaran
+            continue
+        return name
+    return None
 
 
 def proc_exe(pid: str) -> str:
@@ -252,6 +329,18 @@ def main():
         sys.stderr.write(
             f"DIBLOKIR: redirect '>' akan menghapus ISI berkas memori {victim}.\n"
             "Gunakan alat Edit/Write, atau append (>>), atau tulis ke berkas baru.\n")
+        return 2
+
+    new_entry = creates_new_home_entry(scanned)
+    if new_entry:
+        sys.stderr.write(
+            f"DIBLOKIR: perintah itu melahirkan entri baru `~/{new_entry}` di $HOME.\n"
+            "Aturan keras pemilik mesin: install, data, dan hasil generate apa pun masuk ke\n"
+            "  ~/runtime   (lihat ~/runtime/shell/runtime.sh)\n"
+            "Arahkan target-nya ke sana, misalnya:\n"
+            f"  mkdir -p ~/runtime/{new_entry.lstrip('.')}   atau   export XDG_CONFIG_HOME=...\n"
+            "Kalau entri itu MEMANG harus ada di $HOME karena aplikasinya keras (mis. ~/.aws),\n"
+            "buat manual oleh pengguna, lalu symlink-kan ke ~/runtime supaya datanya tetap terpusat.\n")
         return 2
 
     target = kill_targets_lifespan(scanned)

@@ -1,11 +1,20 @@
 {
-  "version": 1,
-  "_catatan": "Path $HOME yang diizinkan self_preservation.py, dan hanya sebagai symlink ke dalam workstation/runtime. Ini protocol path milik CLI, bukan tempat data: datanya tetap di ~/.ai-station. Menambah nama di sini tidak membuka akses mkdir atau redirect ke home.",
+  "version": 2,
+  "_catatan_shims": "Entri $HOME yang diizinkan self_preservation.py, dan HANYA sebagai symlink ke dalam workstation/runtime (ln -s). Ini protocol path milik CLI, bukan tempat data — datanya tetap di ~/.ai-station. Menambah nama di sini tidak membuka akses mkdir atau redirect ke home.",
+  "_catatan_standard_home_files": "Berkas konvensi yang memang hidup di $HOME (login shell, git). Bukan tumpukan hasil install, jadi tidak dilarang. Sengaja sempit: konfigurasi shell/alat lain (zsh, vim, tmux) tambahkan di sini kalau mesin memang memakainya.",
   "shims": [
     ".qoder",
     ".qodersec",
     ".qmind",
     ".gemini",
     ".agents"
+  ],
+  "standard_home_files": [
+    "bashrc",
+    "bash_profile",
+    "bash_logout",
+    "profile",
+    "gitconfig",
+    "inputrc"
   ]
 }

@@ -267,6 +267,25 @@ def home_shims():
         return set()
 
 
+# Berkas konvensi, bukan hasil install. Aturan pemilik mesin melarang *tumpukan* di $HOME;
+# shell login dan git justru menuntut berkas-berkas ini ada di situ, dan INSTALL.md menyuruh
+# orang menambahkannya. Daftar ini sengaja sempit: konfigurasi shell/alat alternatif (zsh,
+# vim, tmux) bukan kebutuhan login shell — kalau mesin memang memakainya, tambahkan lewat
+# "standard_home_files" di config/home_shims.json, jangan lewat kode.
+STANDARD_HOME_DEFAULT = (
+    "bashrc", "bash_profile", "bash_logout", "profile", "gitconfig", "inputrc",
+)
+
+
+def standard_home_files():
+    try:
+        with open(HOME_SHIMS_FILE, encoding="utf-8") as fh:
+            extra = json.load(fh).get("standard_home_files", [])
+        return set(STANDARD_HOME_DEFAULT) | {str(n).lstrip(".") for n in extra}
+    except Exception:  # noqa: BLE001
+        return set(STANDARD_HOME_DEFAULT)
+
+
 def _token_under_shim_root(token: str) -> bool:
     """Token path harus benar-benar mendarat di dalam workstation atau ~/runtime.
     Bentuk `~`, `$HOME`, dan path absolut diperlakukan sama. Sengaja tidak memakai
@@ -315,9 +334,13 @@ def creates_new_home_entry(command: str):
     for name in candidates:
         if name in existing:
             continue
-        if name in ("local", "cache", "config", "cargo", "rustup", "bun"):
+        if name.lstrip(".") in ("local", "cache", "config", "cargo", "rustup", "bun"):
             # symlink kompatibilitas yang sengaja ditinggalkan; menulis lewat path ini
-            # sama dengan menulis ke ~/runtime, jadi bukan pelanggaran
+            # sama dengan menulis ke ~/runtime, jadi bukan pelanggaran. Bandingkan tanpa
+            # titik: HOME_DOT_RE menangkap ".config", daftar ini tidak — di mesin yang
+            # direktorinya sudah ada kesalahan ini tak pernah terlihat.
+            continue
+        if name.lstrip(".") in standard_home_files():
             continue
         if is_pinned_shim(command, name):
             continue

@@ -285,6 +285,25 @@
         }
         .chip:hover { border-color: var(--accent-cyan); color: var(--text-main); background: rgba(56, 189, 248, 0.1); }
 
+        /* Bar mesin di bawah tab: satu baris, mengikuti tab aktif */
+        .engine-bar {
+            display: flex; align-items: flex-end; gap: 10px; flex-wrap: wrap;
+            padding: 8px 12px; background: var(--panel-2, rgba(17, 29, 51, 0.6));
+            border-bottom: 1px solid var(--border);
+        }
+        .engine-bar.hidden { display: none; }
+        .eb-engine {
+            font-size: 0.68rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
+            color: var(--accent-cyan); padding-bottom: 6px; white-space: nowrap;
+        }
+        .eb-field { display: flex; flex-direction: column; gap: 2px; min-width: 150px; flex: 1 1 150px; }
+        .eb-field > span { font-size: 0.6rem; color: var(--text-dim); letter-spacing: .08em; text-transform: uppercase; }
+        .eb-field select { width: 100%; }
+        .eb-usage {
+            margin-left: auto; font-size: 0.66rem; color: var(--text-muted);
+            font-family: monospace; padding-bottom: 6px; text-align: right; max-width: 42%;
+        }
+
         /* Bottom Prompt Bar */
         .prompt-bar {
             background: var(--bg-surface);
@@ -434,40 +453,9 @@
     </header>
 
     <div class="workspace">
-        <!-- Left: Model & Execution Controls -->
+        <!-- Left: Eksekusi, save-state, ruang kerja, memori sesi -->
         <div class="sidebar-left">
             <div>
-                <div class="section-label">Active AI Model</div>
-                <select id="model-select" class="select-input" onchange="onModelChange()">
-                    <option value="qwen-3.8-flash" selected>🌟 Qwen 3.8 Flash (1M Context • 0 Pts • Qoder)</option>
-                    <option value="qwen-3.8-max">🚀 Qwen 3.8 Max (Qoder)</option>
-                    <option value="deepseek-v4-pro">🛡️ DeepSeek V4 Pro (Qoder)</option>
-                    <option value="glm-5.3-flash">⚡ GLM 5.3 Flash (Qoder)</option>
-                    <option value="kimi-k3">🌙 Kimi K3 (Qoder)</option>
-                    <option value="gemini-3.8-flash">⚡ Gemini 3.8 Flash High (1M Context • Antigravity)</option>
-                    <option value="gemini-3.1-pro">🧠 Gemini 3.1 Pro High (2M Context • Antigravity)</option>
-                    <option value="claude-sonnet">🔮 Claude Sonnet 5.5 High (Antigravity)</option>
-                    <option value="local-ollama">💻 Local Model (RTX 3060 Offline)</option>
-                </select>
-
-                <div class="section-label">Reasoning Effort (Pemikiran)</div>
-                <select id="effort-select" class="select-input" onchange="onModelChange()">
-                    <option value="xhigh" selected>🔥 Extra High (xhigh) - Maksimal & Teliti</option>
-                    <option value="high">🧠 High - Analisis Mendalam</option>
-                    <option value="medium">⚖️ Medium - Standar Seimbang</option>
-                    <option value="low">⚡ Low - Cepat & Ringkas</option>
-                    <option value="auto">🔄 Auto - Adaptif</option>
-                </select>
-
-                <div class="section-label">Context Window (Tokens)</div>
-                <select id="context-select" class="select-input" onchange="onModelChange()">
-                    <option value="1000000" selected>1,000,000 Tokens (1M Context)</option>
-                    <option value="500000">500,000 Tokens (500k Context)</option>
-                    <option value="200000">200,000 Tokens (200k Context)</option>
-                    <option value="128000">128,000 Tokens (128k Context)</option>
-                    <option value="32000">32,768 Tokens (32k Default)</option>
-                </select>
-
                 <div class="section-label">Permissions & Execution</div>
                 <div id="auto-approve-card" class="toggle-card" onclick="toggleAutoApprove()">
                     <div class="toggle-title">
@@ -487,7 +475,30 @@
                     <div>📁 <b>Skills:</b> <span id="skills-count">4</span> unlocked</div>
                     <div>📁 <b>Quests:</b> <span id="quests-count">0</span> logged</div>
                     <div>🛡️ <b>Guardrails:</b> <span id="rules-count">2</span> rules active</div>
-                    <div id="db-path-badge" style="margin-top: 4px; color: var(--accent-cyan); font-family: monospace; font-size: 0.68rem;">postgresql://irsofka@localhost:5432/irsofka_ai_workstation</div>
+                    <div id="db-path-badge" style="margin-top: 4px; color: var(--accent-cyan); font-family: monospace; font-size: 0.68rem;">memeriksa basis data…</div>
+                </div>
+            </div>
+
+            <div>
+                <div class="section-label">Ruang Kerja Aktif</div>
+                <div class="card-aux">
+                    <h4>
+                        <span>Active Workspace</span>
+                        <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="refreshWorkspace()">🔄</button>
+                    </h4>
+                    <div id="workspace-rows" style="display: flex; flex-direction: column; gap: 8px;">
+                        <div style="font-family: monospace; font-size: 0.7rem; color: var(--text-dim);">Detecting…</div>
+                    </div>
+                </div>
+
+                <div class="card-aux" style="margin-top: 10px;">
+                    <h4>
+                        <span>Session Memory (SQL)</span>
+                        <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="refreshRecovery()">🔄</button>
+                    </h4>
+                    <div id="recovery-box" style="font-size: 0.68rem; color: var(--text-muted); line-height: 1.5;">
+                        Memuat riwayat aksi…
+                    </div>
                 </div>
             </div>
         </div>
@@ -498,10 +509,10 @@
             <div class="term-header">
                 <div class="term-tabs">
                     <div id="tab-qoder" class="term-tab qoder active" onclick="switchTab('qoder')">
-                        <span>🌟 Qoder CLI (Qwen 1M • 0 Pts)</span>
+                        <span>🌟 Qoder CLI</span>
                     </div>
                     <div id="tab-antigravity" class="term-tab antigravity" onclick="switchTab('antigravity')">
-                        <span>⚡ Antigravity CLI (Gemini)</span>
+                        <span>⚡ Antigravity CLI</span>
                     </div>
                     <div id="tab-shell" class="term-tab shell" onclick="switchTab('shell')">
                         <span>🐧 COSMIC Shell</span>
@@ -516,6 +527,27 @@
                     <button class="term-btn" onclick="clearActiveTerm()">🧹 Clear</button>
                     <button class="term-btn" onclick="resetActiveSession()">🔄 Reset Session</button>
                 </div>
+            </div>
+
+            <!-- Bar mesin: ikut tab yang aktif, daftarnya dari /api/models (bukan hardcode) -->
+            <div class="engine-bar" id="engine-bar">
+                <span class="eb-engine" id="eb-engine">Qoder CLI</span>
+                <label class="eb-field"><span>Model</span>
+                    <select id="model-select" class="select-input" onchange="onModelChange()">
+                        <option value="">memuat…</option>
+                    </select>
+                </label>
+                <label class="eb-field" id="eb-effort-wrap"><span>Reasoning Effort</span>
+                    <select id="effort-select" class="select-input" onchange="onModelChange()">
+                        <option value="xhigh">xhigh</option>
+                    </select>
+                </label>
+                <label class="eb-field" id="eb-context-wrap"><span>Context Window</span>
+                    <select id="context-select" class="select-input" onchange="onModelChange()">
+                        <option value="1048576">1.048.576 (1M)</option>
+                    </select>
+                </label>
+                <span class="eb-usage" id="eb-usage" title=" kredit & pemakaian dibaca dari state lokal, bukan angka tetap">—</span>
             </div>
 
             <!-- The Live xterm.js Terminal Viewport (Independent Persistent Panes) -->
@@ -556,28 +588,8 @@
             </div>
         </div>
 
-        <!-- Right: Inspector & Visual Eye -->
+        <!-- Right: Usage, Visual Eye & Quick Actions -->
         <div class="sidebar-right">
-            <div class="card-aux">
-                <h4>
-                    <span>Active Workspace</span>
-                    <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="refreshWorkspace()">🔄</button>
-                </h4>
-                <div id="workspace-rows" style="display: flex; flex-direction: column; gap: 8px;">
-                    <div style="font-family: monospace; font-size: 0.7rem; color: var(--text-dim);">Detecting…</div>
-                </div>
-            </div>
-
-            <div class="card-aux">
-                <h4>
-                    <span>Session Memory (SQL)</span>
-                    <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="refreshRecovery()">🔄</button>
-                </h4>
-                <div id="recovery-box" style="font-size: 0.68rem; color: var(--text-muted); line-height: 1.5;">
-                    Memuat riwayat aksi…
-                </div>
-            </div>
-
             <div class="card-aux">
                 <h4>
                     <span>Visual Eye (Wayland)</span>
@@ -709,6 +721,7 @@
 
         function switchTab(tab) {
             activeTab = tab;
+            renderEngineBar();
             document.querySelectorAll('.term-tab').forEach(t => t.classList.remove('active'));
             document.getElementById('tab-' + tab).classList.add('active');
 
@@ -787,14 +800,12 @@
         }
 
         function targetEngine() {
+            // Tab aktif adalah sumber kebenaran, bukan tebakan dari nama model.
+            const byTab = tabEngine(activeTab);
+            if (byTab !== 'shell') return byTab;
             const sel = document.getElementById('model-select');
             const opt = sel && sel.selectedOptions ? sel.selectedOptions[0] : null;
-            const declared = opt ? (opt.getAttribute('data-engine') || '') : '';
-            if (declared) return declared;
-            const m = (sel ? sel.value : '').toLowerCase();
-            if (m.includes('gemini') || m.includes('claude')) return 'agy';
-            if (m.includes('ollama') || m.includes('local')) return 'local';
-            return 'qoder';
+            return (opt && opt.getAttribute('data-engine')) || 'qoder';
         }
 
         function quickRun(text) {
@@ -948,6 +959,11 @@
                     const transcript = (sess.transcript || '').split('/').pop() || '';
                     const upd = sess.last_updated
                         ? new Date(Number(sess.last_updated) * 1000).toLocaleTimeString('id-ID') : '';
+                    TABLIVE[key] = {
+                        model: t.model_in_command || t.profile_model || '',
+                        effort: t.effort_in_command || t.profile_effort || '',
+                        context: t.context_in_command || t.profile_context || '',
+                    };
                     html += `<div style="border: 1px solid var(--border-subtle); border-radius: 6px; padding: 7px 8px; background: #0c0e15;">
                         <div style="display:flex; justify-content:space-between; font-size:0.68rem; color:var(--text-muted);">
                             <b>${TAB_LABELS[key]}</b> <span>${dot} pid ${esc(t.pid || 0)}</span>
@@ -1000,35 +1016,91 @@
             }
         }
 
+        let MODELS = null;
+        let USAGE = {};
+        // Keadaan yang SEDANG berjalan per tab, dipakai supaya dropdown tidak bohong.
+        let TABLIVE = {};
+
         async function refreshModels() {
             try {
                 const res = await fetch('/api/models');
-                const d = await res.json();
-                const sel = document.getElementById('model-select');
-                const current = sel.value;
-                const groups = [['qoder', 'Qoder'], ['agy', 'Antigravity']];
-                let html = '';
-                for (const [engine, label] of groups) {
-                    const list = d[engine] || [];
-                    if (!list.length) continue;
-                    html += `<optgroup label="${label}">`;
-                    for (const m of list) {
-                        html += `<option value="${esc(m.id)}" data-engine="${engine}">${esc(m.label || m.id)}</option>`;
-                    }
-                    html += '</optgroup>';
+                MODELS = await res.json();
+                try { USAGE = await (await fetch('/api/usage')).json(); } catch (_) { USAGE = {}; }
+                renderEngineBar();
+            } catch (e) { /* biarkan bar menampilkan daftar terakhir yang diketahui */ }
+        }
+
+        // Tab yang aktif menentukan engine; engine menentukan daftarnya.
+        // Sebelumnya daftar model mencampur Qoder dan Antigravity dalam satu dropdown,
+        // sehingga memilih Gemini saat tab Qoder yang aktif tetap "berhasil" — lalu
+        // dispatch mengirim model yang tidak dikenal ke CLI yang salah.
+        function tabEngine(tab) {
+            if (tab === 'antigravity') return 'agy';
+            if (tab === 'qoder') return 'qoder';
+            return 'shell';
+        }
+
+        function fillSelect(el, values, keep, fmt) {
+            if (!el) return;
+            el.innerHTML = values.length
+                ? values.map(v => `<option value="${esc(typeof v === 'string' ? v : v[0])}">${esc(fmt ? fmt(v) : (typeof v === 'string' ? v : v[1]))}</option>`).join('')
+                : '<option value="">(tidak ada pilihan)</option>';
+            if (values.length && values.some(v => (typeof v === 'string' ? v : v[0]) === keep)) el.value = keep;
+        }
+
+        function renderEngineBar() {
+            const bar = document.getElementById('engine-bar');
+            if (!bar || !MODELS) return;
+            const engine = tabEngine(activeTab);
+            bar.classList.toggle('hidden', engine === 'shell');
+            const name = document.getElementById('eb-engine');
+            if (name) name.textContent = engine === 'agy' ? 'Antigravity CLI' : 'Qoder CLI';
+
+            // Slot usage: hanya hal yang benar-benar bisa dibaca lokal. Kredit/point TIDAK
+            // tersedia dari `qoder status` maupun state lokal, jadi tidak pernah ditulis angka.
+            const usage = document.getElementById('eb-usage');
+            if (usage) {
+                if (engine === 'agy') {
+                    const c = (USAGE.antigravity || {}).conversation || {};
+                    const rawModel = (USAGE.antigravity || {}).last_model || '';
+                    // CLI kadang menyimpan penanda internal, bukan nama model. Menampilkan
+                    // 'MODEL_PLACEHOLDER_M319' hanya membuat panel terlihat penuh data.
+                    const m = /^MODEL_PLACEHOLDER/i.test(rawModel) ? '' : rawModel;
+                    usage.textContent = [m, c.status ? `status ${c.status}` : '', c.steps ? `${c.steps} langkah` : '']
+                        .filter(Boolean).join(' · ') || 'usage Antigravity tidak terbaca';
+                } else {
+                    const a = (USAGE.qoder || {}).account || {};
+                    const s = (USAGE.qoder || {}).session || {};
+                    usage.textContent = [a.account_type ? `tipe ${a.account_type}` : '',
+                                         a.user_type || '',
+                                         s.turns ? `${s.turns} giliran sesi ini` : '']
+                        .filter(Boolean).join(' · ')
+                        + ' · kredit tidak tersedia dari CLI';
                 }
-                if (html) {
-                    sel.innerHTML = html;
-                    if ([...sel.options].some(o => o.value === current)) sel.value = current;
-                }
-                const eff = document.getElementById('effort-select');
-                const curEff = eff.value;
-                const efforts = (d.qoder_efforts || []);
-                if (efforts.length) {
-                    eff.innerHTML = efforts.map(e => `<option value="${esc(e)}">${esc(e)}</option>`).join('');
-                    if (efforts.includes(curEff)) eff.value = curEff;
-                }
-            } catch (e) {}
+            }
+
+            const live = TABLIVE[activeTab] || {};
+            const list = (MODELS[engine] || []).map(m => [m.id, m.label || m.id]);
+            fillSelect(document.getElementById('model-select'), list,
+                       document.getElementById('model-select')?.value);
+
+            const efforts = (engine === 'agy' ? MODELS.agy_efforts : MODELS.qoder_efforts) || [];
+            fillSelect(document.getElementById('effort-select'), efforts,
+                       document.getElementById('effort-select')?.value);
+
+            // Context window hanya berarti di Qoder; agy tidak menerima flag ini.
+            const ctxWrap = document.getElementById('eb-context-wrap');
+            if (ctxWrap) ctxWrap.style.display = engine === 'qoder' ? '' : 'none';
+            if (engine === 'qoder') {
+                fillSelect(document.getElementById('context-select'),
+                           [['1048576', '1.048.576 (1M)'], ['200000', '200.000'], ['128000', '128.000']],
+                           live.context || document.getElementById('context-select')?.value);
+            }
+
+            // Dropdown harus mencerminkan yang berjalan, bukan option pertama di daftar.
+            const ms = document.getElementById('model-select'), es = document.getElementById('effort-select');
+            if (live.model && ms && [...ms.options].some(o => o.value === live.model)) ms.value = live.model;
+            if (live.effort && es && [...es.options].some(o => o.value === live.effort)) es.value = live.effort;
         }
 
         function refreshUI() {
@@ -1074,6 +1146,12 @@
             refreshWorkspace();
             refreshRecovery();
             refreshModels();
+            // ?tab=antigravity membuka tab itu sejak awal: berguna sebagai deep link,
+            // dan membuat tampilan tiap engine bisa diperiksa tanpa klik.
+            const wantTab = new URLSearchParams(location.search).get('tab');
+            if (wantTab && typeof TABS !== 'undefined' && TABS.includes(wantTab)) {
+                setTimeout(() => switchTab(wantTab), 120);
+            }
             setInterval(fetchStats, 3000);
             setInterval(refreshWorkspace, 6000);
             setInterval(refreshRecovery, 20000);

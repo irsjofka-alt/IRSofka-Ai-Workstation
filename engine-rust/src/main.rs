@@ -1,7 +1,7 @@
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderValue, StatusCode},
-    response::{Html, IntoResponse, Response},
+    response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
@@ -611,6 +611,27 @@ fn tabs_log_dir() -> PathBuf {
 
 fn tmux_session_name(tab: &str) -> String {
     format!("station-{}", tab)
+}
+
+/// Ambil TAMPILAN pane saat ini, lengkap dengan sekuens escape-nya.
+///
+/// Ini yang dibutuhkan xterm.js untuk menggambar ulang sebuah TUI dengan benar. Memutar
+/// ulang byte historis tidak memadai: TUI menggambar dengan gerak kursor absolut
+/// (ESC[2A dan sejenisnya) yang mengasumsikan lebar tertentu, jadi replay di lebar yang
+/// berbeda menghasilkan teks saling menimpa. capture-pane memberi hasil render final.
+fn capture_screen(tab: &str) -> Option<String> {
+    run_tmux(&[
+        "capture-pane", "-e", "-p", "-S", "-2000", "-t", tmux_session_name(tab).as_str(),
+    ])
+}
+
+async fn term_screen(Query(query): Query<ReadQuery>, State(state): State<AppState>) -> Response {
+    let tab = query.tab.unwrap_or_else(|| "qoder".to_string());
+    if let Some(screen) = capture_screen(&tab) {
+        return stream_body(screen.into_bytes());
+    }
+    // Fallback untuk tab PTY langsung (tanpa tmux): pakai buffer riwayat.
+    stream_body(poll_buffer(&state, &Some(tab)))
 }
 
 fn run_tmux(args: &[&str]) -> Option<String> {
@@ -1392,6 +1413,7 @@ async fn run_server(profiles: HashMap<String, TabProfile>) {
         .route("/api/cli/config", get(get_cli_config).post(patch_cli_config))
         .route("/api/cli/restart", post(restart_cli_tab))
         .route("/api/term/read", get(term_read))
+        .route("/api/term/screen", get(term_screen))
         .route("/api/term/history", get(term_history))
         .route("/api/term/write", post(term_write))
         .route("/api/term/reset", post(term_reset))
@@ -1427,7 +1449,14 @@ async fn serve_gui() -> Response {
     let html = fs::read_to_string(gui_path())
         .or_else(|_| Ok::<String, std::io::Error>(include_str!("gui.html").to_string()))
         .unwrap_or_else(|_| "<h1>gui.html tidak ditemukan</h1>".to_string());
-    Html(html).into_response()
+    // Tanpa header ini WebKit boleh menyajikan HTML dari cache, dan tombol "Refresh UI"
+    // akan terlihat berhasil padahal yang termuat masih JavaScript lama. Semua perubahan
+    // gui.html jadi tidak pernah sampai ke jendela yang sedang terbuka.
+    Response::builder()
+        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+        .header(header::CACHE_CONTROL, "no-store, must-revalidate")
+        .body(axum::body::Body::from(html))
+        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
 }
 
 async fn serve_asset(Path(rel): Path<String>) -> Response {

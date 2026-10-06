@@ -714,20 +714,36 @@
             setTimeout(pollTerminal, 60);
         }
 
-        function switchTab(tab) {
+        async function switchTab(tab) {
             activeTab = tab;
             document.querySelectorAll('.term-tab').forEach(t => t.classList.remove('active'));
             document.getElementById('tab-' + tab).classList.add('active');
 
-            // Hide other panes, show active pane without clearing
             for (const t of TABS) {
                 const pane = document.getElementById('term-' + t);
                 if (pane) pane.style.display = (t === tab) ? 'block' : 'none';
             }
 
-            if (fitAddons[tab]) fitAddons[tab].fit();
-            if (terms[tab]) terms[tab].focus();
+            // Urutan wajib: tampil -> fit -> sinkronkan ukuran -> reset -> gambar ulang.
+            // fit() mengubah jumlah kolom. Kalau dilakukan di atas konten yang dulu ditulis
+            // pada lebar lain, xterm.js menata ulang barisnya; TUI (Qoder/Antigravity)
+            // menggambar dengan gerak kursor absolut sehingga hasil reflow itu jadi teks
+            // saling menimpa. Karena itu kontennya dibuang lalu digambar ulang dari layar
+            // pane yang sebenarnya (capture-pane -e, termasuk 2000 baris scrollback).
+            if (fitAddons[tab]) { try { fitAddons[tab].fit(); } catch(e) {} }
             syncPtySize();
+
+            const term = terms[tab];
+            if (!term) return;
+            try {
+                const res = await fetch('/api/term/screen?tab=' + tab);
+                if (res.ok) {
+                    const screen = await res.text();
+                    term.reset();
+                    term.write(screen);
+                }
+            } catch(e) {}
+            term.focus();
         }
 
         function toggleAutoApprove() {

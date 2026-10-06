@@ -1,73 +1,87 @@
-# 🛠️ AI Workstation Toolset Catalog
-**Direktori Utama:** `~/.ai-station/toolset/` (disymlink juga sebagai `~/.ai-station/tools/`)  
-**Status:** Terpusat, Terstruktur, dan Terintegrasi  
-**Host Environment:** Pop!_OS 24.04 LTS (COSMIC Desktop, Wayland)  
+# 🛠️ Katalog Perkakas Workstation
 
----
+**Direktori:** `~/.ai-station/tools/` — ini yang ikut repo.
+**Host referensi:** Pop!_OS 24.04 LTS (COSMIC Desktop, Wayland), PostgreSQL 16.
+**Yang melayani port 8999 adalah daemon Rust** (`engine-rust/`, biner
+`irsofka-station-core`), bukan skrip Python di folder ini.
 
-## 📂 Struktur & Daftar Skrip Aktif
-
-Seluruh perkakas kerja AI Workstation telah dikonsolidasi secara rapi di dalam direktori ini agar tidak berceceran di direktori `home` atau tempat lain:
+Setiap perkakas punya `--help` sendiri; dokumen ini hanya bilang **kapan** suatu perkakas
+dipakai dan **apa yang dijaminnya**, supaya mesin tidak menebak dari nama berkas.
 
 ```
-~/.ai-station/toolset/
-├── pty_station_server.py      # [CORE] Server Daemon HTTP + Live PTY Streaming (Port 8999)
-├── db_state.py                # [STORAGE] Dual-Engine Adapter (PostgreSQL 16 Primary + SQLite Fallback)
-├── mcp_workstation_local.py   # [MCP] Model Context Protocol Native Hardware & OS Server
-├── parallel_tri_engine.py     # [SWARM] Tri-Engine Parallel Task Dispatcher (Antigravity + Qoder + Ollama)
-├── wayland_actor.py           # [DESKTOP] COSMIC Wayland Screen Capture & Desktop Interactor
-├── brain_bridge.py            # [CONTEXT] Injektor Konteks Global & Brain Workspace Linker
-├── incident_recorder.py       # [REPAIR] Error Tracker & Auto-Synthesizer Skill Baru (5x Repeat Crash)
-├── TOOLSET_CATALOG.md         # Dokumen katalog ini
-└── archive/                   # Folder arsip skrip purwarupa/lama (cth: station_dashboard.py)
+tools/
+├── db_state.py                adapter penyimpanan dua engine
+├── session_ingestor.py        perekam jejak nyata ke SQL
+├── mcp_workstation_local.py   server MCP (13 tool) untuk semua CLI
+├── cross_verify.py            satu AI mengaudit pekerjaan AI lain
+├── local_llm.py               pemanggil Ollama yang tidak menahan GPU
+├── parallel_tri_engine.py     dispatcher tiga engine paralel
+├── incident_recorder.py       penghitung kegagalan → skill otomatis
+├── wayland_actor.py           screenshot & input di COSMIC/Wayland
+└── brain_bridge.py            penaut memori/skill ke workspace proyek
 ```
 
----
+## Isi
 
-## 🔍 Detail Setiap Modul
+### `db_state.py` — satu pintu ke memori faktual
+PostgreSQL primer, SQLite cadangan. `get_db_connection()` mengembalikan pasangan
+`(koneksi, 'POSTGRESQL'|'SQLITE')` dan pemakai **wajib** memakai placeholder yang cocok —
+di sinilah beberapa kegagalan tulis terjadi ketika dua basis data dianggap sama.
+Dijalankan langsung (`python3 tools/db_state.py`) akan memanggil `init_db()` dan mencetak
+engine aktif. Tabel inti: `action_log`, `world_memory`, `quest_tasks`, `session_turns`,
+`incident_log`, `skills_inventory`, `ai_message`, `player_profile`.
 
-### 1. `pty_station_server.py` (Core Server Daemon)
-- **Peran:** Backend server utama yang menjalankan antarmuka grafis desktop dan live streaming terminal.
-- **Port:** `8999` (`http://127.0.0.1:8999`).
-- **Teknologi:** Python 3.12 Asynchronous PTY Multiplexer + HTTP REST API.
-- **Fitur Kunci:**
-  - Mengelola pseudo-terminal Linux (`pty.openpty()`) untuk 3 sesi: Qoder CLI, Antigravity CLI, dan Pop!_OS Shell.
-  - Menyediakan endpoint streaming output terminal (`/api/term/read`) dan input keyboard (`/api/term/write`).
-  - Fitur saklar *Auto-Approve Tools* untuk menyuntikkan bypass flag secara otomatis (`--permission-mode bypass_permissions` dan `--dangerously-skip-permissions`).
-  - Dikelola oleh systemd: `systemctl --user status irsofka-ai-workstation.service`.
+### `session_ingestor.py` — jejak, bukan kesan
+`watch` memantau log sesi Qoder dan menulis tiap prompt/perintah/jawaban ke SQL; `snapshot`
+menulis handoff mekanis; `sweep_failures` menghitung kegagalan per `error_signature`
+(path direduksi ke basename supaya kegagalan identik menumpuk di satu hitungan, bukan
+menyebar jadi banyak insiden palsu).
 
-### 2. `db_state.py` (Dual-Engine Database Adapter)
-- **Peran:** Mengelola state penyimpanan profil pengembang, inventaris skill, telemetry GPU/RAM, dan task quest.
-- **Koneksi:**
-  - **Primer:** PostgreSQL 16 Enterprise (`postgresql://irsofka@localhost:5432/irsofka_ai_workstation`).
-  - **Sekunder:** SQLite (`~/.ai-station/brain/workstation.db`) dengan failover zero-downtime otomatis jika PostgreSQL terhenti.
-- **Fungsi Utama:** `init_db()`, `get_db_connection()`, `log_session_turn()`, `record_quest_task()`, `get_stats_summary()`.
+### `mcp_workstation_local.py` — tangan AI ke mesin
+13 tool: `take_screenshot_wayland`, `get_hardware_telemetry`, `query_workstation_db`,
+`update_quest_task`, `send_desktop_notification`, `control_system_volume`, `read_terminal`,
+`send_to_terminal`, `refresh_workstation_ui`, `restart_workstation_daemon`, `ask_peer`,
+`check_messages`, `resolve_message`. Server ini wajib menjawab **setiap** request MCP —
+`resources/list`, `prompts/list`, `ping` termasuk. Versi dulu diam pada metode yang tidak
+diketahui, dan karena itu Antigravity berhenti memuat tool sama sekali.
 
-### 3. `mcp_workstation_local.py` (Native Local MCP Server)
-- **Peran:** Menghubungkan AI (Antigravity & Qoder) secara langsung ke hardware dan OS fisik menggunakan protokol JSON-RPC 2.0 stdio.
-- **Status:** Terdaftar di `agy mcp list` dan `qoder mcp list -s user`.
-- **Tools Tersedia:**
-  - `get_hardware_telemetry`: Monitoring suhu GPU RTX 3060, VRAM, RAM, CPU load.
-  - `take_screenshot_wayland`: Tangkapan layar desktop COSMIC via `cosmic-screenshot`.
-  - `send_desktop_notification`: Menembakkan pop-up notifikasi desktop via `notify-send`.
-  - `control_system_volume`: Mengontrol volume audio via `pactl`.
-  - `query_workstation_db`: Eksekusi query baca dari database relasional.
-  - `update_quest_task`: Mencatat progres tugas langsung ke PostgreSQL.
+### `cross_verify.py` — verifikasi lintas mesin
+Membaca `config/engines.json` (tidak ada engine yang di-hardcode di sini). Tiga transport:
+`pane` (tab tmux yang hidup — cepat, dan memakai sesi yang sudah login), `cli` (spawn proses
+baru), `ollama` (model lokal). `VERDICT:` diambil dari kemunculan **terakhir**, karena
+scrollback pane menyimpan verdict lama; mengambil yang pertama memberi hasil salah yang
+terlihat benar. Engine yang tidak ada dilaporkan `UNAVAILABLE`.
 
-### 4. `parallel_tri_engine.py` (Tri-Engine Parallel Swarm)
-- **Peran:** Eksekutor tugas paralel yang membagi instruksi pengguna ke dalam 3 mesin AI sekaligus:
-  - **Engine 1:** Google Antigravity (Gemini 3.8 Flash High / 3.1 Pro High) ➔ High Architecture & Logic.
-  - **Engine 2:** Qoder CLI (Qwen 3.8 Flash 1M Context / 0 Points) ➔ Codebase Synthesis & Deep File Audit.
-  - **Engine 3:** Local Ollama / RTX 3060 ➔ Offline Micro-Tasks.
-- **Output:** Menghimpun respons dari ketiga engine dan mencatat hasilnya ke tabel `quest_tasks` di PostgreSQL.
+### `local_llm.py` — disiplin GPU yang bisa dijalankan
+Tiga penjaga: gerbang VRAM sebelum muat (`min_free_mib` dari registry), `keep_alive=0` supaya
+model tidak tertahan lima menit, dan `ollama stop` + periksa VRAM benar-benar kembali (cetak
+⚠ kalau tidak). Tanpa GPU cukup, jalankan di CPU/RAM (`--cpu`, `options.num_gpu=0`).
+`--status` menjelaskan apa yang menghalangi sekarang.
 
-### 5. `wayland_actor.py` (Wayland Desktop Actor)
-- **Peran:** Mengintegrasikan kapabilitas "Eye & Hand" pada Wayland COSMIC Desktop.
-- **Fungsi:** Mengambil screenshot desktop ke `~/.ai-station/brain/memory/screenshot_latest.png` dan menyiapkan integrasi simulator input Wayland (`ydotool`).
+### `parallel_tri_engine.py` — tiga engine sekaligus
+Dispatcher paralel yang **membaca registry yang sama** dengan `cross_verify.py`. Batas waktu
+lama 120 detik terbukti menghasilkan laporan `FAILED` palsu (satu giliran kerja Qoder yang sah
+bisa belasan menit), sekarang `STATION_TASK_TIMEOUT` default 1800. `TIMEOUT`, `UNAVAILABLE`,
+dan `FAILED` adalah status berbeda dan tidak pernah dilebur.
 
-### 6. `brain_bridge.py` (Global Brain Linker)
-- **Peran:** Menghubungkan proyek coding di luar folder AI Station (misalnya `splendid-hawking` atau proyek game dev) ke direktori Brain global (`~/.ai-station/brain/`).
-- **Fungsi:** Menghasilkan ringkasan status workspace dan menyuntikkan rules/skills otomatis.
+### `incident_recorder.py` — kegagalan yang berulang jadi pelajaran
+Hitungan per `error_signature` masuk ke `incident_log`; pada kelipatan 5x ia menulis
+`brain/skills/learned/<signature>.md`, mendaftar skill di `skills_inventory`
+(`auto_learned = TRUE`), dan menandai insiden `resolved`. Tanpa pendaftaran ke SQL, skill
+"terbelajar" hanya ada sebagai teks yang tidak pernah dihitung oleh siapa pun.
 
-### 7. `incident_recorder.py` (Self-Healing Auto Synthesizer)
-- **Peran:** Memantau error CLI dan crash sistem. Jika jenis error yang sama terjadi sebanyak $\ge 5$ kali, modul ini secara otomatis menyintesis file *Learned Skill* baru di `~/.ai-station/brain/skills/learned/`.
+### `wayland_actor.py` — mata dan tangan
+Tangkap layar COSMIC/Wayland dan kirim input mouse/keyboard. Batasnya nyata: Wayland menolak
+screenshot dari proses tanpa sesi desktop, dan `ydotool` butuh akses socket uinput. Kalau keduanya gagal, jawabannya "belum terverifikasi visual", bukan "aplikasinya rusak".
+
+### `brain_bridge.py` — menautkan, tidak menyalin
+Menghubungkan workspace proyek ke `~/.ai-station/brain/` lewat berkas pointer, supaya satu
+perubahan memori cukup ditulis sekali. Menyalin isi brain ke folder proyek adalah cara tercepat mendapatkan dua AI dengan cerita berbeda.
+
+## Yang tidak ada di daftar ini, dan alasannya
+
+`tools/pty_station_server.py` (server Python lama) masih ada di mesin ini sebagai arsip
+lokal dan di-gitignore. Ia **digantikan** `engine-rust/src/main.rs`; dokumen lama sempat
+menuliskannya sebagai `[CORE]`, yang membuat orang mengira systemd menghidupkan skrip
+Python itu di port 8999. Kalau kamu menemukan berkas itu: jangan dijalankan, dan jangan
+dijadikan rujukan.

@@ -820,6 +820,11 @@ WITH pr AS (
   SELECT id, ts, session_id, tab, model, cwd, summary
   FROM action_log
   WHERE kind = 'prompt'
+    -- Prompt yang masuk lewat pintu mesin bukan permintaan operator. Notifikasi task
+    -- dan sisipan sistem tercatat dengan kind yang sama, dan kalau dibiarkan ia jadi
+    -- postingan yang seolah-olah kamu perintahkan.
+    AND summary NOT LIKE '<task-notification>%'
+    AND summary NOT LIKE '<system-reminder>%'
 ), bnd AS (
   SELECT pr.id,
          pr.ts AS opened_at,

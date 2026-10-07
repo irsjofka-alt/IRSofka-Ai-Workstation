@@ -11,11 +11,13 @@ mesin tersimpan di tabel `autopilot_state`, dan jalur resume membaca kolom itu l
 from __future__ import annotations
 
 import argparse
+import inspect
 import json
 import re
 import sqlite3
 import sys
 import time
+from datetime import datetime, timezone
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -27,7 +29,8 @@ STATUS = ("PENDING", "CLAIMED", "WORKING", "BLOCKED", "HUMAN", "PARKED",
           "COMPLETED", "FAILED", "UNAVAILABLE")
 ALIAS = {"IN_PROGRESS": "CLAIMED", "DONE": "COMPLETED"}
 
-LEASE_SECONDS = 900          # satu item tanpa heartbeat 15 menit dianggap lepas
+LEASE_SECONDS = 900          # satu item tanpa perpanjangan lease 15 menit dianggap lepas
+MIN_SAMPLE_GAP = 1           # detik; di bawahnya "pane tidak berubah" bukan pembacaan apa pun
 MAX_RESUME = 3               # item yang butuh 4 sentuhan bukan tertidur, tapi macet
 EVIDENCE_LIMIT = 900
 # Circuit breaker (temuan reviewer Gemini, 2026-10-08). Tanpa ini sebuah item yang gagal dengan
@@ -266,7 +269,9 @@ def claim(conn, engine, item_id, who):
     return (True, f"claimed by {who}") if ok else (False, "klaim tidak terbaca di baris")
 
 
-def heartbeat(conn, engine, item_id):
+def renew_lease(conn, engine, item_id):
+    """Perpanjang lease. Fungsi ini pernah bernama `heartbeat` — satu kata untuk dua hal berbeda;
+    §12 melarang itu, jadi nama itu sekarang hanya punya indera F10.7 di bawah."""
     run(conn, engine,
         "UPDATE quest_tasks SET lease_epoch=%s WHERE id=%s AND status IN ('WORKING','CLAIMED')"
         if engine == "POSTGRESQL" else
@@ -336,11 +341,53 @@ def resolve_decision(conn, engine, decision_id, rung, engine_key, model_id, answ
     return True, f"decision {decision_id} -> {state}"
 
 
+def _last_action(conn, engine, who):
+    """`(epoch, terbaca)` aksi terukur terakhir satu engine — dua nilai, bukan satu.
+
+    Satu angka tidak boleh menyamar jadi dua hal. Tabel yang tidak terbaca dan engine yang memang
+    belum pernah mencatat sama-sama kembali sebagai None, dan kalau keduanya berarti "tidak ada
+    aksi", sinyal yang HILANG justru terbaca sebagai bukti terkuat bahwa sebuah pane menganggur.
+    Invarian 5 berlaku ke dua sisi, bukan cuma sisi tmux. Yang TIDAK bisa dibedakan dari sini adalah
+    "belum pernah mencatat" dan "mencatat dengan nama lain" — `claimed_by` dan kolom `engine` punya
+    ruang penamaan masing-masing — jadi `heartbeat()` memperlakukan None sebagai sinyal yang tidak
+    mendukung kesimpulan apa pun, bukan sebagai bukti menganggur.
+
+    Kolomnya `ts` di kedua backend (DDL milik `session_ingestor.py`: `TIMESTAMPTZ` di Postgres,
+    `TIMESTAMP DEFAULT CURRENT_TIMESTAMP` di SQLite), tapi bentuknya beda: Postgres mengirim datetime
+    ber-zona, SQLite mengirim teks UTC. Teks yang diperlakukan sebagai waktu lokal membuat umur aksi
+    meleset sejauh zona waktu mesin — tujuh jam di sini — dan meleset ke masa lalu adalah arah yang
+    melahirkan `AT_REST` palsu.
+    """
+    try:
+        rows = run(conn, engine,
+                   "SELECT MAX(ts) AS t FROM action_log WHERE engine=" +
+                   ("%s" if engine == "POSTGRESQL" else "?"),
+                   (who,))
+    except Exception:  # noqa: BLE001 — tabel tidak ada / koneksi seret: itu UNKNOWN, bukan diam
+        # Koneksi ini autocommit (db_state.py: conn.autocommit = True), jadi kegagalan SELECT tidak
+        # meninggalkan transaksi aborted yang membuat pembacaan berikutnya ikut gagal.
+        return None, False
+    v = rows[0]["t"] if rows and rows[0].get("t") else None
+    if v is None:
+        return None, True
+    if isinstance(v, str):
+        try:
+            v = datetime.strptime(v[:19], "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
+        except ValueError:
+            return None, False
+    if hasattr(v, "timestamp"):
+        return int(v.timestamp()), True
+    # Float / Decimal / date bukan bentuk yang dijanjikan DDL mana pun. Membacanya sebagai
+    # "terbaca, cuma None" akan menyamar jadi "engine ini belum berbuat apa-apa".
+    return (v if isinstance(v, int) else None), isinstance(v, int)
+
+
 def stalled(conn, engine, older_than=180):
     """Kandidat resume: WORKING, lease masih hidup, tidak ada aksi terukur selama `older_than`s.
 
-    Ini hanya daftar. Keputusan mengirim ketikan ada di daemon dan butuh dua sinyal lagi
-    (pane terbaca + teksnya tidak berubah); di sini tidak ada satu pun dari itu.
+    Ini hanya daftar satu sinyal. `heartbeat()` yang menambahkan sinyal kedua dan aturan UNKNOWN,
+    dan hanya bacaannya yang boleh dipakai. Karena itu tiap baris membawa `action_log_readable`:
+    daftar yang menyamar jadi kesimpulan adalah cara tercepat mengetik ke tengah kerja orang lain.
     """
     rows = run(conn, engine,
                "SELECT id, title, claimed_by, lease_epoch, resume_count FROM quest_tasks "
@@ -348,16 +395,102 @@ def stalled(conn, engine, older_than=180):
     fresh = []
     cutoff = now() - older_than
     for r in rows:
-        last = run(conn, engine,
-                   "SELECT MAX(ts) AS t FROM action_log WHERE engine=%s"
-                   if engine == "POSTGRESQL" else
-                   "SELECT MAX(created_at) AS t FROM action_log WHERE engine=?",
-                   (r["claimed_by"],))
-        t = last[0]["t"] if last and last[0].get("t") else None
-        epoch = int(t.timestamp()) if hasattr(t, "timestamp") else (t if isinstance(t, int) else None)
-        if r.get("lease_epoch") and r["lease_epoch"] > now() and (epoch is None or epoch < cutoff):
-            fresh.append({**r, "last_action_epoch": epoch})
+        epoch, readable = _last_action(conn, engine, r["claimed_by"])
+        if readable and r.get("lease_epoch") and r["lease_epoch"] > now() \
+                and (epoch is None or epoch < cutoff):
+            fresh.append({**r, "last_action_epoch": epoch, "action_log_readable": True})
     return fresh
+
+
+def _pane_text(capture, tab):
+    """Satu pembacaan pane. `capture` milik orang lain (tmux, nanti SSH, nanti mesin lain), jadi
+    bentuk kegagalannya bukan hanya None: fungsi yang melempar adalah pembacaan yang mati, dan
+    PEMBACAAN YANG MATI adalah UNKNOWN — bukan pane kosong, bukan pane diam, bukan crash."""
+    try:
+        return capture(tab)
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def heartbeat(conn, engine, quiet_seconds=180, sample_gap=3, capture=None, busy=None):
+    """WORKING / AT_REST / UNKNOWN per klaim terbuka — dua sinyal harus setuju dulu.
+
+    Yang ditolak di sini adalah cara termudah: menyimpulkan "diam" dari satu sinyal. Sebuah CLI
+    yang sedang berpikir panjang tidak menulis baris `action_log`, dan satu yang baru saja selesai
+    menulis juga tidak. Jadi dibutuhkan dua pembacaan yang saling bebas — umur aksi di database dan
+    teks pane yang berubah di antara dua sampel — dan `AT_REST` hanya keluar kalau KEDUANYA setuju.
+    Salah menyimpulkan `AT_REST` berarti mengetik `CONTINUE` ke tengah pekerjaan orang lain.
+
+    Invarian 5 menentukan sisanya, untuk KEDUA sisi, dan ia kejam: EMPAT keadaan berbeda semuanya
+    menghasilkan nol pembacaan dan keempatnya `UNKNOWN`, bukan "diam" — pane yang tidak terbaca, tabel
+    yang tidak terbaca, tabel yang terbaca tapi KOSONG untuk nama engine ini, dan dua pembacaan yang
+    diambil tanpa jeda. Yang ketiga itu temuan reviewer (Oct 8, 02:05): `claimed_by` dan kolom `engine`
+    di ledger adalah dua ruang penamaan yang tidak dijamin sama, jadi "tidak ada baris atas nama qoder"
+    bisa berarti "ia belum berbuat apa-apa" ATAU "ledger menyimpannya dengan nama lain" — dan satu-
+    satunya pembacaan yang tersisa lalu menyimpulkan diam dari satu sinyal.
+
+    Interval karena itu ikut menjadi bukti, bukan bentuk: `sample_gap` punya lantai di jalur produksi
+    (`MIN_SAMPLE_GAP`), dan 0 hanya honored untuk `capture` suntikan — tes tidak boleh tidur, produksi
+    tidak boleh mengambil dua sampel di waktu yang sama. Karena itu tidak ada satu pun jalur lewat
+    fungsi ini yang mengirim apa pun — fungsi ini hanya indera. Tangan milik F10.3, dan ia belum boleh
+    dipakai malam ini.
+
+    `capture`/`busy` bisa diganti supaya tes tidak membaca pane operator yang sedang hidup.
+    """
+    injected = capture is not None or busy is not None
+    if capture is None or busy is None:
+        import cross_verify as cv
+        capture = capture or cv.capture_pane
+        busy = busy or cv.pane_is_busy
+    if sample_gap < MIN_SAMPLE_GAP and not injected:
+        sample_gap = MIN_SAMPLE_GAP
+    rows = run(conn, engine,
+               "SELECT id, title, claimed_by, lease_epoch, resume_count FROM quest_tasks "
+               "WHERE status IN ('WORKING','CLAIMED') AND claimed_by IS NOT NULL")
+    if not rows:
+        return []
+    tabs = sorted({r["claimed_by"] for r in rows})
+    before = {t: _pane_text(capture, t) for t in tabs}
+    if sample_gap:
+        time.sleep(sample_gap)
+    after = {t: _pane_text(capture, t) for t in tabs}
+    interval = sample_gap > 0
+
+    out = []
+    for r in rows:
+        who = r["claimed_by"]
+        epoch, log_readable = _last_action(conn, engine, who)
+        quiet_s = None if epoch is None else now() - epoch
+        b, a = before.get(who), after.get(who)
+        pane_readable = bool(b) and bool(a)
+        if not pane_readable and not log_readable:
+            state, why = "UNKNOWN", "kedua sinyal mati: pane dan action_log tidak terbaca"
+        elif not pane_readable:
+            state, why = "UNKNOWN", "pane tidak terbaca — bukan berarti diam"
+        elif not log_readable:
+            state, why = "UNKNOWN", "action_log tidak terbaca: satu sinyal hilang, dua belum setuju"
+        elif busy(a):
+            state, why = "WORKING", "pane menampilkan spinner/esc-to-cancel"
+        elif b != a:
+            # Perubahan adalah bukti dengan sendirinya: dua pembacaan yang BERBEDA membuktikan gerak
+            # walau diambil beruntun. Yang butuh jeda hanya kesimpulan "tidak ada perubahan".
+            state, why = "WORKING", "teks pane berubah di antara dua sampel"
+        elif not interval:
+            state, why = "UNKNOWN", "dua pembacaan tanpa jeda: 'tidak berubah' bukan bukti"
+        elif epoch is None:
+            state, why = "UNKNOWN", "ledger tidak punya baris atas nama ini: diam atau nama lain"
+        elif quiet_s < quiet_seconds:
+            state, why = "WORKING", f"aksi terukur {quiet_s}s lalu"
+        else:
+            state, why = "AT_REST", f"dua sinyal setuju: aksi terakhir {quiet_s}s lalu, pane diam {sample_gap}s"
+        out.append({**{k: r[k] for k in ("id", "title", "claimed_by", "resume_count")},
+                    "state": state, "why": why,
+                    "pane_readable": pane_readable, "action_log_readable": log_readable,
+                    "last_action_epoch": epoch, "quiet_seconds": quiet_s,
+                    "sample_gap": sample_gap,
+                    "lease_alive": bool(r.get("lease_epoch")) and r["lease_epoch"] > now(),
+                    "resume_budget_left": max(0, MAX_RESUME - int(r.get("resume_count") or 0))})
+    return out
 
 
 def autopilot(conn, engine, mode=None, minutes=None, budget=None, who="operator", reason=None):
@@ -631,7 +764,8 @@ ROADMAP_ITEMS = [
              "menjawab tercatat, jawabannya dibaca dari tabel/pane bukan hanya pipa", "build",
      ["f84"], "python3 tools/work_order.py selftest"),
     ("f107", "F10.7 heartbeat: dua sinyal independen sebelum CONTINUE dikirim, pane tak terbaca "
-             "= UNKNOWN", "build", ["f108"], "python3 tools/work_order.py stalled"),
+             "= UNKNOWN", "build", ["f108"],
+             "python3 tools/work_order.py selftest && python3 tools/work_order.py heartbeat"),
     ("f103", "F10.3 drainer systemd timer dengan circuit breaker + batas kuota per malam", "build",
      ["f84", "f108", "f101"], "systemctl --user list-timers irsofka-autopilot.timer"),
     ("f91", "F9.1 deterministic environment state: exit code + process tree + delta pane "
@@ -698,8 +832,106 @@ def selftest():
         check("item UNAVAILABLE tidak pernah ditawarkan sebagai kerja",
               next_item(conn, "SQLITE") is None, str(next_item(conn, "SQLITE")))
 
-        stale = run(conn, "SQLITE", "SELECT 1")  # stall tidak diuji di sini: butuh action_log produksi
-        check("stalled() tersedia", callable(stalled), str(stale and ""))
+        # --- F10.7 heartbeat: dua sinyal harus setuju sebelum ada yang boleh disebut diam ---
+        # capture/busy disuntik: tes tidak pernah membaca pane operator yang sedang hidup.
+        hb_id = seed(conn, "SQLITE", [("kHB", "HB", "build", None, "true")])[0][0]
+        claim(conn, "SQLITE", hb_id, "qoder")
+
+        GAP = 0.02   # jeda yang benar-benar diambil; produksi dilantai oleh MIN_SAMPLE_GAP
+
+        def still(_tab):
+            return "prompt kosong"
+
+        def shifting(_tab):
+            shifting.n += 1
+            return f"frame {shifting.n}"
+
+        shifting.n = 0
+
+        def explode(_tab):
+            raise RuntimeError("tmux hilang")
+
+        calm = lambda _screen: False          # noqa: E731
+        spinner = lambda _screen: True        # noqa: E731
+
+        rows = heartbeat(conn, "SQLITE", 180, GAP, capture=lambda _t: None, busy=calm)
+        check("pane tidak terbaca = UNKNOWN, bukan AT_REST",
+              rows and rows[0]["state"] == "UNKNOWN" and rows[0]["pane_readable"] is False,
+              str(rows and rows[0]))
+        check("sinyal database yang tidak terbaca ikut menjadi UNKNOWN",
+              rows and rows[0]["action_log_readable"] is False, str(rows and rows[0]))
+        check("satu sinyal hilang cukup untuk menolak kesimpulan",
+              rows and rows[0]["state"] == "UNKNOWN" and "AT_REST" not in str(rows), str(rows))
+        rows = heartbeat(conn, "SQLITE", 180, GAP, capture=explode, busy=calm)
+        check("capture yang melempar bukan crash dan bukan diam — UNKNOWN",
+              rows[0]["state"] == "UNKNOWN" and rows[0]["pane_readable"] is False, str(rows[0]))
+        check("stalled() tidak mengarang kandidat dari tabel yang tak terbaca",
+              stalled(conn, "SQLITE", older_than=0) == [], str(stalled(conn, "SQLITE", 0)))
+
+        conn.execute("CREATE TABLE action_log (engine TEXT, ts TEXT)")
+        conn.commit()
+        rows = heartbeat(conn, "SQLITE", 180, GAP, capture=still, busy=calm)
+        check("tabel terbaca tapi kosong atas nama pemegang = UNKNOWN, bukan AT_REST",
+              rows[0]["state"] == "UNKNOWN" and rows[0]["last_action_epoch"] is None
+              and rows[0]["action_log_readable"] is True, str(rows[0]))
+
+        conn.execute("INSERT INTO action_log (engine, ts) VALUES ('qoder', 'bukan-tanggal')")
+        conn.commit()
+        rows = heartbeat(conn, "SQLITE", 180, GAP, capture=still, busy=calm)
+        check("tanggal yang tak bisa dibaca = sinyal mati, bukan sinyal kosong",
+              rows[0]["state"] == "UNKNOWN" and rows[0]["action_log_readable"] is False,
+              str(rows[0]))
+
+        conn.execute("DELETE FROM action_log")
+        conn.execute("INSERT INTO action_log (engine, ts) VALUES ('qoder', datetime('now','-1 hour'))")
+        conn.commit()
+        rows = heartbeat(conn, "SQLITE", 180, GAP, capture=still, busy=calm)
+        check("teks UTC dibaca sebagai UTC: umur aksi ≈ 3600s",
+              3540 <= (rows[0]["quiet_seconds"] or 0) <= 3660, str(rows[0]["quiet_seconds"]))
+        check("dua sinyal setuju = AT_REST", rows[0]["state"] == "AT_REST", str(rows[0]))
+        check("lease dan sisa budget resume ikut dilaporkan",
+              rows[0]["lease_alive"] is True and rows[0]["resume_budget_left"] == MAX_RESUME,
+              str(rows[0]))
+        rows = heartbeat(conn, "SQLITE", 180, 0, capture=still, busy=calm)
+        check("dua pembacaan tanpa jeda tidak boleh menyimpulkan diam",
+              rows[0]["state"] == "UNKNOWN" and "jeda" in rows[0]["why"], str(rows[0]))
+
+        conn.execute("INSERT INTO action_log (engine, ts) VALUES ('qoder', datetime('now'))")
+        conn.commit()
+        rows = heartbeat(conn, "SQLITE", 180, GAP, capture=still, busy=calm)
+        check("satu aksi terukur membatalkan kesimpulan diam",
+              rows[0]["state"] == "WORKING" and "aksi terukur" in rows[0]["why"], str(rows[0]))
+
+        rows = heartbeat(conn, "SQLITE", 180, GAP, capture=shifting, busy=calm)
+        check("teks pane yang berubah = WORKING walau database diam",
+              rows[0]["state"] == "WORKING" and "berubah" in rows[0]["why"], str(rows[0]))
+        rows = heartbeat(conn, "SQLITE", 180, 0, capture=shifting, busy=calm)
+        check("perubahan tetap bukti walau tanpa jeda; yang butuh jeda hanya ketiadaan perubahan",
+              rows[0]["state"] == "WORKING", str(rows[0]))
+
+        rows = heartbeat(conn, "SQLITE", 0, GAP, capture=still, busy=spinner)
+        check("spinner lebih dipercaya daripada dua sinyal diam",
+              rows[0]["state"] == "WORKING" and "spinner" in rows[0]["why"], str(rows[0]))
+
+        finish(conn, "SQLITE", hb_id, "COMPLETED", evidence="selftest: heartbeat dua sinyal")
+        check("tanpa klaim terbuka heartbeat tidak mengarang baris",
+              heartbeat(conn, "SQLITE", 180, 0, capture=still, busy=calm) == [], "ada baris")
+        # Invarian yang tidak boleh lulus tanpa diperiksa: jalur baca ini hanya indera. Cara
+        # tercepat menjebolnya adalah orang berikutnya menambah "sedikit" pengiriman di ujung yang
+        # sama — jadi yang diperiksa bukan hanya heartbeat(), tapi setiap fungsi yang ia panggil.
+        seen = ""
+        for fn in (heartbeat, _pane_text, _last_action, stalled):
+            seen += inspect.getsource(fn)
+        check("jalur baca tidak punya tangan: nol jalur ketik/spawn di heartbeat dan setiap bagiannya",
+              not any(w in seen for w in ("send-keys", "send_to_terminal", "ydotool",
+                                          "subprocess", "run_grouped", "run_bounded")),
+              "ada jalur pengiriman di jalur baca")
+        # Klaimnya harus sebatas yang benar: membaca pane memang memakai subprocess, tapi di
+        # cross_verify.capture_pane — satu-satunya nama yang boleh dipinjam heartbeat.
+        borrowed = [n for n in ("capture_pane", "pane_is_busy", "run_engine", "engine_present",
+                                "send_keys") if f"cv.{n}" in inspect.getsource(heartbeat)]
+        check("yang dipinjam dari cross_verify hanya dua pembacaan, bukan pengiriman",
+              borrowed == ["capture_pane", "pane_is_busy"], str(borrowed))
 
         ap = autopilot(conn, "SQLITE")
         check("autopilot default OFF", ap and ap["mode"] == "OFF", str(ap))
@@ -921,6 +1153,25 @@ def selftest_live():
               any(x["id"] == irr[0]["id"] for x in stt["decisions_open"])
               and "rung_used" in (stt["decisions_open"][0] if stt["decisions_open"] else {}),
               str([x.get("id") for x in stt["decisions_open"]][:5]))
+        # Kelas bug yang sama untuk F10.7: pertanyaan lama memakai `created_at` di jalur SQLite,
+        # padahal kolomnya bernama `ts` di KEDUA backend (DDL milik session_ingestor.py). Nama yang
+        # salah hanya meledak saat tabelnya benar-benar dibaca, jadi ia diperiksa di produksi.
+        epoch, readable = _last_action(conn, engine, "qoder")
+        check("aksi engine terbaca di backend produksi", readable, str(epoch))
+        check("umur aksi berupa epoch bilangan, bukan teks",
+              epoch is None or isinstance(epoch, int), f"{type(epoch).__name__}: {epoch}")
+        # heartbeat produksi: hanya membaca (capture-pane + SELECT). Tidak ada satu byte pun yang
+        # dikirim ke pane mana pun, jadi aman dijalankan sementara operator memegang terminalnya.
+        beats = heartbeat(conn, engine, sample_gap=1)
+        check("heartbeat atas klaim produksi mengembalikan keadaan tiga nilai",
+              all(b["state"] in ("WORKING", "AT_REST", "UNKNOWN") for b in beats),
+              str([(b["claimed_by"], b["state"]) for b in beats]))
+        check("heartbeat menyebut pane yang memang terbaca",
+              all(isinstance(b["pane_readable"], bool) for b in beats), str(beats[:1]))
+        check("UNKNOWN tidak pernah dibuat dari pane yang terbaca dan log yang terbaca",
+              all(b["state"] != "UNKNOWN" or not (b["pane_readable"] and b["action_log_readable"])
+                  for b in beats),
+              str([b for b in beats if b["state"] == "UNKNOWN"]))
     finally:
         like = f"{mark}%"
         run(conn, engine, "DELETE FROM quest_tasks WHERE title LIKE "
@@ -985,7 +1236,12 @@ def main(argv=None):
     sub.add_parser("ensure")
     p = sub.add_parser("seed"); p.add_argument("--roadmap", action="store_true")
     p = sub.add_parser("claim"); p.add_argument("id", type=int); p.add_argument("--by", required=True)
-    p = sub.add_parser("heartbeat"); p.add_argument("id", type=int)
+    p = sub.add_parser("lease"); p.add_argument("id", type=int)
+    p = sub.add_parser("heartbeat")
+    p.add_argument("--quiet", type=int, default=180,
+                   help="berapa detik tanpa aksi terukur baru dianggap diam")
+    p.add_argument("--gap", type=float, default=float(MIN_SAMPLE_GAP),
+                   help=f"detik antara dua pembacaan pane (lantai {MIN_SAMPLE_GAP}s di produksi)")
     p = sub.add_parser("complete"); p.add_argument("id", type=int); p.add_argument("--evidence", default="")
     p = sub.add_parser("block"); p.add_argument("id", type=int); p.add_argument("--reason", required=True)
     p = sub.add_parser("human"); p.add_argument("id", type=int); p.add_argument("--reason", required=True)
@@ -1034,9 +1290,12 @@ def main(argv=None):
         ok, msg = claim(conn, engine, a.id, a.by)
         print(msg)
         return 0 if ok else 1
-    elif a.cmd == "heartbeat":
-        it = heartbeat(conn, engine, a.id)
+    elif a.cmd == "lease":
+        it = renew_lease(conn, engine, a.id)
         print(json.dumps({"id": a.id, "lease_epoch": it and it.get("lease_epoch")}))
+    elif a.cmd == "heartbeat":
+        # Hanya indera. Tidak ada satu baris pun di bawah yang mengetik ke pane mana pun.
+        print(json.dumps(heartbeat(conn, engine, a.quiet, a.gap), default=str, indent=2))
     elif a.cmd == "complete":
         ok, msg = finish(conn, engine, a.id, "COMPLETED", evidence=a.evidence)
         print(msg)

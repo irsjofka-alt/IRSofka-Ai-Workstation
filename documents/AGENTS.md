@@ -148,9 +148,14 @@ is registered `reviewer` and `local` (`qwen3.5:9b`) is registered `validator` �
 **Unattended ticks inherit every rule above.** Autopilot changes *who triggers* a tick, never *what a tick
 may do*: the deploy gates, the call-worker cut, the `DISPUTED`-over-silence rule and §6 all apply with no
 human watching. The daemon may nudge an engine it believes has stopped only when two independent signals
-agree — an open task claim, no `action_log` row for T minutes, and a pane whose text is not changing. A
-pane that cannot be read is `UNKNOWN`, never `idle`: absence of evidence is not permission, on the resume
-path exactly as on the cut path.
+agree — an open task claim, an `action_log` row for that engine that is older than T minutes, and a pane
+whose text is unchanged across two reads taken with a real gap between them. Absence of evidence is not
+permission on either side, so each of these is `UNKNOWN` and never `idle`: a pane that cannot be read, a
+ledger that cannot be read, a ledger that is readable but holds **no row under the name holding the
+claim** (`claimed_by` and the ledger's engine name are two naming spaces with nothing guaranteeing they
+agree), and two pane reads taken with no interval, where "it did not change" is a tautology rather than
+an observation. `tools/work_order.py heartbeat` is the only reader of that rule and it sends nothing;
+the hand that acts on it is F10.3.
 
 ## 5. Honest Status Reporting
 

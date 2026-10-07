@@ -369,15 +369,16 @@ only agreed with is not a review:
   whatever another engine was mid-way through writing, and invariant 3 puts uncommitted work of someone
   else beyond any tick's reach. The correct behaviour is to refuse the claim and escalate the filenames.
   (The same reasoning rejected keystroke injection on the first night the operator was asleep: F10.7's
-  `CONTINUE` is designed and deferred, not shipped, because a resume path that has never been watched
-  over a shoulder is the same class of mistake as an off switch that has not been built yet.)
+  detector shipped at 02:10 and its `CONTINUE` is designed and deferred, not shipped, because a resume
+  path that has never been watched over a shoulder is the same class of mistake as an off switch that
+  has not been built yet.)
 - It deferred F9.1 until F10 lands. Refused: F9.1 reads exit codes, process trees and pane deltas —
   deterministic, read-only, no dependency on the queue — and F10.7 needs exactly those measurements to
   exist. Parking it costs the one thing F10 is built on. F9.1 stays unblocked and parallel.
 
 Order as it will be built: **F8.4 + F10.2** (✅ 01:00) → **F10.8** (🟡 01:30, switch shipped; expiry
 and drainer still owed) → **F10.1** (🟡 01:44, broker shipped; nothing forces an engine to call it yet)
-→ **F10.7** →
+→ **F10.7** (🟡 02:10, the sense shipped; the hand — `CONTINUE` — deliberately not) →
 **F10.3** → F10.4 / F10.5 / F10.6. The seeded queue encodes this through `depends_on`, so an engine
 that skips the order cannot claim.
 
@@ -477,7 +478,7 @@ that skips the order cannot claim.
   exactly one proceeds, the other prints the holder's id and leaves no half-written file.
   Shipped (Oct 8): the race is won by the write, not by reading first — `claim()` is a conditional
   `UPDATE` followed by a read-back, so two CLIs claiming in the same instant cannot both pass a check
-  they performed before the other landed. Lease is 900 s without a heartbeat and an expired lease is
+  they performed before the other landed. Lease is 900 s without a renewed lease and an expired lease is
   reclaimable by design. Measured against the live backend, not a fixture: `selftest --live` claims
   `selftest-live-<epoch>-A` as `qoder`, then `antigravity`, and the second is refused with the holder
   named in its own message. Remaining here: the Station's *team view* of who holds what — the lease is
@@ -489,8 +490,12 @@ that skips the order cannot claim.
   codes, and at least one item it refused to touch because its scope hit invariant 3.
   Two things about its place in the queue, both from the resolver's review: it is built **after F10.8**,
   because a timer that can start this loop needs a switch that can stop it first, and after **F10.7**,
-  because a drainer that cannot tell a stalled engine from a finished one re-claims held work. Its
-  circuit breaker is already written and green, though — counted per ON window, enforced inside
+  because a drainer that cannot tell a stalled engine from a finished one re-claims held work. That
+  judgement is now owned: `heartbeat()` returns `WORKING` / `AT_REST` / `UNKNOWN` per open claim, and the
+  drainer is the only caller allowed to turn `AT_REST` into a keystroke — it must not re-derive the two
+  signals in the timer, because a second definition of "resting" is how a machine ends up typing into a
+  session that was mid-sentence (§12). `resume_count` is incremented there, never in the sense.
+  Its circuit breaker is already written and green, though — counted per ON window, enforced inside
   `claim()` rather than in the timer, so a human running the same commands tonight trips the same
   number. The queue also refuses to re-offer a concluded row: `FAILED` and `UNAVAILABLE` are skipped by
   `next_item()`, which was caught by `next` handing back legacy row 15 (`UNAVAILABLE`, an engine saying
@@ -513,7 +518,7 @@ that skips the order cannot claim.
   *pool + window*, resolved from `config/engines.json` per role, and the autopilot states on every
   tick which pool it is spending. *Acceptance:* a tick that would exceed a configured window fraction
   goes `ESCALATED` with the meter's own numbers.
-- ⬜ **F10.7 Heartbeat — is that engine working or resting?** This is the piece the operator described
+- 🟡 **F10.7 Heartbeat — is that engine working or resting?** This is the piece the operator described
   directly (Oct 8): when a CLI stops because a session got long, Rust and PostgreSQL must tell
   *"mid-task"* from *"at rest"*, and only the second one gets a `continue`. The daemon already owns the
   state it needs — `action_log` rows arrive per action, the pane is readable in ~3 ms, and
@@ -525,12 +530,64 @@ that skips the order cannot claim.
   four nudges is not asleep — it is stuck, and nudging it again is noise that looks like progress.
   *Acceptance:* stop a session mid-item on purpose and the daemon resumes it once, visibly, with the
   item id in the log; then make the pane unreadable and prove it sends nothing at all.
-  Shipped as data only (Oct 8): `resume_count` and `due_epoch` columns, and `stalled()`, which lists
-  candidates and says in its own docstring that a list is not a decision to type. **No keystroke is
+  Shipped as data only (Oct 8, earlier slice): `resume_count` and `due_epoch` columns, and `stalled()`,
+  which lists candidates and says in its own docstring that a list is not a decision to type.
+  Shipped (Oct 8, 02:10): `heartbeat()` — the sense. It takes two independent readings per open claim
+  (pane text sampled twice, and the age of the engine's last `action_log` row) and returns
+  `WORKING` / `AT_REST` / `UNKNOWN` **per claim**, with the reason string, both readability flags, the
+  lease state and the remaining resume budget. `AT_REST` requires both signals to agree; `UNKNOWN` is
+  what any single dead signal produces, and there is no path through the function that sends anything.
+  Read live, not from a fixture: with item 32 held by this session it answered `WORKING`, "pane
+  menampilkan spinner/esc-to-cancel", `pane_readable: true`, `quiet_seconds: 2`; run with the tmux
+  socket pointed at a name that does not exist — the acceptance's "make the pane unreadable" — it
+  answered `UNKNOWN`, "pane tidak terbaca — bukan berarti diam", and sent nothing, because there is
+  nothing in it to send.
+  Three defects found while building it, all of them the kind that only exists in production:
+  **the word `heartbeat` had two owners** — lease renewal and this detector shared one name, and adding
+  the second definition silently shadowed the first: for a few minutes of working tree the CLI's
+  `work_order.py heartbeat <id>` was calling the *detector* with an item id as its `quiet_seconds`
+  argument (§12's warning made concrete: two definitions for one word, and the file would have shipped
+  that way had the collision not been noticed before the commit). Renewal is now `renew_lease()` /
+  `work_order.py lease <id>`; no caller outside the file used the old name — checked across
+  `tools/`, `engine-rust/src/`, `systemd/`, `bin/` and the docs before renaming.
+  **`action_log`'s time column is `ts` on both backends**, but the SQLite branch of the stalled query
+  read `created_at`, which is a `quest_tasks` column. Measured, not assumed: this machine has no
+  fallback DB file (`brain/workstation.db` does not exist, PostgreSQL is primary), so a throwaway SQLite
+  file was built from `session_ingestor.DDL_SQLITE` itself — the old query raises
+  `OperationalError: no such column: created_at` there, the new one returns `(epoch, True)`, and because
+  SQLite's `CURRENT_TIMESTAMP` is UTC the parsed epoch matched `time.time()` exactly; read as local time
+  it would have been 25 200 s off. **A missing row and an unreadable table are not the same fact**:
+  `_last_action()` now returns `(epoch, readable)`, because the old single value made "cannot read the
+  ledger" look like "this engine has done nothing", which is the exact wrong conclusion — the wrong
+  direction of the one error this module is not allowed to make.
+  The independent audit (`cross_verify` → `claude-sonnet-5-5-high`, 02:05, verdict `PERLU_KOREKSI`)
+  found two more of that same direction, both of which my own green selftest had *blessed* rather
+  than guarded: a readable ledger with **no row under the claim holder's name** was treated as "quiet"
+  (`claimed_by` and `action_log.engine` are two naming spaces with nothing guaranteeing they agree, so
+  that None can equally mean "recorded as something else"), and two pane reads taken with `sample_gap=0`
+  make "the text did not change" a tautology rather than an observation. Both now return `UNKNOWN`;
+  `MIN_SAMPLE_GAP = 1` floors the production path while the injected test seam keeps its zero-delay
+  reads; a `capture` that *raises* is now a dead reader (`UNKNOWN`) instead of a crash; a timestamp
+  that parses to no number is reported as unreadable, not as "no action". The audit's claim that the
+  no-keyskeystroke check was too narrow was also right — it read one function's source — so the check
+  now reads the source of every function on the read path (`heartbeat`, `_pane_text`, `_last_action`,
+  `stalled`) and separately asserts that the only names borrowed from `cross_verify` are the two
+  readers, `capture_pane` and `pane_is_busy`. Its `InFailedSqlTransaction` worry was checked and does
+  not apply: `db_state.py:71` sets `conn.autocommit = True`, and that reason is now a comment at the
+  `except`, not a memory. `selftest` 65/65 offline — 18 checks
+  that drive the pane through injected fakes, replacing the one placeholder that only asserted the
+  function existed, so no test can touch a live terminal — and 19/19
+  against live PostgreSQL, including an invariant check that reads the function's own source and fails
+  if a keystroke path (`send-keys`, `send_to_terminal`, `ydotool`, `subprocess`) is ever added to it.
+  What is **not** shipped: the hand. `CONTINUE` injection is deliberately absent — **No keystroke is
   injected yet, deliberately, on the first night this design existed** — the resume path has never been
   watched over an operator's shoulder, and F10.7 is the one module whose failure mode is a machine
   typing into a person's terminal. Built after F10.8 for that reason: a thing that sends `CONTINUE` must
-  have a switch that stops it before it has users.
+  have a switch that stops it before it has users. Remaining: (a) the drainer (F10.3) is the only place
+  allowed to act on `AT_REST`, and it does not exist yet; (b) `resume_count` is never incremented by
+  anything, so the budget is reported but unenforced until the hand exists; (c) the acceptance's first
+  half — "stop a session mid-item on purpose and the daemon resumes it once, visibly" — cannot be
+  demonstrated until (a) lands, and it must be watched with the operator awake, not proved at 03:00.
 - 🟡 **F10.8 Autopilot switch — ON means the machine is entrusted, not that it is unowned.** A toggle on
   the Workstation cockpit (`gui.html` is the control surface; the *state* of the toggle is recorded as
   a row so the Station can show who had the machine and when). The operator's framing is the spec:

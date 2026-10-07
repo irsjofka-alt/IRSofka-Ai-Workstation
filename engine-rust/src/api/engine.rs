@@ -21,7 +21,12 @@ use crate::paths::{fresh_marker_path, profiles_path};
 use crate::probe::cached_json;
 use crate::profile::{read_profiles, TabProfile};
 use crate::spool::spool_event;
+use crate::procinfo::proc_alive;
 use crate::terminal::{engine_hint, pane_context_pct, tab_live_process};
+
+/// Batas menunggu CLI keluar sendiri setelah SIGTERM sebelum dipaksa: 30 x 100 ms.
+const TERM_GRACE: Duration = Duration::from_millis(100);
+const TERM_GRACE_TICKS: usize = 30;
 pub(crate) async fn get_models() -> Json<Value> {
     let q = cached_json("models_qoder", Duration::from_secs(120), || {
         json!(qoder_models())
@@ -141,7 +146,8 @@ pub(crate) async fn patch_cli_config(
         state
             .sessions
             .get(&tab)
-            .map(|s| kill_tab_cli_root(s.root_pid, engine_hint(&engine)))
+            .and_then(|s| kill_tab_cli_root(s.root_pid, engine_hint(&engine)))
+            .map(|r| r.dead)
             .unwrap_or(false)
     } else {
         false
@@ -188,19 +194,20 @@ pub(crate) async fn restart_cli_tab(State(state): State<AppState>, Json(body): J
         }
     }
 
-    // Dijelaskan SEBELUM menembak, supaya catatan di respons menyebut sasaran yang benar
-    // dan bukan keadaan setelahnya.
-    let note = match state.sessions.get(&tab) {
+    let mut note = match state.sessions.get(&tab) {
         None => "tab not known to the daemon".to_string(),
         Some(_) if hint.is_none() => "shell tab: pane cleared, no CLI to terminate".to_string(),
-        Some(s) => match tab_cli_target(s.root_pid, hint) {
-            Some((pid, comm, true)) => format!("{comm} (pid {pid}) terminated"),
-            _ => "no live CLI: the supervisor loop relaunches it with the fresh marker"
-                .to_string(),
-        },
+        Some(_) => "no live CLI: the supervisor loop relaunches it with the fresh marker"
+            .to_string(),
     };
     let killed = match state.sessions.get(&tab) {
-        Some(s) if hint.is_some() => kill_tab_cli_root(s.root_pid, hint),
+        Some(s) if hint.is_some() => match kill_tab_cli_root(s.root_pid, hint) {
+            Some(report) => {
+                note = report.detail;
+                report.dead
+            }
+            None => false,
+        },
         _ => false,
     };
     // Bersihkan bek SETELAH bunuh, bukan sebelumnya: SIGTERM membuat CLI mati dalam
@@ -236,24 +243,54 @@ pub(crate) async fn restart_cli_tab(State(state): State<AppState>, Json(body): J
     }))
 }
 
-pub(crate) fn kill_tab_cli_root(root: u32, hint: Option<&str>) -> bool {
-    match tab_live_process(root, hint) {
-        // `root` adalah bash penunggu loop pane. Ia tidak boleh jadi korban: tidak ada
-        // watchdog yang membuat pane yang mati, dan restart daemon akan MENGADOPSI pane
-        // mati itu (has-session masih true) alih-alih menggantinya. Jadi kalau tidak ada
-        // CLI yang hidup, kembalikan false dan biarkan loop menyalakan ulang sendiri.
-        Some(live) if live.pid != root => {
-            let _ = Command::new("kill")
-                .args(["-TERM", &live.pid.to_string()])
-                .spawn();
-            true
-        }
-        _ => false,
-    }
+/// Hasil menghentikan CLI sebuah pane: apa yang terjadi, dan apakah prosesnya benar-
+/// benar sudah mati. `dead: false` berarti masih hidup setelah dua sinyal (tidur tak
+/// terputus, atau zombie) — jujur lebih baik daripada memanggilnya berhasil.
+pub(crate) struct KillReport {
+    pub(crate) detail: String,
+    pub(crate) dead: bool,
 }
 
-/// Proses mana yang sebenarnya jadi sasaran, untuk pesan yang jujur ke operator.
-pub(crate) fn tab_cli_target(root: u32, hint: Option<&str>) -> Option<(u32, String, bool)> {
-    let live = tab_live_process(root, hint)?;
-    Some((live.pid, live.comm, live.pid != root))
+/// Hentikan CLI di sebuah pane. `None` = memang tidak ada yang bisa dibunuh.
+///
+/// SIGTERM saja tidak cukup untuk tombol darurat: TUI yang macet total bisa mengabaikannya,
+/// dan loop penunggu pane menunggu anakannya mati sebelum menyalakan yang baru. Jadi
+/// menunggu sebentar, lalu SIGKILL — sinyal yang tidak bisa ditangkap.
+pub(crate) fn kill_tab_cli_root(root: u32, hint: Option<&str>) -> Option<KillReport> {
+    let live = match tab_live_process(root, hint) {
+        // `root` adalah bash penunggu loop pane. Ia tidak boleh jadi korban: tidak ada
+        // watchdog yang membuat pane yang mati, dan restart daemon akan MENGADOPSI pane
+        // mati itu (has-session masih true) alih-alih menggantinya. Kalau tidak ada CLI
+        // yang hidup, biarkan loop menyalakan ulang sendiri — penanda fresh sudah cukup.
+        Some(live) if live.pid != root => live,
+        _ => return None,
+    };
+    signal_pid(live.pid, "TERM");
+    for _ in 0..TERM_GRACE_TICKS {
+        if !proc_alive(live.pid) {
+            return Some(KillReport {
+                detail: format!("{} (pid {}) exited on SIGTERM", live.comm, live.pid),
+                dead: true,
+            });
+        }
+        std::thread::sleep(TERM_GRACE);
+    }
+    signal_pid(live.pid, "KILL");
+    for _ in 0..TERM_GRACE_TICKS {
+        if !proc_alive(live.pid) {
+            return Some(KillReport {
+                detail: format!("{} (pid {}) ignored SIGTERM, killed", live.comm, live.pid),
+                dead: true,
+            });
+        }
+        std::thread::sleep(TERM_GRACE);
+    }
+    Some(KillReport {
+        detail: format!("{} (pid {}) survived SIGTERM and SIGKILL", live.comm, live.pid),
+        dead: false,
+    })
+}
+
+fn signal_pid(pid: u32, sig: &str) {
+    let _ = Command::new("kill").args([format!("-{sig}").as_str(), &pid.to_string()]).spawn();
 }

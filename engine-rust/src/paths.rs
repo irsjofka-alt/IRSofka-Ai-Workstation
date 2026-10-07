@@ -48,6 +48,14 @@ pub(crate) fn runner_path() -> PathBuf {
     config_dir().join("run_tab.sh")
 }
 
+/// Penanda sekali-pakai untuk tab tertentu: kalau ada, penyalakan berikutnya tidak
+/// memakai `--continue`. Ditulis oleh endpoint New Session, dihapus sendiri oleh
+/// run_tab.sh pada saat dibacanya. Tidak ditulis ke cli_profiles.json — menyalakan
+/// sesi baru bukan perubahan preferensi permanen.
+pub(crate) fn fresh_marker_path(tab: &str) -> PathBuf {
+    config_dir().join(format!("fresh.{tab}"))
+}
+
 pub(crate) fn assets_dir() -> PathBuf {
     station_dir().join("engine-rust").join("assets")
 }

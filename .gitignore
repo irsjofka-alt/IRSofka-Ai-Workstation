@@ -6,6 +6,8 @@
 # 1. KREDENSIAL — tidak boleh masuk repo dalam bentuk apa pun
 # ============================================================
 config/db_local.json
+# penanda sekali-pakai "start this tab without --continue", ditulis daemon, dihapus run_tab.sh
+config/fresh.*
 .env
 .env.*
 *.pem

@@ -17,7 +17,7 @@ use crate::engineinfo::{
     agy_efforts, agy_models, antigravity_last_model, antigravity_usage,
     qoder_account, qoder_efforts, qoder_models, qoder_session_usage,
 };
-use crate::paths::profiles_path;
+use crate::paths::{fresh_marker_path, profiles_path};
 use crate::probe::cached_json;
 use crate::profile::{read_profiles, TabProfile};
 use crate::spool::spool_event;
@@ -162,20 +162,66 @@ pub(crate) async fn restart_cli_tab(State(state): State<AppState>, Json(body): J
         .and_then(Value::as_str)
         .unwrap_or("qoder")
         .to_string();
+    // Nama tab masuk ke nama berkas penanda, jadi hanya bentuk [a-z0-9_-] yang diterima.
+    if tab.is_empty()
+        || !tab
+            .chars()
+            .all(|c| c.is_ascii_lowercase() || c.is_ascii_digit() || c == '_' || c == '-')
+    {
+        return Json(json!({"status": "error", "reason": "nama tab tidak sah"}));
+    }
+    let fresh = body
+        .get("fresh")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let hint = read_profiles().get(&tab).map(|p| engine_hint(&p.engine)).unwrap_or(None);
+
+    // dikenal = pane-nya benar-benar ada di bawah daemon. Menandai lebih dulu untuk tab
+    // yang tidak dikenal akan meninggalkan penanda basi yang dibayar pada tab berikutnya.
+    let known = state.sessions.contains_key(&tab);
+    // Penanda hanya berguna kalau ada CLI yang memang akan disalakan ulang. Untuk tab
+    // shell (hint None) penandanya tidak akan pernah dikonsumsi dan tertinggal selamanya.
+    let fresh_started = known && fresh && hint.is_some();
+    if fresh_started {
+        if let Err(e) = fs::write(fresh_marker_path(&tab), b"") {
+            return Json(json!({"status": "error", "reason": format!("penanda gagal ditulis: {e}")}));
+        }
+    }
+
     let killed = match state.sessions.get(&tab) {
         Some(s) if hint.is_some() => kill_tab_cli_root(s.root_pid, hint),
         _ => false,
     };
+    // Bersihkan bek SETELAH bunuh, bukan sebelumnya: SIGTERM membuat CLI mati dalam
+    // puluhan milidetik sementara loop baru menyalakan ulang setelah >=1 detik, jadi
+    // jendela itu cukup untuk memotong log tanpa memakan byte pertama sesi baru.
+    // Tab shell tidak punya CLI untuk dibunuh (hint None) — bagi pane itu "sesi baru"
+    // berarti layar bersih, dan itu yang dikerjakan di sini.
+    let cleared = match state.sessions.get(&tab) {
+        Some(s) => {
+            s.clear_backlog();
+            true
+        }
+        None => false,
+    };
+
     let cwd = crate::api::terminal::live_tab_cwd(&state.sessions, &tab);
     spool_event(
         "tab_restart",
         &tab,
-        format!("CLI tab dihentikan agar spawn ulang dengan profil terkini; killed={}", killed),
+        format!(
+            "CLI tab dihentikan agar spawn ulang dengan profil terkini; killed={killed} fresh={fresh_started} backlog_cleared={cleared}"
+        ),
         cwd,
         Some("restart"),
     );
-    Json(json!({ "status": "ok", "tab": tab, "killed": killed }))
+    Json(json!({
+        "status": if known { "ok" } else { "unknown_tab" },
+        "tab": tab,
+        "killed": killed,
+        "fresh": fresh_started,
+        "backlog_cleared": cleared
+    }))
 }
 
 pub(crate) fn kill_tab_cli_root(root: u32, hint: Option<&str>) -> bool {

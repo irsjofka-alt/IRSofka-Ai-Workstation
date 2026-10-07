@@ -101,6 +101,28 @@ impl PtySession {
         }
     }
 
+    /// Kosongkan bek pane: file pipa, offset pembaca, dan scrollback tmux. Dipakai
+    /// New Session supaya CLI yang lahir tidak ikut terseret riwayat sesi yang barusan
+    /// dimatikan. Yang hilang hanya tampilan — aksi, prompt dan jawaban tetap tersimpan
+    /// di PostgreSQL dan log sesi, jadi pemulihan konteks tidak bergantung ke sini.
+    pub(crate) fn clear_backlog(&self) {
+        match &self.kind {
+            SessionKind::Direct { buffer, history, .. } => {
+                if let Ok(mut b) = buffer.lock() {
+                    b.clear();
+                }
+                if let Ok(mut h) = history.lock() {
+                    h.clear();
+                }
+            }
+            SessionKind::Tmux { session, log, offset } => {
+                let _ = fs::File::create(log);
+                offset.store(0, Ordering::Relaxed);
+                run_tmux(&["clear-history", "-t", session]);
+            }
+        }
+    }
+
     pub(crate) fn send_bytes(&self, data: &[u8]) {
         match &self.kind {
             SessionKind::Direct { writer, .. } => {

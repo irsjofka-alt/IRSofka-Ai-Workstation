@@ -547,7 +547,8 @@
                         Live Stream (60 FPS)
                     </span>
                     <button class="term-btn" onclick="clearActiveTerm()">🧹 Clear</button>
-                    <button class="term-btn" onclick="resetActiveSession()">🔄 Reset Session</button>
+                    <button class="term-btn" onclick="interruptActiveSession()" title="Send Ctrl+C to the running CLI — stops what it is doing, keeps the conversation">⏹ Interrupt</button>
+                    <button class="term-btn" onclick="newActiveSession()" title="Terminate this tab's CLI and start a brand-new session (no resume). The pane is cleared; history stays in the database.">🆕 New Session</button>
                 </div>
             </div>
 
@@ -955,13 +956,36 @@
             if (terms[activeTab]) terms[activeTab].clear();
         }
 
-        async function resetActiveSession() {
-            if (!confirm(`Cancel / Send interrupt to ${activeTab.toUpperCase()} session?`)) return;
+        async function interruptActiveSession() {
+            if (!confirm(`Send interrupt (Ctrl+C) to ${activeTab.toUpperCase()}?`)) return;
             await fetch('/api/term/reset', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
                 body: JSON.stringify({tab: activeTab})
             });
+        }
+
+        async function newActiveSession() {
+            const t = activeTab.toUpperCase();
+            if (!confirm(`Start a NEW ${t} session?\n\nThe CLI in this tab is terminated and the pane is cleared. The conversation itself is not lost — it stays in the database and ai-station recovery.`)) return;
+            try {
+                const res = await fetch('/api/cli/restart', {
+                    method: 'POST',
+                    headers: {'Content-Type': 'application/json'},
+                    body: JSON.stringify({tab: activeTab, fresh: true})
+                });
+                const d = await res.json();
+                if (!res.ok || (d.status && d.status !== 'ok')) {
+                    flagProfileSaved(`✗ new session: ${(d && d.reason) || 'endpoint failed'}`, true);
+                    return;
+                }
+                if (terms[activeTab]) terms[activeTab].clear();
+                flagProfileSaved(d.killed
+                    ? `✓ ${t}: ending old CLI, starting a new session…`
+                    : `✓ ${t}: pane cleared (no AI CLI to restart)`, false);
+            } catch (e) {
+                flagProfileSaved(`✗ new session: ${e}`, true);
+            }
         }
 
         async function fetchStats() {

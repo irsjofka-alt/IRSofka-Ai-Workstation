@@ -83,6 +83,7 @@ const RUNNER_SCRIPT: &str = r#"#!/usr/bin/env bash
 # start (this constant is the only source); edit it in profile.rs, not in config/.
 TAB="${1:-qoder}"
 PROF="$HOME/.ai-station/config/cli_profiles.json"
+FRESH="$HOME/.ai-station/config/fresh.$TAB"
 
 SPEC="$(python3 - "$PROF" "$TAB" <<'PY'
 import json, shlex, sys
@@ -144,6 +145,18 @@ if [ -n "${WORKSPACE:-}" ] && [ -d "$WORKSPACE" ]; then
 fi
 if [ "${#CMDLINE[@]}" -eq 0 ]; then echo "run_tab: perintah kosong untuk $TAB"; exit 1; fi
 
+# Penanda New Session ditulis daemon ketika operator minta sesi baru. Penanda hanya boleh
+# berlaku untuk satu penyalakan, jadi dikonsumsi di sini — bukan diubah jadi profil permanen.
+if [ -f "$FRESH" ]; then
+    rm -f "$FRESH"
+    STRIPPED=()
+    for arg in "${CMDLINE[@]}"; do
+        [ "$arg" != "--continue" ] && [ "$arg" != "-c" ] && STRIPPED+=("$arg")
+    done
+    CMDLINE=("${STRIPPED[@]}")
+    printf '\033[1;36m[run_tab] Fresh marker set — starting a new session without --continue.\033[0m\n'
+fi
+
 HAS_CONTINUE=0
 for arg in "${CMDLINE[@]}"; do
     if [ "$arg" = "--continue" ] || [ "$arg" = "-c" ]; then
@@ -152,10 +165,10 @@ for arg in "${CMDLINE[@]}"; do
     fi
 done
 
-// Exit 42 dari qoder berarti "no conversation found to continue": tidak ada sesi di
-// direktori ini, biasanya karena workspace profil baru saja dipindah. Diturunkan
-// percobaan demi percobaan, BUKAN ditulis ke cli_profiles.json — kalau dipersist, tab
-// kehilangan resume selamanya walau sesi baru sudah ada beberapa detik kemudian.
+# Exit 42 dari qoder berarti "No conversation found to continue": tidak ada sesi di
+# direktori ini, biasanya karena workspace profil baru saja dipindah. Diturunkan
+# percobaan demi percobaan, BUKAN ditulis ke cli_profiles.json — kalau dipersist, tab
+# kehilangan resume selamanya walau sesi baru sudah ada beberapa detik kemudian.
 if [ "$HAS_CONTINUE" -eq 1 ]; then
     "${CMDLINE[@]}"
     EXIT_CODE=$?

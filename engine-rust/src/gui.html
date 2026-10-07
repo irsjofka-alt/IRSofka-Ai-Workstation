@@ -616,11 +616,16 @@
             </div>
 
             <div class="card-aux">
-                <h4>OS Quick Actions</h4>
-                <button class="quick-btn" onclick="execAction('open_youtube')">📺 Buka YouTube</button>
-                <button class="quick-btn" onclick="execAction('notify_test')">🔔 Kirim Test Notifikasi</button>
-                <button class="quick-btn" onclick="execAction('vol_up')">🔊 Volume Up (+10%)</button>
-                <button class="quick-btn" onclick="execAction('vol_down')">🔉 Volume Down (-10%)</button>
+                <h4>Pemulihan Ingatan</h4>
+                <div style="font-size:.62rem;color:var(--text-dim);margin:-2px 0 6px;line-height:1.45;">
+                    Mengetik perintahnya ke CLI aktif. Dipakai saat konteks baru saja
+                    terkompaksi — sebelum menjawab apa pun, muat dulu yang masih ada.
+                </div>
+                <button class="quick-btn" onclick="recallAction('sql')">🧠 Muat memori SQL-ku</button>
+                <button class="quick-btn" onclick="recallAction('quests')">📜 Apa yang sedang dikerjakan</button>
+                <button class="quick-btn" onclick="recallAction('skills')">📚 Skill &amp; memori yang terdaftar</button>
+                <button class="quick-btn" onclick="recallAction('lastwork')">🔎 10 aksi terakhirku</button>
+                <button class="quick-btn" onclick="recallAction('full')">♻️ Pulihkan penuh (recovery)</button>
             </div>
         </div>
     </div>
@@ -785,11 +790,17 @@
         }
 
         function autoGrowPrompt(el) {
-            el.style.height = 'auto';
-            // Kotak membesar mengikuti teks, sampai 60% layar. Dulu mentok 32% sehingga
-            // kalimat panjang masuk ke scroll sempit dan terasa seperti dipotong.
+            // Dulu: set height='auto' lalu ukur scrollHeight. Di WebKitGTK (jendela native
+            // ini) pengukuran itu tidak selalu menghasilkan pertambahan tinggi, sehingga
+            // kotak berhenti di ~2 baris. Sekarang tingginya DHI TUNGGAL dihitung dari jumlah
+            // baris — tidak bergantung pada cara mesin layout mengukur konten.
+            const baris = (el.value.match(/\n/g) || []).length + 1;
+            const perBaris = 21;                 // 0.85rem × line-height 1.55
+            const padding = 22;                  // padding atas+bawah
             const cap = Math.round(window.innerHeight * 0.60);
-            el.style.height = Math.min(el.scrollHeight, cap) + 'px';
+            const tinggi = Math.min(cap, Math.max(46, baris * perBaris + padding));
+            el.style.height = tinggi + 'px';
+            el.style.overflowY = (baris * perBaris + padding) > cap ? 'auto' : 'hidden';
             updateComposerState();
         }
 
@@ -816,6 +827,34 @@
             const bar = '█'.repeat(blok) + '░'.repeat(10 - blok);
             const warna = p >= 90 ? 'var(--accent-rose)' : (p >= 70 ? 'var(--accent-amber)' : 'var(--accent-cyan)');
             return `Context <span style="color:${warna}">${bar}</span> ${p}%`;
+        }
+
+        // Yang dibutuhkan AI setelah konteksnya diringkas bukan semangat, tapi DATA:
+        // baris dari PostgreSQL, handoff, dan indeks skill/memori. Tombol ini mengetik
+        // perintahnya ke CLI aktif supaya sesi baru tidak mulai dengan kepala kosong.
+        const RECALL = {
+            sql: 'Jalankan `python3 ~/.ai-station/tools/db_state.py` lalu baca tabel world_memory '
+                 + '(20 baris terbaru) dan quest_tasks yang IN_PROGRESS. Ringkas apa yang ada di sana; '
+                 + 'jangan mulai pekerjaan baru sebelum selesai.',
+            quests: 'Jalankan `ai-station handoff`. Sebutkan quest yang masih IN_PROGRESS, apa yang '
+                  + 'sudah selesai, dan langkah berikutnya yang tertulis di sana.',
+            skills: 'Baca HANYA dua indeks: ~/.ai-station/brain/skills/SKILLS.md dan '
+                  + '~/.ai-station/brain/memory/MEMORY.md. Daftar isinya saja, jangan buka file skill/memori '
+                  + 'sebelum tugasnya jelas. Ini aturan selective loading.',
+            lastwork: 'Jalankan `ai-station recall 10` dan ceritakan apa yang baru saja dikerjakan pada '
+                    + 'sesi ini: perintah apa, hasilnya apa, apa yang belum selesai.',
+            full: 'Jalankan `ai-station recovery 40`, baca berkas handoff terbaru di '
+                + '~/.ai-station/brain/memory/projects/, lalu laporkan: (1) sedang mengerjakan apa, '
+                + '(2) apa yang sudah diverifikasi, (3) apa yang tersisa. Jangan mulai hal baru.'
+        };
+
+        async function recallAction(kind) {
+            const teks = RECALL[kind];
+            if (!teks) return;
+            const el = document.getElementById('prompt-input');
+            el.value = teks;
+            autoGrowPrompt(el);
+            await sendPromptToCLI({ verbatim: false });
         }
 
         function targetEngine() {
@@ -1166,18 +1205,6 @@
             if (data.status === 'ok') {
                 box.innerHTML = `<img src="/api/screenshot/latest?t=${Date.now()}" alt="Screen" />`;
             }
-        }
-
-        function execAction(action) {
-            if (action === 'see_screen') {
-                captureScreen();
-                return;
-            }
-            fetch('/api/action', {
-                method: 'POST',
-                headers: {'Content-Type': 'application/json'},
-                body: JSON.stringify({action: action})
-            });
         }
 
         window.onload = () => {

@@ -26,7 +26,7 @@ import subprocess
 import sys
 import time
 import urllib.request
-from datetime import datetime
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 AI_STATION = Path.home() / ".ai-station"
@@ -106,8 +106,15 @@ def treasury_quota():
             payload = {"quota": latest_quota(Store()), "interval_s": 900}
         except Exception:  # noqa: BLE001
             return None, None
-    interval = payload.get("interval_s") or 900
-    return payload.get("quota") or [], max(2 * int(interval), 1800)
+    if not isinstance(payload, dict):
+        return None, None
+    try:
+        interval = int(payload.get("interval_s") or 900)
+    except (TypeError, ValueError):
+        # interval_s datang dari daemon, bukan dari config kita. Daemon yang melaporkan
+        # angka raksasa tidak boleh memperlonggar batas kesegaran tanpa batas.
+        interval = 900
+    return payload.get("quota") or [], min(max(2 * interval, 1800), 6 * 3600)
 
 
 def _finite(value):
@@ -119,50 +126,77 @@ def _finite(value):
     return out if out == out and abs(out) != float("inf") else None
 
 
-def _age_seconds(ts):
-    """Umur sebuah pembacaan meter, atau None kalau cap waktunya tidak bisa dibaca."""
+def _parse_ts(ts):
+    """Cap waktu meter sebagai datetime sadar zona, atau None kalau tidak bisa dibaca."""
     if not ts:
         return None
     try:
-        when = datetime.fromisoformat(str(ts))
+        when = datetime.fromisoformat(str(ts).replace("Z", "+00:00"))
     except ValueError:
         return None
-    if when.tzinfo is None:
-        when = when.astimezone()
-    return (datetime.now().astimezone() - when).total_seconds()
+    return when.astimezone() if when.tzinfo else when.replace(tzinfo=LocalZone())
+
+
+def LocalZone():
+    """Zona lokal, dipakai hanya untuk cap waktu yang ditulis tanpa offset."""
+    return datetime.now().astimezone().tzinfo
+
+
+def _rank_row(row):
+    """Urutkan pembacaan per jendela: yang terbaru, dan pada detik sama yang LEMAH menang.
+
+    Dua baris bertimestamp identik dengan state REPORTED dan UNAVAILABLE bukan kasus reka-reka:
+    ia terjadi ketika satu siklus menulis dua meter untuk jendela yang sama. Menganggap yang
+   REPORTED otomatis lebih baru berarti bukti yang tidak bisa dipercaya kalah diam-diam —
+    fail-open persis yang dikira sudah ditutup.
+    """
+    when = _parse_ts(row.get("ts"))
+    return (when is not None, when or datetime(1970, 1, 1, tzinfo=LocalZone()),
+            str(row.get("state")) != "REPORTED")
 
 
 def quota_gate_reason(spec):
     """Alasan mesin ini TIDAK boleh diberangkatkan, atau None kalau jendelanya masih ada.
 
     Pemilik mesin memutuskan kolam Anthropic/GPT boleh dihabiskan untuk verifikasi — tapi
-    keputusannya bersyarat: 'selama kuota 5 hours ada dan weekly nya ada'. Syarat yang tidak
-    dibaca adalah syarat yang dilanggar diam-diam, jadi setiap jalan yang membuat kita tidak
-    punya bukti (state bukan laporan, angka tak terbaca, cap waktu hilang atau dari masa
-    depan, baris lama menggeser yang baru) berujung penolakan, bukan keberangkatan.
+    keputusannya bersyarat: 'selama kuota 5 hours ada dan weekly nya ada'. Setiap jalur yang
+    membuat kita tidak punya bukti — gate tanpa jendela, ambang tidak terbaca, state bukan
+    laporan, fraksi di luar 0..1, cap waktu hilang atau dari masa depan, pembacaan lebih tua
+    dari 2x interval — berujung penolakan. Aturan yang gagal dibaca tidak boleh berubah
+    menjadi 'boleh lewat'.
     """
     gate = spec.get("quota_gate")
     if not gate:
         return None
+    if not isinstance(gate, dict):
+        return "quota_gate bukan objek: tidak ada yang bisa diperiksa"
     engine, scope = str(gate.get("engine") or ""), str(gate.get("scope") or "")
-    windows = list(gate.get("windows") or [])
-    floor = _finite(gate.get("min_fraction", 0.0)) or 0.0
+    windows = [str(w) for w in (gate.get("windows") or [])]
+    if not windows:
+        return ("quota_gate tanpa daftar 'windows': tidak ada satu jendela pun yang bisa "
+                "dibuktikan, jadi tidak ada dasar untuk memberangkatkan mesin ini")
+    floor = _finite(gate.get("min_fraction", 0.0))
+    if floor is None or not 0.0 <= floor <= 1.0:
+        return (f"ambang 'min_fraction' {gate.get('min_fraction')!r} bukan pecahan 0..1 — "
+                "aturan ambangnya sendiri rusak, dan gerbang tidak menebak")
+    if not engine or not scope:
+        return "quota_gate tanpa 'engine' atau 'scope': baris meter mana yang harus dipercaya?"
     rows, fresh_s = treasury_quota()
     if rows is None:
         return (f"kuota {engine}/{scope} tidak terbaca: daemon mati dan ingestor tidak "
                 "menghasilkan angka — tidak ada bukti jendela ini masih ada")
-    newest = {}
+    candidates = {}
     for r in rows:
-        if str(r.get("engine")) != engine or str(r.get("scope")) != scope:
+        if not isinstance(r, dict):
             continue
-        w = str(r.get("limit_window"))
-        if w not in newest or str(r.get("ts") or "") > str(newest[w].get("ts") or ""):
-            newest[w] = r
+        if str(r.get("engine")) == engine and str(r.get("scope")) == scope:
+            candidates.setdefault(str(r.get("limit_window")), []).append(r)
     for w in windows:
-        r = newest.get(w)
-        if r is None:
+        group = candidates.get(w)
+        if not group:
             return (f"meter tidak pernah melaporkan jendela {w} untuk {engine}/{scope} — "
                     "tidak ada dasar untuk memberangkatkan mesin ini")
+        r = max(group, key=_rank_row)
         state = str(r.get("state") or "")
         if state != "REPORTED":
             return (f"pembacaan terakhir jendela {w} berstate {state or 'kosong'}, bukan "
@@ -170,17 +204,21 @@ def quota_gate_reason(spec):
         frac = _finite(r.get("remaining_fraction"))
         if frac is None:
             return f"jendela {w} dilaporkan tanpa angka sisa yang bisa dibaca"
+        if not 0.0 <= frac <= 1.0:
+            return (f"sisa jendela {w} dilaporkan {frac} — di luar 0..1, jadi angka ini bukan "
+                    "pecahan sisa dan tidak bisa dipakai sebagai bukti")
         if frac <= floor:
             return f"jendela {w} tinggal {frac:.3f} (habis)"
-        age = _age_seconds(r.get("ts"))
-        if age is None:
+        when = _parse_ts(r.get("ts"))
+        if when is None:
             return f"pembacaan jendela {w} tidak punya cap waktu yang bisa dibaca"
+        age = (datetime.now().astimezone() - when).total_seconds()
         if age < 0:
             return (f"pembacaan jendela {w} berumur {age / 60:.0f} menit — jam mesin dan "
                     "cap meter tidak sepakat, jadi kesegarannya tidak bisa dibuktikan")
         if age > fresh_s:
             return (f"pembacaan jendela {w} berumur {age / 60:.0f} menit, lebih tua dari "
-                    f"2x interval meter ({fresh_s / 60:.0f} menit)")
+                    f"batas kesegaran meter ({fresh_s / 60:.0f} menit)")
     return None
 
 
@@ -518,6 +556,93 @@ def record(subject_ref, engine, model, status, verdict, text, duration_ms):
         return False
 
 
+def _gate_selftest_cases():
+    """Deretan keadaan meter yang WAJIB berujung penolakan, ditambah yang boleh lewat.
+
+    Setiap kasus di sini lahir dari lubang nyata yang ditemukan audit mesin lain terhadap
+    gate ini: jendela kosong, ambang tidak terbaca, state bukan laporan, cap waktu hilang
+    atau dari masa depan, fraksi di luar 0..1, pembacaan basi. Fungsinya bukan menguji
+    matematika — fungsinya menjaga supaya "aturan yang gagal dibaca" jangan pernah kembali
+    menjadi "boleh lewat".
+    """
+    now = datetime.now().astimezone()
+    utc_now = now.astimezone(timezone.utc)
+
+    def iso(hours_from_now: float) -> str:
+        return (now + timedelta(hours=hours_from_now)).isoformat()
+
+    def zulu() -> str:
+        return utc_now.isoformat().replace("+00:00", "Z")
+
+    base_gate = {"engine": "antigravity", "scope": "Claude and GPT models",
+                 "windows": ["5h", "weekly"]}
+
+    def row(window, frac, state="REPORTED", ts=None, **over):
+        r = {"engine": "antigravity", "scope": "Claude and GPT models",
+             "limit_window": window, "remaining_fraction": frac, "state": state,
+             "ts": iso(0) if ts is None else ts}
+        r.update(over)
+        return r
+
+    def ok_rows():
+        return [row("5h", 0.94), row("weekly", 0.97)]
+
+    # (nama, baris meter, override gate, harus_ditolak)
+    return [
+        ("kedua jendela segar dan REPORTED", ok_rows(), {}, False),
+        ("baris asing dicampur, sisanya sehat", [row("5h", 0.94), "sampah", row("weekly", 0.97)],
+         {}, False),
+        ("windows kosong", ok_rows(), {"windows": []}, True),
+        ("min_fraction teks", ok_rows(), {"min_fraction": "abc"}, True),
+        ("min_fraction 1.5", ok_rows(), {"min_fraction": 1.5}, True),
+        ("min_fraction negatif", ok_rows(), {"min_fraction": -3}, True),
+        ("gate tanpa 'engine'", ok_rows(), {"engine": ""}, True),
+        ("scope salah ketik ('Anthropic')", ok_rows(), {"scope": "Anthropic"}, True),
+        ("quota_gate bukan objek", ok_rows(), {"__selftest_scalar__": True}, True),
+        ("meter tidak ada sama sekali", [], {}, True),
+        ("hanya satu jendela dilaporkan", [row("5h", 0.94)], {}, True),
+        ("hanya baris bukan dict", ["sampah"], {}, True),
+        ("state UNAVAILABLE", [row("5h", 0.94), row("weekly", 0.97, state="UNAVAILABLE")],
+         {}, True),
+        ("remaining_fraction None", [row("5h", None), row("weekly", 0.97)], {}, True),
+        ("frac 1.4 — bukan pecahan", [row("5h", 1.4), row("weekly", 0.97)], {}, True),
+        ("frac -0.2", [row("5h", -0.2), row("weekly", 0.97)], {}, True),
+        ("frac NaN", [row("5h", float("nan"), ), row("weekly", 0.97)], {}, True),
+        ("ts dari masa depan", [row("5h", 0.94, ts=iso(2)), row("weekly", 0.97)], {}, True),
+        ("tanpa cap waktu", [row("5h", 0.94, ts=""), row("weekly", 0.97, ts="")], {}, True),
+        ("pembacaan basi 7 jam", [row("5h", 0.94, ts=iso(-7)), row("weekly", 0.97)], {}, True),
+        ("ts detik sama: REPORTED vs UNAVAILABLE -> yang lemah menang",
+         [row("5h", 0.94), row("5h", 0.94, state="UNAVAILABLE"), row("weekly", 0.97)], {}, True),
+        ("ts format Z (UTC) tetap dikenali dan dianggap segar",
+         [row("5h", 0.94, ts=zulu()), row("weekly", 0.97, ts=zulu())], {}, False),
+    ], base_gate
+
+
+def gate_selftest() -> int:
+    """Jalankan tabel kasus gate tanpa menyentuh daemon maupun database."""
+    cases, base_gate = _gate_selftest_cases()
+    failures = 0
+    real_quota = globals()["treasury_quota"]
+    try:
+        for name, rows, gate_over, must_refuse in cases:
+            scalar = gate_over.pop("__selftest_scalar__", False)
+            gate = dict(base_gate, **gate_over)
+            globals()["treasury_quota"] = lambda *a, _r=rows: (_r, 3600)
+            spec = {"quota_gate": 12345 if scalar else gate}
+            reason = quota_gate_reason(spec)
+            refused = reason is not None
+            if refused != must_refuse:
+                failures += 1
+            print(f"  [{'GAGAL' if refused != must_refuse else 'ok  '}] "
+                  f"harus {'DITOLAK' if must_refuse else 'LEWAT '}: {name}")
+            if refused:
+                print(f"          -> {reason}")
+    finally:
+        globals()["treasury_quota"] = real_quota
+    print(f"\n=== gate selftest: {len(cases) - failures}/{len(cases)} sesuai ===")
+    return 1 if failures else 0
+
+
 def main():
     ap = argparse.ArgumentParser(description="Verifikasi lintas mesin")
     ap.add_argument("engine", nargs="?",
@@ -531,6 +656,9 @@ def main():
     ap.add_argument("--timeout", type=int, default=TIMEOUT)
     ap.add_argument("--remember", action="store_true", help="catat ke action_log (default: ya)")
     ap.add_argument("--list", action="store_true")
+    ap.add_argument("--gate-selftest", action="store_true",
+                    help="uji tabel keadaan meter terhadap quota gate: tanpa daemon, "
+                         "tanpa database, tanpa mengirim prompt ke mana-mana")
     args, extra = ap.parse_known_args()
     # argparse menghabiskan pola posisi pada kelompok pertama, lalu sisa teks jadi 'extra'.
     # Kita serap kembali token non-flag sebagai subjek; flag asing tetap error.
@@ -540,6 +668,9 @@ def main():
         ap.error(f"opsi tak dikenal: {' '.join(flags)}")
     if leftovers:
         args.subject = list(args.subject) + leftovers
+
+    if args.gate_selftest:
+        return gate_selftest()
 
     reg = load_registry()
     if args.list or not args.engine:

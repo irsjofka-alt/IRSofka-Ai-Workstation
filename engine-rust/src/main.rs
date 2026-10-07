@@ -9,6 +9,10 @@ use chrono::Local;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+
+mod procinfo;
+// hanya yang dipakai di main.rs; sisanya tetap privat untuk modul procinfo
+use procinfo::{descendants, proc_alive, proc_cmdline, proc_comm, proc_cwd, LiveProc};
 use std::{
     collections::HashMap,
     fs,
@@ -782,88 +786,6 @@ fn shell_words(parts: &[&str]) -> String {
 
 // ---------------------------------------------------------------------------
 // /proc introspection: real pid + cwd per tab
-// ---------------------------------------------------------------------------
-
-fn proc_ppid(pid: u32) -> Option<u32> {
-    let stat = fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
-    let rest = stat.rsplit_once(") ")?.1;
-    rest.split_whitespace().nth(1)?.parse().ok()
-}
-
-fn proc_comm(pid: u32) -> String {
-    fs::read_to_string(format!("/proc/{}/comm", pid))
-        .map(|s| s.trim().to_string())
-        .unwrap_or_default()
-}
-
-/// State proses dari /proc/<pid>/stat (huruf setelah ')' karena comm boleh berisi spasi).
-fn proc_state(pid: u32) -> Option<char> {
-    let stat = fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
-    stat.rsplit_once(") ")?.1.split_whitespace().next()?.chars().next()
-}
-
-/// Proses hantu (zombie) masih punya direktori /proc tetapi sudah tidak punya cwd
-/// maupun cmdline. Melaporkannya sebagai "alive" adalah sumber workspace ngaco.
-fn proc_alive(pid: u32) -> bool {
-    matches!(proc_state(pid), Some(c) if c != 'Z')
-}
-
-fn proc_cmdline(pid: u32) -> String {
-    fs::read(format!("/proc/{}/cmdline", pid))
-        .map(|raw| {
-            raw.split(|b| *b == 0)
-                .filter(|s| !s.is_empty())
-                .map(|s| String::from_utf8_lossy(s).to_string())
-                .collect::<Vec<_>>()
-                .join(" ")
-        })
-        .unwrap_or_default()
-}
-
-fn proc_cwd(pid: u32) -> Option<String> {
-    fs::read_link(format!("/proc/{}/cwd", pid))
-        .ok()
-        .map(|p| p.to_string_lossy().to_string())
-}
-
-fn all_pids() -> Vec<u32> {
-    fs::read_dir("/proc")
-        .map(|rd| {
-            rd.filter_map(|e| e.ok().and_then(|e| e.file_name().to_string_lossy().parse::<u32>().ok()))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn descendants(root: u32) -> Vec<u32> {
-    let pids = all_pids();
-    let mut children: HashMap<u32, Vec<u32>> = HashMap::new();
-    for pid in &pids {
-        if let Some(pp) = proc_ppid(*pid) {
-            children.entry(pp).or_default().push(*pid);
-        }
-    }
-    let mut out = Vec::new();
-    let mut stack = vec![root];
-    while let Some(p) = stack.pop() {
-        if let Some(kids) = children.get(&p) {
-            for k in kids {
-                out.push(*k);
-                stack.push(*k);
-            }
-        }
-    }
-    out
-}
-
-#[derive(Clone)]
-struct LiveProc {
-    pid: u32,
-    comm: String,
-    cwd: String,
-    cmdline: String,
-}
-
 /// The live process behind a tab. `hint` is the engine's expected binary name
 /// (qoder/agy); falls back to the deepest non-helper descendant, then to the
 /// PTY root itself so that a plain shell tab still reports its real cwd.

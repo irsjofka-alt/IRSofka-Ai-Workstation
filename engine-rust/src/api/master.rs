@@ -48,12 +48,7 @@ fn allowed_target(rel: &str) -> Option<PathBuf> {
 
 fn python() -> PathBuf {
     // Daemon systemd tidak mewarisi PATH selebar shell; cari dulu interpreter yang nyata.
-    for candidate in ["/usr/bin/python3", "/usr/local/bin/python3"] {
-        if PathBuf::from(candidate).exists() {
-            return PathBuf::from(candidate);
-        }
-    }
-    PathBuf::from("python3")
+    crate::paths::python_bin()
 }
 
 /// Balas dengan byte keluaran validator, tanpa menyentuh urutan kuncinya.

@@ -488,6 +488,26 @@
                 <div style="font-size: 0.68rem; color: var(--text-dim); margin-top: -6px; margin-bottom: 12px; line-height: 1.4;">
                     When ON: Tools & file reads are automatically permitted without confirmation pauses in the terminal.
                 </div>
+                <div id="autopilot-card" class="toggle-card off" onclick="toggleAutopilot()"
+                     title="F10.8 — the engines may choose which queued item comes next, never what may exist. Hard ceilings are enforced by tools/work_order.py, not by this page.">
+                    <div class="toggle-title">
+                        <span>🌙 Autopilot</span>
+                    </div>
+                    <div id="autopilot-indicator" class="switch-indicator">…</div>
+                </div>
+                <div style="font-size: 0.68rem; color: var(--text-dim); margin-top: -6px; line-height: 1.4;">
+                    When ON the machine is entrusted to the ecosystem for a bounded run. It does
+                    <b>not</b> grant the mouse or keyboard, and OFF needs nothing from the AI.
+                    <div style="display:flex; gap:6px; align-items:center; margin-top:6px;">
+                        <label for="ap-minutes" style="font-size:0.62rem;">window min</label>
+                        <input id="ap-minutes" type="number" value="240" min="1" step="1"
+                               style="width:62px; background:transparent; color:var(--text-main); border:1px solid var(--border-subtle); border-radius:4px; padding:2px 4px; font-size:0.66rem;">
+                        <label for="ap-budget" style="font-size:0.62rem;">items</label>
+                        <input id="ap-budget" type="number" value="8" min="1" step="1"
+                               style="width:52px; background:transparent; color:var(--text-main); border:1px solid var(--border-subtle); border-radius:4px; padding:2px 4px; font-size:0.66rem;">
+                    </div>
+                    <span id="autopilot-note" style="display:block; color:var(--accent-amber); margin-top:5px;">reading the work order…</span>
+                </div>
             </div>
 
             <div>
@@ -770,6 +790,89 @@
                 card.classList.add('off');
                 ind.innerText = 'OFF';
             }
+        }
+
+        /* Autopilot (F10.8). Halaman ini hanya memegang tombol; setiap angka yang
+           ditampilkan datang dari /api/autopilot, yang meneruskan byte tools/work_order.py
+           apa adanya. Batas keras (kegagalan berturut-turut, jumlah item, lease) tidak
+           disalin ke sini — dua definisi untuk satu kata adalah dua laporan yang boleh
+           berbeda, dan kontrak §12 melarangnya. */
+        var apState = null, apBusy = false;
+
+        function apWindowText(epoch) {
+            if (!epoch) return 'no window set';
+            const sec = Number(epoch) - Math.floor(Date.now() / 1000);
+            if (sec <= 0) return 'window expired — it will not claim anything';
+            const h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+            return (h ? h + 'h ' : '') + m + 'm of air left';
+        }
+
+        async function refreshAutopilot() {
+            try {
+                const res = await fetch('/api/autopilot', { cache: 'no-store' });
+                const j = await res.json();
+                const card = document.getElementById('autopilot-card');
+                const ind = document.getElementById('autopilot-indicator');
+                const note = document.getElementById('autopilot-note');
+                if (j.error && !j.autopilot) {
+                    ind.innerText = 'UNKNOWN';
+                    card.classList.add('off');
+                    note.innerText = j.error + ' — OFF still works from any shell (ai-station autopilot off)';
+                    return;
+                }
+                apState = j;
+                const st = j.autopilot || {}, night = j.night || {};
+                const on = st.mode === 'ON';
+                card.classList.toggle('off', !on);
+                ind.innerText = st.mode || 'UNKNOWN';
+                const waiting = (j.decisions_open || []).length + (j.human_queue || []).length;
+                const bits = [on ? apWindowText(st.until_epoch) : 'a human is at the desk',
+                              night.ok ? 'breaker closed' : ('BREAKER OPEN: ' + (night.why || []).join(', ')),
+                              'items ' + (st.items_done || 0) + '/' + (st.item_budget || '—'),
+                              waiting + ' waiting for you'];
+                note.innerText = bits.join(' · ');
+                note.style.color = night.ok ? 'var(--text-dim)' : 'var(--accent-rose)';
+            } catch (e) {
+                document.getElementById('autopilot-note').innerText =
+                    'daemon unreachable — the work order could not be read';
+            }
+        }
+
+        async function toggleAutopilot() {
+            if (apBusy) return;
+            const next = (apState && apState.autopilot && apState.autopilot.mode === 'ON') ? 'off' : 'on';
+            const body = { mode: next, by: 'operator-cockpit',
+                           reason: 'flipped ' + next + ' from the cockpit' };
+            if (next === 'on') {
+                const m = parseInt(document.getElementById('ap-minutes').value, 10);
+                const b = parseInt(document.getElementById('ap-budget').value, 10);
+                if (m > 0) body.minutes = m;
+                if (b > 0) body.budget = b;
+            }
+            apBusy = true;
+            const note = document.getElementById('autopilot-note');
+            note.innerText = 'writing the switch through work_order.py…';
+            try {
+                const res = await fetch('/api/autopilot', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(body)
+                });
+                const j = await res.json().catch(function () { return {}; });
+                if (!res.ok || j.error) {
+                    note.innerText = (j.error || ('daemon answered ' + res.status)) +
+                        ((j.off_paths || []).length ? ' — still off-able: ' + j.off_paths.join(' / ') : '');
+                    note.style.color = 'var(--accent-rose)';
+                    return;
+                }
+            } catch (e) {
+                note.innerText = 'the switch was NOT written: daemon unreachable';
+                note.style.color = 'var(--accent-rose)';
+                return;
+            } finally {
+                apBusy = false;
+            }
+            refreshAutopilot();
         }
 
         async function onModelChange() {
@@ -1239,6 +1342,7 @@
             refreshWorkspace();
             refreshRecovery();
             refreshModels();
+            refreshAutopilot();
             // ?tab=antigravity membuka tab itu sejak awal: berguna sebagai deep link,
             // dan membuat tampilan tiap engine bisa diperiksa tanpa klik.
             const wantTab = new URLSearchParams(location.search).get('tab');
@@ -1248,6 +1352,9 @@
             setInterval(fetchStats, 3000);
             setInterval(refreshWorkspace, 6000);
             setInterval(refreshRecovery, 20000);
+            /* Satu-satunya alasan interval ini ada: sakelar harus menunjukkan keadaan yang
+               sebenarnya, termasuk saat AI lain yang membaliknya. */
+            setInterval(refreshAutopilot, 20000);
             const inp = document.getElementById('prompt-input');
             if (inp) autoGrowPrompt(inp);
         };

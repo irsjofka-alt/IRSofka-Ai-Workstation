@@ -212,6 +212,7 @@
   </div>
   <div class="group">
     <h2>System</h2>
+    <button class="nav" data-view="decide"><i>✋</i> Human Decide</button>
     <button class="nav soon" data-soon="engines"><i>⚙</i> Engines<em>soon</em></button>
     <button class="nav soon" data-soon="backup"><i>↺</i> Backups<em>soon</em></button>
     <a class="nav" href="/" style="text-decoration:none"><i>▸</i> Open console</a>
@@ -747,6 +748,192 @@
     return box;
   }
 
+  /* Human Decide — muka dari tools/work_order.py.
+   *
+   * Halaman ini tidak punya tombol apa pun. Itu pilihan, bukan kelalaian: kontrak §12 membagi
+   * workstation menjadi kokpit (tempat perintah diberikan) dan station (tempat catatan dibaca),
+   * dan F10.8 menaruh sakelar Autopilot di kokpit. Angka pemutus, batas lease dan isi antrean
+   * dibaca dari /api/autopilot, yang meneruskan byte work_order.py apa adanya — tidak ada satu
+   * pun angka di halaman ini yang dihitung di JavaScript.
+   */
+  var ap = null, apBusy = false;
+
+  function loadAutopilot() {
+    if (apBusy) return;
+    apBusy = true;
+    fetch("/api/autopilot", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        apBusy = false;
+        ap = json;
+        if (view === "decide") render();
+      })
+      .catch(function () {
+        apBusy = false;
+        ap = { error: "daemon unreachable — is irsofka-ai-workstation running?" };
+        if (view === "decide") render();
+      });
+  }
+
+  function timeLeft(epoch) {
+    if (!epoch) return "no window set";
+    var sec = Number(epoch) - Math.floor(Date.now() / 1000);
+    if (sec <= 0) return "expired " + Math.floor(-sec / 60) + "m ago";
+    var h = Math.floor(sec / 3600), m = Math.floor((sec % 3600) / 60);
+    return (h ? h + "h " : "") + m + "m left";
+  }
+
+  function listOrNull(parent, items, make) {
+    if (!items || !items.length) {
+      parent.appendChild(el("p", "note", "empty — which is the normal state of this queue"));
+      return;
+    }
+    items.forEach(function (it) { parent.appendChild(make(it)); });
+  }
+
+  function renderDecideView() {
+    document.getElementById("title").textContent = "What waits for a person";
+    document.getElementById("crumb").textContent = "Human Decide";
+    document.getElementById("tabs").style.display = "none";
+    var box = document.getElementById("stats");
+    var feed = document.getElementById("feed");
+
+    if (!ap) {
+      box.textContent = "";
+      feed.textContent = "";
+      document.getElementById("sub").textContent = "reading the work order…";
+      feed.appendChild(el("p", "empty", apBusy ? "asking work_order.py for the current state…" : "not loaded yet"));
+      loadAutopilot();
+      return;
+    }
+    if (ap.error) {
+      box.textContent = "";
+      feed.textContent = "";
+      document.getElementById("sub").textContent = "the daemon could not answer";
+      feed.appendChild(el("p", "empty", ap.error));
+      if (ap.off_paths) {
+        ap.off_paths.forEach(function (p) { feed.appendChild(el("p", "note", "still works: " + p)); });
+      }
+      return;
+    }
+
+    var state = ap.autopilot || {}, night = ap.night || {}, limits = ap.limits || {};
+    var waiting = (ap.decisions_open || []).length + (ap.human_queue || []).length;
+    var on = state.mode === "ON";
+
+    box.textContent = "";
+    [["switch", state.mode || "UNKNOWN", on ? "good" : (state.mode ? "" : "bad")],
+     ["window", state.mode === "ON" ? timeLeft(state.until_epoch) : "not running", ""],
+     ["items this run", (state.items_done || 0) + " / " + (state.item_budget || "—"), ""],
+     ["breaker", night.ok ? "closed" : "TRIPPED", night.ok ? "" : "bad"],
+     ["waiting for you", waiting, waiting ? "bad" : ""]].forEach(function (r) {
+      var card = el("div", "stat " + r[2]);
+      card.appendChild(el("span", null, r[0]));
+      card.appendChild(el("strong", null, String(r[1])));
+      box.appendChild(card);
+    });
+
+    document.getElementById("sub").textContent =
+      (night.ok
+        ? "the loop may claim the next item"
+        : "the loop will not claim anything: " + (night.why || []).join(", ")) +
+      " · read from " + (ap.engine || "the work order") + " just now";
+
+    feed.textContent = "";
+    feed.appendChild(head("The switch, as recorded"));
+    var switchCard = el("div", "card");
+    switchCard.appendChild(el("h3", null, "Autopilot is " + (state.mode || "UNKNOWN")));
+    [["changed by", state.changed_by || "—"],
+     ["ON since", state.on_epoch ? new Date(Number(state.on_epoch) * 1000).toLocaleString() : "—"],
+     ["ends", state.mode === "ON" ? timeLeft(state.until_epoch) : "—"],
+     ["item budget", String(state.item_budget || "—") + " · items done " + (state.items_done || 0)],
+     ["last off reason", state.off_reason || "—"],
+     ["hard limits", "failures " + limits.max_failures + " · items " + limits.max_items +
+       " · lease " + limits.lease_seconds + "s · resumes " + limits.max_resume]].forEach(function (r) {
+      var p = el("p", null);
+      p.appendChild(el("b", null, r[0] + ": "));
+      p.appendChild(document.createTextNode(r[1]));
+      switchCard.appendChild(p);
+    });
+    switchCard.appendChild(el("p", "note",
+      "this page is the record, not the control: the toggle lives in the console (Open console, top left). " +
+      "Three paths turn it off and none of them needs the AI's cooperation."));
+    feed.appendChild(switchCard);
+
+    if (!night.ok && (night.why || []).length) {
+      feed.appendChild(head("Why the breaker is open"));
+      var whyCard = el("div", "card");
+      (night.why || []).forEach(function (w) {
+        var p = el("p", null);
+        p.appendChild(el("b", null, "· "));
+        p.appendChild(document.createTextNode(w));
+        whyCard.appendChild(p);
+      });
+      if (night.tree_dirty === true) {
+        whyCard.appendChild(el("p", "note",
+          "the fix is to name the files and commit or revert them by hand — never a wholesale discard: " +
+          "an uncommitted change belongs to whichever engine was mid-way through writing it."));
+      }
+      if (night.tree_dirty === null) {
+        whyCard.appendChild(el("p", "note",
+          "git could not be read. UNKNOWN is not clean — the same asymmetry that makes the call-worker cut safe."));
+      }
+      feed.appendChild(whyCard);
+    }
+
+    feed.appendChild(head("Decisions no rung could answer"));
+    listOrNull(feed, ap.decisions_open, function (d) {
+      var c = el("div", "card");
+      c.appendChild(el("h3", null, d.question || "untitled question"));
+      var opts = [];
+      try { opts = JSON.parse(d.options || "[]"); } catch (e) { opts = []; }
+      opts.forEach(function (o) { c.appendChild(el("p", null, "— " + o)); });
+      c.appendChild(el("p", "note",
+        "weight " + (d.weight || "—") + " · opened " +
+        new Date(Number(d.created_epoch) * 1000).toLocaleString() +
+        " · nothing was answered by a substitute engine"));
+      return c;
+    });
+
+    feed.appendChild(head("Items that crossed a measured threshold"));
+    listOrNull(feed, ap.human_queue, function (h) {
+      var c = el("div", "card");
+      c.appendChild(el("h3", null, "#" + h.id + " — " + h.title));
+      c.appendChild(el("p", null, h.escalation_reason || "no reason recorded"));
+      c.appendChild(el("p", "note",
+        "phase " + (h.phase || "—") + " · waiting because a threshold is a number read when the item runs, " +
+        "not a number remembered from the conversation that motivated it"));
+      return c;
+    });
+
+    feed.appendChild(head("Engines that may be stalled"));
+    listOrNull(feed, ap.stalled, function (s) {
+      var c = el("div", "card");
+      c.appendChild(el("h3", null, "#" + s.id + " — " + s.title));
+      c.appendChild(el("p", null,
+        "held by " + (s.claimed_by || "?") + " · lease " + timeLeft(s.lease_epoch) +
+        " · resumes used " + (s.resume_count || 0)));
+      c.appendChild(el("p", "note",
+        "a list is not a decision to type: CONTINUE needs the pane readable AND unchanged before anything is sent"));
+      return c;
+    });
+
+    feed.appendChild(head("What the queue offers next"));
+    var qCard = el("div", "card");
+    if (ap.next) {
+      qCard.appendChild(el("h3", null, "#" + ap.next.id + " — " + ap.next.title));
+      qCard.appendChild(el("p", null,
+        "status " + ap.next.status + " · phase " + (ap.next.phase || "—") +
+        " · depends on " + (ap.next.depends_on || "nothing")));
+    } else {
+      qCard.appendChild(el("p", "empty",
+        "nothing is offerable — an empty queue means stop, not find something"));
+    }
+    var counts = (ap.per_status || []).map(function (r) { return r.status + " " + r.n; }).join(" · ");
+    qCard.appendChild(el("p", "note", "quest_tasks by status: " + (counts || "none")));
+    feed.appendChild(qCard);
+  }
+
   function renderRolesView() {
     document.getElementById("title").textContent = "Who is on the team";
     document.getElementById("crumb").textContent = "Roles & verifier";
@@ -883,6 +1070,7 @@
   }
 
   function render() {
+    if (view === "decide") { return renderDecideView(); }
     if (view === "treasury") { return renderTreasuryView(); }
     if (view === "roles") {
       /* Jangan membangun ulang formulir yang sedang diketik: poll 10 detik akan
@@ -926,6 +1114,7 @@
         data = json;
         render();
         if (view === "treasury") loadTreasury();
+        if (view === "decide") loadAutopilot();
       })
       .catch(function () {
         document.getElementById("sub").textContent =

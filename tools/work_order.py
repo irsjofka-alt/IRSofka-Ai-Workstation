@@ -186,10 +186,17 @@ def run(conn, engine, sql, params=()):
 
     psycopg2 mengembalikan tuple tanpa row_factory, sementara sqlite3.Row sudah seperti dict.
     Membentuk dict dari cur.description membuat keduanya identik — tanpa itu, kode yang lolos
-    29 selftest SQLite tetap jatuh di produksi PostgreSQL pada SELECT pertama.
+    seluruh selftest SQLite tetap jatuh di produksi PostgreSQL pada SELECT pertama.
     """
     cur = conn.cursor()
-    cur.execute(sql, params)
+    # `params` tidak boleh diteruskan kalau tidak ada: psycopg2 menafsirkan setiap `%`
+    # dalam SQL sebagai placeholder begitu ia menerima tuple parameter, jadi satu `LIKE
+    # 'autopilot%'` tanpa parameter akan meledak dengan "tuple index out of range" — di
+    # PostgreSQL saja, karena SQLite tidak mengenal interpolation itu sama sekali.
+    if params:
+        cur.execute(sql, params)
+    else:
+        cur.execute(sql)
     if engine != "POSTGRESQL":
         conn.commit()
     cols = [d[0] for d in cur.description] if cur.description else []
@@ -502,6 +509,14 @@ def selftest():
         lease = int(get_item(conn, "SQLITE", ids["A"])["lease_epoch"] or 0)
         check("lease disimpan sebagai epoch", lease > now(), str(lease))
 
+        stt = status(conn, "SQLITE")
+        check("status punya semua bagian yang dibaca GUI",
+              all(k in stt for k in ("autopilot", "night", "limits", "per_status",
+                                     "human_queue", "decisions_open", "stalled", "next")),
+              str(sorted(stt)))
+        check("laporan GUI turunan, bukan karangan: tree kotor berarti night.ok false",
+              tree_dirty() is not True or not stt["night"]["ok"], str(stt["night"]))
+
         # --- circuit breaker: loop yang gagal cepat tidak boleh menguras kuota malam ---
         st = night_state(conn, "SQLITE", dirty=True)
         check("tree kotor menahan klaim", not st["ok"] and "kotor" in " ".join(st["why"]), str(st))
@@ -567,6 +582,13 @@ def selftest_live():
             f"VALUES ({ph}, 'PENDING', 'test', {ph})", (f"{mark}-A", "true"))
         got = run(conn, engine, f"SELECT id FROM quest_tasks WHERE title={ph}", (f"{mark}-A",))
         check("baris uji bisa dibaca kembali", got, str(got))
+        try:
+            lit = run(conn, engine,
+                      f"SELECT COUNT(*) AS n FROM quest_tasks WHERE title LIKE '{mark}%'")
+            check("LIKE dengan % literal dan tanpa parameter tidak meledak",
+                  lit and int(lit[0]["n"]) >= 1, str(lit))
+        except Exception as exc:  # noqa: BLE001
+            check("LIKE dengan % literal dan tanpa parameter tidak meledak", False, repr(exc))
         if got:
             iid = int(got[0]["id"])
             ok, msg = claim(conn, engine, iid, "qoder")
@@ -603,6 +625,40 @@ def selftest_live():
     return 1 if bad else 0
 
 
+# --- muka untuk GUI ---------------------------------------------------------
+
+
+def status(conn, engine, older_than=180):
+    """Satu amplop JSON untuk sakelar Autopilot dan tab Human Decide.
+
+    Semua isinya turunan: baris database, angka pemutus, dan satu pembacaan git. Tidak ada
+    satu pun field yang boleh ditulis tangan — §12 melarang laporan yang dikarang, dan muka
+    GUI yang mengarang adalah cara tercepat membuat operator percaya angka yang salah.
+    """
+    ap = autopilot(conn, engine) or {}
+    per_status = run(conn, engine,
+                     "SELECT status, COUNT(*) AS n FROM quest_tasks GROUP BY status ORDER BY 2 DESC")
+    human = run(conn, engine,
+                "SELECT id, title, status, escalation_reason, phase FROM quest_tasks "
+                "WHERE status='HUMAN' ORDER BY id")
+    dec = run(conn, engine,
+              "SELECT id, question, options, weight, state, model_id, created_epoch "
+              "FROM decisions WHERE state='OPEN' ORDER BY id")
+    nxt = next_item(conn, engine)
+    return {
+        "engine": engine,
+        "autopilot": ap,
+        "night": night_state(conn, engine),
+        "limits": {"max_failures": NIGHT_MAX_FAILURES, "max_items": NIGHT_MAX_ITEMS,
+                   "lease_seconds": LEASE_SECONDS, "max_resume": MAX_RESUME},
+        "per_status": per_status,
+        "human_queue": human,
+        "decisions_open": dec,
+        "stalled": stalled(conn, engine, older_than),
+        "next": nxt,
+    }
+
+
 # --- CLI --------------------------------------------------------------------
 def main(argv=None):
     ap = argparse.ArgumentParser(description="Work order autopilot — klaim, lease, bukti, eskalasi")
@@ -629,6 +685,7 @@ def main(argv=None):
                    choices=["RESOLVED", "ESCALATED", "UNAVAILABLE"])
     p.add_argument("--note", default=None)
     sub.add_parser("digest")
+    sub.add_parser("status")
     p = sub.add_parser("selftest"); p.add_argument("--live", action="store_true")
     a = ap.parse_args(argv)
 
@@ -691,6 +748,8 @@ def main(argv=None):
         print(json.dumps({"engine": engine, "per_status": rows,
                           "decisions_open": open_dec[0]["n"] if open_dec else 0,
                           "autopilot": autopilot(conn, engine)}, default=str, indent=2))
+    elif a.cmd == "status":
+        print(json.dumps(status(conn, engine), default=str, indent=2))
     return 0
 
 

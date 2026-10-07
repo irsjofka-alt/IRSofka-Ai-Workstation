@@ -183,6 +183,7 @@ async fn run_server(profiles: HashMap<String, TabProfile>) {
         .route("/api/recovery", get(api::workspace::get_recovery))
         .route("/api/models", get(api::engine::get_models))
         .route("/api/master", get(api::master::get_master).post(api::master::post_master))
+        .route("/api/autopilot", get(api::autopilot::get_state).post(api::autopilot::post_state))
         .route("/api/usage", get(api::engine::get_usage))
         .route("/api/cli/config", get(api::engine::get_cli_config).post(api::engine::patch_cli_config))
         .route("/api/cli/restart", post(api::engine::restart_cli_tab))

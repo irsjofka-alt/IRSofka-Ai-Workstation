@@ -12,6 +12,7 @@ use std::sync::{Arc, Mutex};
 use crate::profile::TabProfile;
 use crate::terminal::PtySession;
 
+pub(crate) mod autopilot;
 pub(crate) mod daemon;
 pub(crate) mod desktop;
 pub(crate) mod engine;

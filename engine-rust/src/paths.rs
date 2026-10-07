@@ -78,6 +78,27 @@ pub(crate) fn master_data_path() -> PathBuf {
     station_dir().join("tools").join("master_data.py")
 }
 
+/// Pemilik kosakata tugas — klaim, lease, bukti, antrean manusia, sakelar Autopilot.
+/// Angka pemutus hidup di sana, tidak di sini: menyalinnya ke Rust berarti punya dua
+/// angka yang boleh berbeda, dan kontrak §12 melarang dua definisi untuk satu kata.
+pub(crate) fn work_order_path() -> PathBuf {
+    station_dir().join("tools").join("work_order.py")
+}
+
+/// Interpreter untuk setiap proses anak daemon.
+///
+/// Unit systemd tidak mewarisi PATH selebar shell, jadi nama telanjang `python3` bisa tidak
+/// ketemu justru pada saat ia paling dibutuhkan. Dicari di satu tempat supaya dua modul tidak
+/// saling berbeda pada instalasi berikutnya.
+pub(crate) fn python_bin() -> PathBuf {
+    for candidate in ["/usr/bin/python3", "/usr/local/bin/python3"] {
+        if PathBuf::from(candidate).exists() {
+            return PathBuf::from(candidate);
+        }
+    }
+    PathBuf::from("python3")
+}
+
 pub(crate) fn engines_registry_path() -> PathBuf {
     config_dir().join("engines.json")
 }

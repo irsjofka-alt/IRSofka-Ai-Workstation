@@ -376,13 +376,14 @@ only agreed with is not a review:
   exist. Parking it costs the one thing F10 is built on. F9.1 stays unblocked and parallel.
 
 Order as it will be built: **F8.4 + F10.2** (✅ 01:00) → **F10.8** (🟡 01:30, switch shipped; expiry
-and drainer still owed) → **F10.1** → **F10.7** →
+and drainer still owed) → **F10.1** (🟡 01:44, broker shipped; nothing forces an engine to call it yet)
+→ **F10.7** →
 **F10.3** → F10.4 / F10.5 / F10.6. The seeded queue encodes this through `depends_on`, so an engine
 that skips the order cannot claim.
 
 ### Modules
 
-- ⬜ **F10.1 Decision broker.** When an engine would ask the operator "option 1 or 2", it writes a
+- 🟡 **F10.1 Decision broker.** When an engine would ask the operator "option 1 or 2", it writes a
   `decision` row — question, options, evidence *per option*, and cost per option — then dispatches the
   resolver **role** resolved from `config/slots.yaml` at the moment of use. The answer is recorded in
   the same row, with the model id that actually answered.
@@ -434,11 +435,39 @@ that skips the order cannot claim.
   The row half of this module is shipped with F8.4: a `decisions` table (question, options, weight,
   rung used, engine key, **model id that answered**, state) plus `work_order.py decide|resolve`, and
   `resolve` refuses `RESOLVED` without a model id — a decision attributed to nobody is the F8.2 failure
-  shape again. What is *not* shipped: the dispatch itself, i.e. the code that poses the question to a
-  rung and reads the answer back from the message table **and the pane**, not only the pipe. That last
-  clause is the defect this module exists to fix; it has now cost two measured lost answers
-  (`cross_verify` reporting `TIMEOUT` at 480 s while `read_terminal` showed a finished reply), which is
-  why invariant 5 is written the way it is.
+  shape again.
+  Shipped 2026-10-08 01:44 (`33fee41`): the dispatch itself — `work_order.py broker`, reached by
+  `decide --route` / `route <id>`. It stays thin: registry, quota gate and the pane reader already
+  belong to `cross_verify.py`, so the broker adds only the ladder (read from `config/slots.yaml` per
+  call), the answer contract, and the rule that an exhausted ladder lands `ESCALATED` instead of being
+  answered by a substitute. `route --dry-run` prints the ladder and the exact prompt without sending
+  anything, which is how the ladder gets checked before quota is spent.
+  Three real defects, each found by running it:
+  - **The pane echoes the prompt.** The parser read its own instructions: `ALASAN` captured the
+    template line, and — far worse — the rules text contains ``PILIHAN: TIDAK``, so a pane that had
+    only echoed the prompt would have been recorded as a resolver that *refused*. A conclusion
+    invented from our own sentence. `answer_tail()` cuts at the last occurrence of the prompt's final
+    line, and a regression check asserts the old reading was wrong.
+  - **`resolve_decision` sliced `answer` unconditionally**, and the escalation path passes `None`.
+    The first question no machine could settle would have crashed instead of reaching a person —
+    precisely the failure this module exists to handle.
+  - **`decisions.weight` is `VARCHAR(10)` in PostgreSQL**; `irreversible` is 12 characters. SQLite
+    does not check lengths, so the fixture stayed green for the third time on a production-only bug.
+    The DDL says 20 and `ensure_schema` widens a narrow existing column, reading the current width
+    first so it never rewrites one that is already right.
+  Measured: selftest 48/48, live 14/14 on `POSTGRESQL`; decision 3 (two options, evidence and cost per
+  option) resolved in 30 s by `gemini-3.8-flash-high` through the `resolver` rung, model id read from
+  config; decision 6 born `ESCALATED` under invariant 3 and visible in the Human Decide tab; deploy
+  gates green.
+  Remaining, and named so it is not mistaken for done:
+  - Only rung 1 has ever been exercised for real. The skip-and-fall path is proven by test, not by
+    quota.
+  - **Nothing forces an engine to use this.** The standing order is honoured by convention plus
+    contract text; the enforcement point would be a hook that turns an "option 1 or 2?" into a
+    `decide --route`, and it is not built. Until then F10.1 is a door, not a corridor.
+  - "Working engine's quota untouched" is evidenced by the dispatch *path* (pane → antigravity, zero
+    Qoder calls), not by a credit delta: the Qoder credit meter returned no number tonight, and
+    writing 0 there would have been fabrication.
 - ✅ **F10.2 Task lease — the actual sync primitive** *(built inside F8.4, one unit — see the build
   order above)*. Two engines coordinating by chatting is two
   engines racing to read the same prose. Add `claimed_by` + `lease_expires_at` (F8.4 columns): one

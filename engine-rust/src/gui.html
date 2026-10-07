@@ -324,7 +324,7 @@
         .prompt-input {
             flex: 1;
             min-height: 46px;
-            max-height: 32vh;
+            max-height: 60vh;
             overflow-y: auto;
             resize: none;
             background: var(--bg-card);
@@ -546,12 +546,6 @@
             </div>
 
             <!-- Action Chips for 1-Click Execution -->
-            <div class="action-chips">
-                <div class="chip" onclick="quickRun('baca ~/.ai-station/README.md dan ~/.ai-station/ROADMAP.md (plus ~/.ai-station/brain/DESIGN_NOTES.md untuk konteks privat mesin), lalu laporkan status terkini workstation dan apa yang tersisa di Fase 6')">📄 Baca README & Roadmap Terkini</div>
-                <div class="chip" style="border-color: rgba(245, 158, 11, 0.4); color: var(--accent-amber);" onclick="startReplSession('qoder')">💬 Mulai Chat Interaktif Qoder (REPL)</div>
-                <div class="chip" style="border-color: rgba(56, 189, 248, 0.4); color: var(--accent-cyan);" onclick="startReplSession('antigravity')">💬 Mulai Chat Interaktif Antigravity (REPL)</div>
-                <div class="chip" onclick="execAction('see_screen')">📸 Ambil Screenshot Desktop</div>
-            </div>
 
             <!-- Bar mesin: ikut tab aktif, daftarnya dari /api/models (bukan hardcode) -->
             <div class="engine-bar" id="engine-bar">
@@ -594,8 +588,8 @@
                 </button>
             </div>
             <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 4px; padding: 0 2px;">
-                💡 Ketik bebas multi-baris di atas (perintah panjang otomatis turun baris, tidak terpotong).
-                Untuk chat langsung di layar terminal, klik <b>[💬 Mulai Chat Interaktif]</b> lalu ketik di pane.
+                💡 Ketik bebas multi-baris di atas — kotak membesar mengikuti teks, tidak ada batas jumlah karakter.
+                Untuk mengetik langsung di layar terminal, klik pane di atas lalu ketik seperti biasa.
             </div>
         </div>
 
@@ -710,10 +704,6 @@
             } catch(e) {}
         }
 
-        function startReplSession(cli) {
-            switchTab(cli);
-            if (terms[cli]) terms[cli].focus();
-        }
 
         async function pollTerminal() {
             for (const t of TABS) {
@@ -796,7 +786,9 @@
 
         function autoGrowPrompt(el) {
             el.style.height = 'auto';
-            const cap = Math.round(window.innerHeight * 0.32);
+            // Kotak membesar mengikuti teks, sampai 60% layar. Dulu mentok 32% sehingga
+            // kalimat panjang masuk ke scroll sempit dan terasa seperti dipotong.
+            const cap = Math.round(window.innerHeight * 0.60);
             el.style.height = Math.min(el.scrollHeight, cap) + 'px';
             updateComposerState();
         }
@@ -849,12 +841,6 @@
             }
         }
 
-        function quickRun(text) {
-            const el = document.getElementById('prompt-input');
-            el.value = text;
-            autoGrowPrompt(el);
-            sendPromptToCLI({ verbatim: false });
-        }
 
         async function sendPromptToCLI(opts = {}) {
             const inp = document.getElementById('prompt-input');

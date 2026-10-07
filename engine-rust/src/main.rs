@@ -11,7 +11,7 @@
 //! tracked in `brain/memory/projects/ARCHITECTURE.md`.
 use axum::{
     extract::{Query, State},
-    http::{header, HeaderValue, StatusCode},
+    http::{HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
@@ -29,14 +29,13 @@ mod spool;
 mod terminal;
 use api::{daemon, desktop, static_files};
 use api::{
-    AppState, CliRunPayload, ConfigPatch, DiskInfo, GpuInfo, LogQuery, RamInfo, ReadQuery,
-    ResizePayload, ResetPayload, TabStatus, TelemetryStats, WritePayload,
+    AppState, ConfigPatch, DiskInfo, GpuInfo, LogQuery, RamInfo, TabStatus, TelemetryStats,
 };
 use procinfo::proc_cwd;
 use profile::{default_profiles, ensure_config, read_profiles, TabProfile};
-use save_state::{count_files, count_skill_files, load_save_state, pg_conn_str};
+use save_state::{count_files, count_skill_files, load_save_state};
 use terminal::{
-    capture_screen, create_session, engine_hint, pane_context_pct, tab_live_process,
+    create_session, engine_hint, pane_context_pct, tab_live_process,
     use_tmux_backend, PtySession,
 };
 use spool::{ingestor_json, spool_event};
@@ -71,15 +70,6 @@ pub(crate) static UI_RELOAD_TICK: AtomicU64 = AtomicU64::new(0);
 // ---------------------------------------------------------------------------
 // Pane: tipe state dan handler layar (sisanya hidup di terminal.rs)
 // ---------------------------------------------------------------------------
-
-async fn term_screen(Query(query): Query<ReadQuery>, State(state): State<AppState>) -> Response {
-    let tab = query.tab.unwrap_or_else(|| "qoder".to_string());
-    if let Some(screen) = capture_screen(&tab) {
-        return stream_body(screen.into_bytes());
-    }
-    // Fallback untuk tab PTY langsung (tanpa tmux): pakai buffer riwayat.
-    stream_body(poll_buffer(&state, &Some(tab)))
-}
 
 // HTTP payloads
 // ---------------------------------------------------------------------------
@@ -218,14 +208,14 @@ async fn run_server(profiles: HashMap<String, TabProfile>) {
         .route("/api/usage", get(get_usage))
         .route("/api/cli/config", get(get_cli_config).post(patch_cli_config))
         .route("/api/cli/restart", post(restart_cli_tab))
-        .route("/api/term/read", get(term_read))
-        .route("/api/term/screen", get(term_screen))
-        .route("/api/term/history", get(term_history))
-        .route("/api/term/write", post(term_write))
-        .route("/api/term/reset", post(term_reset))
-        .route("/api/term/resize", post(term_resize))
-        .route("/api/cli/run", post(cli_run))
-        .route("/api/chat", post(cli_run))
+        .route("/api/term/read", get(api::terminal::term_read))
+        .route("/api/term/screen", get(api::terminal::term_screen))
+        .route("/api/term/history", get(api::terminal::term_history))
+        .route("/api/term/write", post(api::terminal::term_write))
+        .route("/api/term/reset", post(api::terminal::term_reset))
+        .route("/api/term/resize", post(api::terminal::term_resize))
+        .route("/api/cli/run", post(api::terminal::cli_run))
+        .route("/api/chat", post(api::terminal::cli_run))
         .route("/api/see", post(desktop::handle_see))
         .route("/api/action", post(desktop::handle_action))
         .route("/api/screenshot/latest", get(desktop::serve_screenshot))
@@ -249,184 +239,6 @@ async fn run_server(profiles: HashMap<String, TabProfile>) {
 
 // Terminal handlers
 // ---------------------------------------------------------------------------
-
-async fn term_read(Query(query): Query<ReadQuery>, State(state): State<AppState>) -> Response {
-    stream_body(poll_buffer(&state, &query.tab))
-}
-
-fn poll_buffer(state: &AppState, tab: &Option<String>) -> Vec<u8> {
-    let tab = tab.clone().unwrap_or_else(|| "qoder".to_string());
-    state
-        .sessions
-        .get(&tab)
-        .map(|session| session.read_new())
-        .unwrap_or_default()
-}
-
-fn stream_body(output: Vec<u8>) -> Response {
-    Response::builder()
-        .header(header::CONTENT_TYPE, "text/plain; charset=utf-8")
-        .header(header::CACHE_CONTROL, "no-store")
-        .body(axum::body::Body::from(output))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-}
-
-async fn term_history(Query(query): Query<ReadQuery>, State(state): State<AppState>) -> Response {
-    let tab = query.tab.unwrap_or_else(|| "qoder".to_string());
-    let output = state
-        .sessions
-        .get(&tab)
-        .map(|session| session.read_history())
-        .unwrap_or_default();
-    stream_body(output)
-}
-
-fn live_tab_cwd(sessions: &HashMap<String, PtySession>, tab: &str) -> Option<String> {
-    let mut profiles = read_profiles();
-    let profile = profiles.remove(tab)?;
-    sessions
-        .get(tab)
-        .and_then(|s| tab_live_process(s.root_pid, engine_hint(&profile.engine)))
-        .map(|l| l.cwd)
-}
-
-async fn term_write(
-    State(state): State<AppState>,
-    Json(payload): Json<WritePayload>,
-) -> Json<Value> {
-    let tab = payload.tab.unwrap_or_else(|| "qoder".to_string());
-    if let Some(session) = state.sessions.get(&tab) {
-        if let Some(data) = payload.data {
-            session.send_bytes(data.as_bytes());
-            // xterm.js mengirim ketikan sepotong-sepotong; kumpulkan sampai Enter agar
-            // yang tercatat di log adalah perintah utuh, bukan-butir huruf.
-            let mut flushed: Vec<String> = Vec::new();
-            if let Ok(mut typed) = state.typed.lock() {
-                let buf = typed.entry(tab.clone()).or_default();
-                for ch in data.chars() {
-                    match ch {
-                        '\r' | '\n' => {
-                            let line = buf.trim().to_string();
-                            buf.clear();
-                            if !line.is_empty() {
-                                flushed.push(line);
-                            }
-                        }
-                        '\u{7f}' => {
-                            buf.pop();
-                        }
-                        c if (c as u32) >= 0x20 => {
-                            buf.push(c);
-                            if buf.len() > 4000 {
-                                buf.clear();
-                            }
-                        }
-                        _ => {}
-                    }
-                }
-            }
-            for line in flushed {
-                let cwd = live_tab_cwd(&state.sessions, &tab);
-                spool_event("terminal_command", &tab, line, cwd, Some("terminal"));
-            }
-        }
-    }
-    Json(json!({ "status": "ok" }))
-}
-
-async fn term_reset(
-    State(state): State<AppState>,
-    Json(payload): Json<ResetPayload>,
-) -> Json<Value> {
-    let tab = payload.tab.unwrap_or_else(|| "qoder".to_string());
-    if let Some(session) = state.sessions.get(&tab) {
-        session.interrupt();
-    }
-    if let Ok(mut typed) = state.typed.lock() {
-        typed.insert(tab.clone(), String::new());
-    }
-    let cwd = live_tab_cwd(&state.sessions, &tab);
-    spool_event("interrupt", &tab, "Sinyal Ctrl+C dikirim ke tab".to_string(), cwd, Some("terminal"));
-    Json(json!({ "status": "reset" }))
-}
-
-async fn term_resize(
-    State(state): State<AppState>,
-    Json(payload): Json<ResizePayload>,
-) -> Json<Value> {
-    // Sengguh hanya tab yang diminta. Pernah diubah menjadi "terapkan ke semua sesi" dan
-    // itu REGRESI: tab tersembunyi ikut dipaksa ke geometri tab aktif, TUI di dalamnya
-    // menata ulang dirinya sendiri, dan tampilannya jadi kacau sampai jendela di-resize.
-    // Geometri tab yang menyimpang memang ada (pernah terlihat 251x49), tapi itu harus
-    // dibereskan lewat jalur yang tidak menyentuh render, bukan di sini.
-    let tab = payload.tab.unwrap_or_else(|| "qoder".to_string());
-    if let Some(session) = state.sessions.get(&tab) {
-        session.resize(payload.cols, payload.rows);
-    }
-    Json(json!({ "status": "ok" }))
-}
-
-async fn cli_run(
-    State(state): State<AppState>,
-    Json(payload): Json<CliRunPayload>,
-) -> Json<Value> {
-    let prompt = payload.prompt.unwrap_or_default().trim().to_string();
-    if prompt.is_empty() {
-        return Json(json!({ "status": "empty" }));
-    }
-    let target_cli = payload.target_cli.unwrap_or_else(|| "qoder".to_string());
-
-    if let Some(session) = state.sessions.get(&target_cli) {
-        // Enter di terminal adalah \\r (CR), BUKAN \\n. TUI seperti Antigravity/Qoder membaca
-        // stdin dalam raw mode dan hanya mengenali \\r sebagai tombol Enter; dengan \\n teksnya
-        // masuk ke kotak input tapi tidak pernah disubmit — kegagalan dispatch yang tampak
-        // seperti "CLI tidak menjawab" padahal promptnya cuma menggantung tanpa dikirim.
-        // TUI membaca keyboard, bukan stream teks: `\n` di tengah prompt sering DITELAN
-        // sehingga semua baris menyambung, atau malah dianggap Enter. Bracketed paste
-        // adalah cara standar menyampaikan teks multi-baris utuh ke input TUI.
-        let body = if prompt.contains('\n') {
-            format!("\x1b[200~{}\x1b[201~\r", prompt)
-        } else {
-            format!("{}\r", prompt)
-        };
-        session.send_bytes(body.as_bytes());
-    }
-    let cwd = live_tab_cwd(&state.sessions, &target_cli);
-    spool_event(
-        "chat_dispatch",
-        &target_cli,
-        prompt.clone(),
-        cwd,
-        Some("dispatch"),
-    );
-
-    let prof = read_profiles().get(&target_cli).cloned().unwrap_or_default();
-
-    let m = prof.model.clone();
-    let eff = prof.effort.clone();
-    let ctx = prof.context_window.clone();
-    let prompt_for_db = prompt.clone();
-    let cli_for_db = target_cli.clone();
-
-    tokio::spawn(async move {
-        if let Ok((client, connection)) =
-            tokio_postgres::connect(&pg_conn_str(), tokio_postgres::NoTls).await
-        {
-            tokio::spawn(async move {
-                let _ = connection.await;
-            });
-            let ctx_val: i32 = ctx.parse().unwrap_or(1_000_000);
-            let _ = client
-                .execute(
-                    "INSERT INTO session_turns (cli_engine, model, reasoning_effort, context_window, prompt) VALUES ($1, $2, $3, $4, $5);",
-                    &[&cli_for_db, &m, &eff, &ctx_val, &prompt_for_db],
-                )
-                .await;
-        }
-    });
-
-    Json(json!({ "status": "dispatched", "target_cli": target_cli }))
-}
 
 // ---------------------------------------------------------------------------
 // CLI config / models / usage
@@ -759,7 +571,7 @@ async fn restart_cli_tab(State(state): State<AppState>, Json(body): Json<Value>)
         Some(s) if hint.is_some() => kill_tab_cli_root(s.root_pid, hint),
         _ => false,
     };
-    let cwd = live_tab_cwd(&state.sessions, &tab);
+    let cwd = api::terminal::live_tab_cwd(&state.sessions, &tab);
     spool_event(
         "tab_restart",
         &tab,

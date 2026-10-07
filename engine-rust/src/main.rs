@@ -10,15 +10,15 @@
 //! Reading the process table already lives in `procinfo.rs`; the remaining split is
 //! tracked in `brain/memory/projects/ARCHITECTURE.md`.
 use axum::{
-    extract::{Path, Query, State},
+    extract::{Query, State},
     http::{header, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
-use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod api;
 mod engineinfo;
 mod paths;
 mod probe;
@@ -27,6 +27,11 @@ mod procinfo;
 mod save_state;
 mod spool;
 mod terminal;
+use api::{daemon, desktop, static_files};
+use api::{
+    AppState, CliRunPayload, ConfigPatch, DiskInfo, GpuInfo, LogQuery, RamInfo, ReadQuery,
+    ResizePayload, ResetPayload, TabStatus, TelemetryStats, WritePayload,
+};
 use procinfo::proc_cwd;
 use profile::{default_profiles, ensure_config, read_profiles, TabProfile};
 use save_state::{count_files, count_skill_files, load_save_state, pg_conn_str};
@@ -41,7 +46,7 @@ use engineinfo::{
 };
 use probe::{cached_json, py_json, run_capture};
 use paths::{
-    assets_dir, gui_path, home_dir, profiles_path, spool_path, station_dir, station_port,
+    home_dir, profiles_path, spool_path, station_dir, station_port,
     tmux_socket, FALLBACK_HOST,
 };
 use std::{
@@ -49,7 +54,7 @@ use std::{
     fs,
     process::Command,
     sync::{
-        atomic::{AtomicU64, Ordering},
+        atomic::AtomicU64,
         Arc, Mutex,
     },
     time::Duration,
@@ -59,21 +64,13 @@ use tower_http::cors::{AllowOrigin, CorsLayer};
 const TABS: [&str; 3] = ["qoder", "antigravity", "shell"];
 
 /// Penghitung permintaan muat-ulang UI; dibaca WebView lewat polling /api/stats.
-static UI_RELOAD_TICK: AtomicU64 = AtomicU64::new(0);
+pub(crate) static UI_RELOAD_TICK: AtomicU64 = AtomicU64::new(0);
 
 
 // ---------------------------------------------------------------------------
 // ---------------------------------------------------------------------------
 // Pane: tipe state dan handler layar (sisanya hidup di terminal.rs)
 // ---------------------------------------------------------------------------
-
-#[derive(Clone)]
-pub struct AppState {
-    sessions: Arc<HashMap<String, PtySession>>,
-    /// Penyangga ketikan per tab, supaya satu baris perintah utuh (bukan per-tombol)
-    /// yang masuk ke action_log.
-    typed: Arc<Mutex<HashMap<String, String>>>,
-}
 
 async fn term_screen(Query(query): Query<ReadQuery>, State(state): State<AppState>) -> Response {
     let tab = query.tab.unwrap_or_else(|| "qoder".to_string());
@@ -86,115 +83,6 @@ async fn term_screen(Query(query): Query<ReadQuery>, State(state): State<AppStat
 
 // HTTP payloads
 // ---------------------------------------------------------------------------
-
-#[derive(Serialize)]
-struct GpuInfo {
-    name: String,
-    used_mb: u64,
-    total_mb: u64,
-    load: u32,
-    temp_c: u32,
-}
-
-#[derive(Serialize)]
-struct RamInfo {
-    used_gb: f32,
-    total_gb: f32,
-}
-
-#[derive(Serialize)]
-struct DiskInfo {
-    free: String,
-    total: String,
-}
-
-#[derive(Serialize)]
-struct TabStatus {
-    alive: bool,
-    pid: u32,
-    process: String,
-    cwd: String,
-    cmdline: String,
-    root_pid: u32,
-    profile: TabProfile,
-}
-
-#[derive(Serialize)]
-struct TelemetryStats {
-    user_name: String,
-    antigravity_cli: Value,
-    qoder_cli: Value,
-    qoder_account: Value,
-    gpu: GpuInfo,
-    ram: RamInfo,
-    disk: DiskInfo,
-    skills_count: i64,
-    rules_count: i64,
-    memories_count: i64,
-    incidents_count: i64,
-    total_quests: i64,
-    total_turns: i64,
-    player: Value,
-    db_engine: String,
-    /// Naik tiap ada permintaan muat-ulang UI. WebView membandingkannya saat polling
-    /// /api/stats, sehingga `refreshUI` bisa dipicu dari luar (MCP/perintah), bukan
-    /// hanya dari tombol di dalam halaman itu sendiri.
-    ui_reload_tick: u64,
-    tabs: HashMap<String, TabStatus>,
-}
-
-#[derive(Deserialize)]
-struct ReadQuery {
-    tab: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct WritePayload {
-    tab: Option<String>,
-    data: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ResetPayload {
-    tab: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ResizePayload {
-    tab: Option<String>,
-    cols: u16,
-    rows: u16,
-}
-
-#[derive(Deserialize)]
-struct CliRunPayload {
-    prompt: Option<String>,
-    target_cli: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ActionPayload {
-    action: Option<String>,
-}
-
-#[derive(Deserialize)]
-struct ConfigPatch {
-    tab: String,
-    #[serde(default)]
-    model: Option<String>,
-    #[serde(default)]
-    effort: Option<String>,
-    #[serde(default)]
-    context_window: Option<String>,
-    #[serde(default)]
-    permission_mode: Option<String>,
-    #[serde(default)]
-    workspace: Option<String>,
-    #[serde(default)]
-    continue_session: Option<bool>,
-    #[serde(default)]
-    restart: bool,
-}
 
 // ---------------------------------------------------------------------------
 // main
@@ -320,8 +208,8 @@ async fn run_server(profiles: HashMap<String, TabProfile>) {
     .collect();
 
     let app = Router::new()
-        .route("/", get(serve_gui))
-        .route("/assets/*path", get(serve_asset))
+        .route("/", get(static_files::serve_gui))
+        .route("/assets/*path", get(static_files::serve_asset))
         .route("/api/stats", get(get_stats))
         .route("/api/workspace", get(get_workspace))
         .route("/api/log", get(get_log))
@@ -338,11 +226,11 @@ async fn run_server(profiles: HashMap<String, TabProfile>) {
         .route("/api/term/resize", post(term_resize))
         .route("/api/cli/run", post(cli_run))
         .route("/api/chat", post(cli_run))
-        .route("/api/see", post(handle_see))
-        .route("/api/action", post(handle_action))
-        .route("/api/screenshot/latest", get(serve_screenshot))
-        .route("/api/restart-server", post(restart_server))
-        .route("/api/ui/reload", post(ui_reload))
+        .route("/api/see", post(desktop::handle_see))
+        .route("/api/action", post(desktop::handle_action))
+        .route("/api/screenshot/latest", get(desktop::serve_screenshot))
+        .route("/api/restart-server", post(daemon::restart_server))
+        .route("/api/ui/reload", post(daemon::ui_reload))
         .layer(
             CorsLayer::new()
                 .allow_origin(AllowOrigin::list(allowed))
@@ -359,50 +247,6 @@ async fn run_server(profiles: HashMap<String, TabProfile>) {
     axum::serve(listener, app).await.expect("Failed to run Axum server");
 }
 
-// ---------------------------------------------------------------------------
-// Static handlers
-// ---------------------------------------------------------------------------
-
-async fn serve_gui() -> Response {
-    let html = fs::read_to_string(gui_path())
-        .or_else(|_| Ok::<String, std::io::Error>(include_str!("gui.html").to_string()))
-        .unwrap_or_else(|_| "<h1>gui.html tidak ditemukan</h1>".to_string());
-    // Tanpa header ini WebKit boleh menyajikan HTML dari cache, dan tombol "Refresh UI"
-    // akan terlihat berhasil padahal yang termuat masih JavaScript lama. Semua perubahan
-    // gui.html jadi tidak pernah sampai ke jendela yang sedang terbuka.
-    Response::builder()
-        .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
-        .header(header::CACHE_CONTROL, "no-store, must-revalidate")
-        .body(axum::body::Body::from(html))
-        .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-}
-
-async fn serve_asset(Path(rel): Path<String>) -> Response {
-    if rel.contains("..") {
-        return StatusCode::BAD_REQUEST.into_response();
-    }
-    let full = assets_dir().join(&rel);
-    match fs::read(&full) {
-        Ok(bytes) => {
-            let ctype = match full.extension().and_then(|e| e.to_str()).unwrap_or("") {
-                "js" => "text/javascript; charset=utf-8",
-                "css" => "text/css; charset=utf-8",
-                "woff2" => "font/woff2",
-                "png" => "image/png",
-                "svg" => "image/svg+xml",
-                _ => "application/octet-stream",
-            };
-            Response::builder()
-                .header(header::CONTENT_TYPE, ctype)
-                .header(header::CACHE_CONTROL, "public, max-age=3600")
-                .body(axum::body::Body::from(bytes))
-                .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
-        }
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-// ---------------------------------------------------------------------------
 // Terminal handlers
 // ---------------------------------------------------------------------------
 
@@ -751,16 +595,6 @@ async fn get_workspace(State(state): State<AppState>) -> Response {
     .into_response()
 }
 
-#[derive(Deserialize)]
-struct LogQuery {
-    #[serde(default)]
-    limit: Option<u32>,
-    #[serde(default)]
-    engine: Option<String>,
-    #[serde(default)]
-    kind: Option<String>,
-}
-
 async fn query_history(mode: &str, q: LogQuery) -> Json<Value> {
     let mode = mode.to_string();
     let limit = q.limit.unwrap_or(40).clamp(1, 400);
@@ -1043,111 +877,7 @@ async fn get_stats(State(state): State<AppState>) -> Json<TelemetryStats> {
         total_turns: save.turns,
         player: save.player,
         db_engine: save.engine,
-        ui_reload_tick: UI_RELOAD_TICK.load(Ordering::Relaxed),
+        ui_reload_tick: daemon::reload_tick(),
         tabs,
     })
-}
-
-// ---------------------------------------------------------------------------
-// Desktop actions
-// ---------------------------------------------------------------------------
-
-async fn handle_see() -> Json<Value> {
-    let script = station_dir().join("tools").join("wayland_actor.py");
-    let script_arg = script.display().to_string();
-    let res = Command::new("python3")
-        .args([&script_arg, "screenshot"])
-        .output();
-    match res {
-        Ok(out) if out.status.success() => {
-            Json(json!({ "status": "ok", "message": "Screenshot berhasil" }))
-        }
-        Ok(out) => Json(json!({
-            "status": "error",
-            "message": String::from_utf8_lossy(&out.stderr)
-        })),
-        Err(e) => Json(json!({ "status": "error", "message": e.to_string() })),
-    }
-}
-
-async fn serve_screenshot() -> Response {
-    let p = station_dir()
-        .join("logs")
-        .join("current_screen.png");
-    match fs::read(&p) {
-        Ok(bytes) => Response::builder()
-            .header(header::CONTENT_TYPE, "image/png")
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(axum::body::Body::from(bytes))
-            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
-        Err(_) => StatusCode::NOT_FOUND.into_response(),
-    }
-}
-
-async fn handle_action(Json(payload): Json<ActionPayload>) -> Json<Value> {
-    match payload.action.as_deref() {
-        Some("vol_up") => {
-            let _ = Command::new("pactl")
-                .args(["set-sink-volume", "@DEFAULT_SINK@", "+10%"])
-                .spawn();
-        }
-        Some("vol_down") => {
-            let _ = Command::new("pactl")
-                .args(["set-sink-volume", "@DEFAULT_SINK@", "-10%"])
-                .spawn();
-        }
-        Some("vol_mute") => {
-            let _ = Command::new("pactl")
-                .args(["set-sink-mute", "@DEFAULT_SINK@", "toggle"])
-                .spawn();
-        }
-        Some("notify_test") => {
-            let _ = Command::new("notify-send")
-                .args([
-                    "-a",
-                    "Irsofka AI Workstation",
-                    "Halo Bro Ichsan!",
-                    "AI Workstation Native Rust Core Aktif!",
-                ])
-                .spawn();
-        }
-        _ => {}
-    }
-    Json(json!({ "status": "ok" }))
-}
-
-/// Permintaan muat ulang tampilan dari luar (MCP, `curl`, atau tombol GUI).
-/// Aman dipanggil otomatis: hanya menaikkan penghitung yang dibaca WebView, tidak menyentuh
-/// PTY maupun tmux, jadi sesi CLI di dalam tab tidak ikut berhenti.
-async fn ui_reload() -> Json<Value> {
-    let tick = UI_RELOAD_TICK.fetch_add(1, Ordering::Relaxed) + 1;
-    spool_event(
-        "ui_reload_requested",
-        "-",
-        format!("Permintaan muat ulang UI (tick={tick})"),
-        proc_cwd(std::process::id()),
-        Some("daemon"),
-    );
-    Json(json!({ "status": "ok", "ui_reload_tick": tick }))
-}
-
-async fn restart_server() -> Json<Value> {
-    spool_event(
-        "daemon_restart_requested",
-        "-",
-        "Permintaan restart daemon via UI: systemctl --user restart irsofka-ai-workstation.service"
-            .to_string(),
-        proc_cwd(std::process::id()),
-        Some("daemon"),
-    );
-    tokio::spawn(async {
-        tokio::time::sleep(Duration::from_millis(500)).await;
-        let _ = Command::new("systemctl")
-            .args(["--user", "restart", "irsofka-ai-workstation.service"])
-            .spawn();
-    });
-    Json(json!({
-        "status": "restarting",
-        "message": "Rust server service sedang di-restart..."
-    }))
 }

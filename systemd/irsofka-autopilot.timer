@@ -1,0 +1,20 @@
+[Unit]
+# F10.3 ritme drainer. Same reason as irsofka-autopilot.service: install_units.sh menyalin unit
+# ini tetapi TIDAK meng-enable-nya. Timer yang bisa memulai loop ini hanya aman di belakang
+# sakelar yang bisa menghentikannya (F10.8), jadi ia lahir dalam keadaan `observe` dan OFF.
+Description=Irsofka AI Workstation - Autopilot drainer schedule
+Documentation=https://github.com/irsjofka-alt/IRSofka-Ai-Workstation
+
+[Timer]
+# Persistent=false adalah pilihan, bukan kelalaian. Dengan true, mesin yang mati semalam akan
+# menagih seluruh tick yang terlewat sekaligus pada detik seseorang baru saja duduk di desk — dan
+# tick itu adalah kandidat mengetik CONTINUE ke pane. Penjadwal yang mengejar ketertinggalan
+# adalah penjadwal yang menyerbu orang yang benar-benar ada di sini.
+OnBootSec=5min
+OnUnitActiveSec=5min
+AccuracySec=1min
+RandomizedDelaySec=45
+Unit=irsofka-autopilot.service
+
+[Install]
+WantedBy=timers.target

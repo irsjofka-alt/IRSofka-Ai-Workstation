@@ -87,10 +87,17 @@ async fn run_tool_async(args: Vec<String>) -> Result<String, String> {
 /// drainer` sebelum timer itu ada (F10.3 belum dibangun) mengajari operator perintah yang
 /// gagal tepat di saat paling buruk: ia sudah kehilangan kendali atas mesinnya. Menambah
 /// baris di sini berarti lebih dulu membuktikan bahwa baris itu memang bekerja.
+///
+/// Dua baris terakhir ditambahkan setelah dibuktikan pada 2026-10-08 02:55 di mesin ini:
+/// `systemctl --user stop irsofka-autopilot.timer` keluar 0 dan unitnya terbaca `inactive`, dan
+/// `work_order.py disarm` menulis `observe` dari proses tanpa tty. Keduanya adalah jalur mati
+/// yang tidak meminta kerja sama AI — invarian 6, dan alasan asimetri tty di F10.3 ada.
 const OFF_PATHS: &[&str] = &[
     "tombol Autopilot di kokpit (kalau daemon masih hidup, ini yang paling cepat)",
     "ai-station autopilot off — dari shell mana pun, tanpa daemon",
     "python3 ~/.ai-station/tools/work_order.py autopilot off — menulis langsung ke database",
+    "systemctl --user stop irsofka-autopilot.timer — menghentikan detak tanpa daemon",
+    "python3 ~/.ai-station/tools/work_order.py disarm — menutup tangan (observe), tidak butuh tty",
 ];
 
 /// GET /api/autopilot — keadaan sakelar, pemutus malam, antrean manusia, kandidat resume.

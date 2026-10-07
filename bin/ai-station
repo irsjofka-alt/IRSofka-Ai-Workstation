@@ -43,6 +43,18 @@ case "$1" in
   decisions)
     python3 "$SCRIPT_DIR/tools/work_order.py" decisions "${@:2}"
     ;;
+  drain)
+    # The hand ladder (F10.3). Raising it needs a controlling terminal, so this works from a pane
+    # and refuses from a timer — which is the point. `ai-station drain` alone prints the ladder.
+    case "${2:-show}" in
+      show) python3 "$SCRIPT_DIR/tools/work_order.py" drain ;;
+      arm|disarm) python3 "$SCRIPT_DIR/tools/work_order.py" "${@:2}" ;;
+      *) python3 "$SCRIPT_DIR/tools/work_order.py" drain ;;
+    esac
+    ;;
+  drainer)
+    python3 "$SCRIPT_DIR/tools/drainer.py" "${2:-tick}" "${@:3}"
+    ;;
   snapshot)
     python3 "$SCRIPT_DIR/tools/session_ingestor.py" snapshot "${2:-25}"
     ;;
@@ -72,6 +84,8 @@ case "$1" in
     echo "  workers [--list|--audit|--cut|--guard]  Panggilan engine yang masih hidup di luar Active Workspace"
     echo "  autopilot [on|off|show] [--minutes N] [--budget N]  Autopilot switch; 'off' works without the daemon"
     echo "  decisions [--limit N]   Who answered each unattended choice, and what is still waiting"
+    echo "  drain [arm <level> --minutes N|disarm]  How far the timer's hand may move; 'arm' needs a terminal"
+    echo "  drainer [tick|gate|selftest]  One deterministic F10.3 tick, no LLM, logged to logs/drainer-*.jsonl"
     echo "  snapshot [N]            Tulis handoff mekanis sekarang (dipanggil otomatis saat sesi mati)"
     echo "  recovery [N]            recall + handoff sekaligus, untuk memulihkan konteks sesi baru"
     echo "  logstats                Statistik isi action_log & save-state"

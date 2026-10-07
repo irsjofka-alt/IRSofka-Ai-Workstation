@@ -483,7 +483,7 @@ that skips the order cannot claim.
   `selftest-live-<epoch>-A` as `qoder`, then `antigravity`, and the second is refused with the holder
   named in its own message. Remaining here: the Station's *team view* of who holds what — the lease is
   readable from the CLI today and invisible on the page until F8's reporting rows are built.
-- ⬜ **F10.3 The drainer.** A systemd user timer runs a deterministic script — no LLM — which picks
+- 🟡 **F10.3 The drainer.** A systemd user timer runs a deterministic script — no LLM — which picks
   the next unclaimed `PENDING` item, runs its `check_command` before and after, and only then calls an
   engine to do the work. The gate stays the same one that blocks a human: `cargo test -q` and
   `call_workers.py --guard`. *Acceptance:* the timer's log for a whole night contains item ids, exit
@@ -500,6 +500,38 @@ that skips the order cannot claim.
   number. The queue also refuses to re-offer a concluded row: `FAILED` and `UNAVAILABLE` are skipped by
   `next_item()`, which was caught by `next` handing back legacy row 15 (`UNAVAILABLE`, an engine saying
   it could not run the item) as if it were fresh work.
+  *Shipped (Oct 8, 02:58), hand deliberately closed.* `tools/drainer.py` is one deterministic tick:
+  it reads the ladder (`drain_level`), the switch (`autopilot`) and the breaker (`night_state`) — all
+  three derived, none re-implemented — then behaves at the level a human raised it to. `observe` reads
+  and logs only; `dispatch` additionally runs an item's `check_command` through `run_grouped`
+  (`CHECK_TIMEOUT` 240 s, its own process group, swept on success too) and writes the ledger from the
+  measured exit code; `resume` additionally types `CONTINUE` to a claim that `heartbeat()` proved
+  `AT_REST`. **Raising the ladder requires a controlling terminal**, and that was measured from inside
+  the timer's own environment, not argued: `systemd-run --user` running `work_order.py arm resume`
+  exits 1 with `/dev/tty tidak terbuka dari proses ini` and changes nothing. Lowering it never needs
+  permission (invariant 6), so `disarm` works from a headless process and is now one of the proven
+  `OFF_PATHS`. `MAX_RESUME` is enforced at the write, inside `nudge()`, following the breaker's
+  precedent in `claim()`. Invariant 3 is a refusal *before* a process exists: a gate containing an
+  undoable verb escalates the item to `HUMAN` and the selftest proves non-execution with a canary file
+  (`touch … && rm -rf …`) that is asserted never to appear.
+  Measured: `work_order selftest 98/98`, `selftest --live 31/31` on PostgreSQL, `drainer selftest
+  43/43` (injected `beats`/`runner`/`sender`, zero processes, zero keystrokes, zero daemon calls, on a
+  temp SQLite file — it never touches the live ledger). One real tick from `systemctl --user start
+  irsofka-autopilot.service` wrote `{"action":"CLOSED_OFF","level":"observe","mode":"OFF"}` to
+  `logs/drainer-2026-10-08.jsonl`; the units are installed but `is-enabled` reads `disabled`, because a
+  timer that can start this loop is switched on by a person who is awake to read its log.
+  Two defects found by measuring, both fixed: `items_done` was read from a column nothing ever
+  incremented, so both surfaces displayed a fabricated 0 forever — it is now derived from the ledger
+  through the ON window, and the window filter was wrong in *both* backends (`strftime('%s',…)` returns
+  TEXT, and bare `EXTRACT(EPOCH FROM completed_at)` reads naive values as UTC, off by 25 200 s = the
+  Asia/Jakarta offset; both now CAST/`::timestamptz` and asserted on the live backend). And F10.3's own
+  seeded gate was `systemctl --user list-timers <unit>`, which exits **0 with an empty table for a unit
+  that does not exist** — a gate that is always true is an invitation to mark work COMPLETED without
+  doing it, so it now demands the installed file *and* an enabled timer, and `selftest` refuses to
+  seed any bare `list-timers` gate again.
+  Still owed, and it is not code: the acceptance is *a whole night's log*. That needs the operator to
+  run `systemctl --user enable --now irsofka-autopilot.timer` and `arm dispatch` from a terminal, then
+  read the log in the morning. Until then this bullet stays 🟡 and the hand stays at `observe`.
 - ⬜ **F10.4 Proposal queue — the safe form of "improve forever".** The loop may *author* new roadmap
   items, never *adopt* them: proposals land as `PROPOSED` rows carrying the observation, the proposed
   check command, and the files it would touch. Bro approves by editing one column in the Station.

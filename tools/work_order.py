@@ -13,6 +13,7 @@ from __future__ import annotations
 import argparse
 import inspect
 import json
+import os
 import re
 import sqlite3
 import sys
@@ -55,6 +56,42 @@ def tree_dirty() -> bool | None:
     return bool(r.stdout.strip())
 
 
+def items_done_in_window(conn, engine, on_epoch):
+    """Berapa item COMPLETED sejak jendela ON dibuka — diturunkan dari ledger, bukan dihitung orang.
+
+    Bug yang diikat di sini diukur dua kali, karena keduanya lolos tanpa suara: `%%s` menghasilkan
+    teks `'%s'`, dan `strftime()` sendiri juga mengembalikan TEKS. SQLite membandingkan teks dengan
+    integer memakai aturan "integer selalu lebih kecil dari teks", jadi `strftime('%s', …) >= 12345`
+    benar untuk SEMUA baris — jendela yang tampak menyaring padahal tidak menyaring apa pun. CAST
+    memaksa perbandingan terjadi di tanah angka; `unixepoch()` setara di SQLite >= 3.38 tapi tidak
+    ada jaminan versi sistem yang jadi fallback, jadi bentuk lama yang dipaksa yang dipakai.
+
+    PostgreSQL menyimpan jebakan yang sama dengan ukuran berbeda, dan jebakannya justru yang
+    ditemukan terakhir: `completed_at` adalah TIMESTAMP tanpa zona — ditulis lewat
+    CURRENT_TIMESTAMP dalam waktu lokal — dan `EXTRACT(EPOCH FROM <timestamp>)` memperlakukan
+    nilai tanpa zona sebagai UTC. Terukur 2026-10-08: selisihnya +25 200 detik, tepat sebesar
+    offset Asia/Jakarta; bentuk `::timestamptz` menyamakannya dengan `time.time()` sampai detik.
+    Cast itu bukan hiasan — tanpanya tiap item yang baru selesai malam ini terlihat berada di
+    masa depan, dan anggaran item per jendela membaca angka yang salah tanpa pernah bilang.
+
+    Batas yang diterima apa adanya: `completed_at` beresolusi satu detik, jadi baris yang selesai
+    pada detik yang sama dengan dibukanya jendela ikut terhitung (>=). Anggaran semalam adalah
+    bilangan puluhan, dan selisih satu item pada detik perataan tidak mengubah keputusan apa pun;
+    membuat jendela terlihat lebih tajam dari alat ukurnya sendiri hanyalah cara lain mengarang
+    laporan.
+    """
+    if not on_epoch:
+        return 0
+    rows = run(conn, engine,
+               "SELECT COUNT(*) AS n FROM quest_tasks WHERE status='COMPLETED' "
+               "AND EXTRACT(EPOCH FROM completed_at::timestamptz) >= %s"
+               if engine == "POSTGRESQL" else
+               "SELECT COUNT(*) AS n FROM quest_tasks WHERE status='COMPLETED' "
+               "AND CAST(strftime('%s', completed_at) AS INTEGER) >= ?",
+               (int(on_epoch),))
+    return int(rows[0]["n"]) if rows else 0
+
+
 def night_state(conn, engine, dirty=_MEASURE):
     """Apakah malam ini masih aman mengklaim pekerjaan baru."""
     ap = autopilot(conn, engine)
@@ -67,13 +104,7 @@ def night_state(conn, engine, dirty=_MEASURE):
                 "SELECT COUNT(*) AS n FROM quest_tasks WHERE status IN ('FAILED','PARKED') "
                 "AND completed_at >= datetime('now','-12 hours')")
     n_fail = int(fails[0]["n"]) if fails else 0
-    done = run(conn, engine,
-               "SELECT COUNT(*) AS n FROM quest_tasks WHERE status='COMPLETED' "
-               "AND EXTRACT(EPOCH FROM completed_at) >= %s"
-               if engine == "POSTGRESQL" else
-               "SELECT COUNT(*) AS n FROM quest_tasks WHERE status='COMPLETED' "
-               "AND strftime('%%s', completed_at) >= ?",
-               (on_since,)) if on_since else [{"n": 0}]
+    done = int((ap or {}).get("items_done") or 0)
     why = []
     if (ap or {}).get("mode") == "ON" and on_since and int(ap.get("until_epoch") or 0) < now():
         why.append("jendela ON lewat")
@@ -83,11 +114,10 @@ def night_state(conn, engine, dirty=_MEASURE):
         why.append("working tree kotor")
     if dirty is None:
         why.append("git tidak terbaca — UNKNOWN, bukan bersih")
-    if int((ap or {}).get("items_done") or 0) >= NIGHT_MAX_ITEMS:
+    if done >= NIGHT_MAX_ITEMS:
         why.append(f"batas {NIGHT_MAX_ITEMS} item per sesi terlampaui")
-    return {"mode": (ap or {}).get("mode"), "failures_12h": n_fail,
-            "items_done": int((ap or {}).get("items_done") or 0), "tree_dirty": dirty,
-            "ok": not why, "why": why}
+    return {"mode": (ap or {}).get("mode"), "failures_12h": n_fail, "items_done": done,
+            "tree_dirty": dirty, "ok": not why, "why": why}
 
 
 def norm(status: str | None) -> str:
@@ -113,7 +143,8 @@ CREATE_PG = [
     """CREATE TABLE IF NOT EXISTS autopilot_state (
         id SMALLINT PRIMARY KEY DEFAULT 1, mode VARCHAR(10) DEFAULT 'OFF',
         on_epoch BIGINT, until_epoch BIGINT, item_budget INT DEFAULT 12,
-        items_done INT DEFAULT 0, off_reason TEXT, changed_by VARCHAR(60) DEFAULT 'operator')""",
+        items_done INT DEFAULT 0, off_reason TEXT, changed_by VARCHAR(60) DEFAULT 'operator',
+        level VARCHAR(16) DEFAULT 'observe', level_until BIGINT)""",
 ]
 CREATE_SQLITE = [
     """CREATE TABLE IF NOT EXISTS quest_tasks (
@@ -140,6 +171,11 @@ NEW_COLUMNS = [
     ("quest_tasks", "resume_count", "INT DEFAULT 0", "INTEGER DEFAULT 0"),
     ("quest_tasks", "escalation_reason", "TEXT", "TEXT"),
     ("quest_tasks", "due_epoch", "BIGINT", "INTEGER"),
+    # Tangga tangan drainer (F10.3) tinggal di baris autopilot yang sama dengan sakelarnya:
+    # `mode` menjawab SIAPA yang memegang mesin, `level` menjawab JAUH MANA tangan boleh
+    # bergerak. Dua tabel untuk satu sakelar adalah dua laporan yang boleh berbeda (§12).
+    ("autopilot_state", "level", "VARCHAR(16)", "TEXT"),
+    ("autopilot_state", "level_until", "BIGINT", "INTEGER"),
 ]
 
 # Lebar kolom yang ditumbuhkan, bukan diganti isinya. `weight` lahir sebagai VARCHAR(10) pada
@@ -280,6 +316,36 @@ def renew_lease(conn, engine, item_id):
     return get_item(conn, engine, item_id)
 
 
+def nudge(conn, engine, item_id):
+    """Naikkan `resume_count` satu kali — dan tolak kenaikan yang melewati batas.
+
+    Batasnya ditegakkan di sini, bukan di pemanggil, mengikuti preseden yang sama dengan circuit
+    breaker yang hidup di dalam `claim()`: manusia yang mengetik perintah yang sama malam ini
+    menabrak angka yang sama. Tulisan dilakukan sebagai `COALESCE(...)+1` lalu dibaca kembali,
+    karena yang menentukan adalah barisnya, bukan siapa yang paling cepat bertanya (§12, F10.2).
+
+    Yang TIDAK dilakukan fungsi ini: mengirim apa pun. Ia menghitung sentuhan, bukan menyentuh.
+    """
+    item = get_item(conn, engine, item_id)
+    if not item:
+        return False, f"item {item_id} tidak ada"
+    used = int(item.get("resume_count") or 0)
+    if used >= MAX_RESUME:
+        return False, (f"budget resume habis ({used}/{MAX_RESUME}) — item ini macet, bukan "
+                       "tertidur; empat sentuhan tidak membuatnya bergerak")
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    run(conn, engine,
+        f"UPDATE quest_tasks SET resume_count=COALESCE(resume_count, 0) + 1 WHERE id={ph}",
+        (item_id,))
+    after = int((get_item(conn, engine, item_id) or {}).get("resume_count") or 0)
+    if after > MAX_RESUME:
+        return False, (f"naik ke {after} melewati {MAX_RESUME}: pemanggil lain sudah menyentuh "
+                       "item ini lebih dulu")
+    if after <= used:
+        return False, f"kenaikan tidak terbaca kembali ({used} -> {after})"
+    return True, f"resume {after}/{MAX_RESUME}"
+
+
 def finish(conn, engine, item_id, status, evidence=None, reason=None):
     """COMPLETED menuntut bukti. Laporan tidak boleh ditulis tangan (§12)."""
     if status == "COMPLETED" and not (evidence or "").strip():
@@ -295,15 +361,21 @@ def finish(conn, engine, item_id, status, evidence=None, reason=None):
     return True, f"{item['title']} -> {status}"
 
 
-def next_item(conn, engine, skip_blocked=True):
+def next_item(conn, engine, skip_blocked=True, respect_due=False):
     """Item berikutnya yang siap: semua dependensinya COMPLETED, dan lease-nya tidak dipegang orang.
 
     `UNAVAILABLE` tidak pernah ditawarkan, sama seperti `FAILED`: keduanya adalah kesimpulan yang
     sudah dilaporkan, bukan pekerjaan yang menunggu. Menawarkannya lagi membuat sebuah loop yang
     tampak sibuk padahal hanya mengunyah baris yang mesin sudah katakan tidak bisa dijalankan.
+
+    `respect_due` menambahkan satu syarat lagi atas nama pemanggil yang punya ritme: `due_epoch`
+    adalah kolom antrean tertunda, dan yang berhak menuliskannya adalah yang menahan dirinya sendiri
+    (drainer, F10.3). Filternya tinggal di sini karena menentukan "apa berikutnya" adalah bagian
+    dari kosakata antrean — kalau drainer menyusun urutannya sendiri, ada dua definisi "berikutnya"
+    dan tidak ada yang bisa mengatakan yang mana yang dibaca GUI (§12).
     """
     rows = run(conn, engine,
-               "SELECT id, title, status, depends_on, claimed_by, lease_epoch, phase "
+               "SELECT id, title, status, depends_on, claimed_by, lease_epoch, phase, due_epoch "
                "FROM quest_tasks ORDER BY id")
     done = {int(r["id"]) for r in rows if norm(r["status"]) == "COMPLETED"}
     for r in rows:
@@ -311,6 +383,8 @@ def next_item(conn, engine, skip_blocked=True):
         if state in ("COMPLETED", "FAILED", "UNAVAILABLE"):
             continue
         if state in ("BLOCKED", "HUMAN", "PARKED") and skip_blocked:
+            continue
+        if respect_due and int(r.get("due_epoch") or 0) > now():
             continue
         deps = [int(x) for x in str(r.get("depends_on") or "").split(",") if x.strip()]
         missing = [d for d in deps if d not in done]
@@ -496,7 +570,16 @@ def heartbeat(conn, engine, quiet_seconds=180, sample_gap=3, capture=None, busy=
 def autopilot(conn, engine, mode=None, minutes=None, budget=None, who="operator", reason=None):
     if mode is None:
         rows = run(conn, engine, "SELECT * FROM autopilot_state WHERE id=1")
-        return rows[0] if rows else None
+        if not rows:
+            return None
+        row = rows[0]
+        # `items_done` tidak pernah diincrement siapa pun, dan kedua permukaan membaca kolom itu
+        # apa adanya: laporan "0 item malam ini" yang tetap nol walaupun ada pekerjaan selesai.
+        # §12 melarang laporan ditulis tangan, jadi angka yang ditampilkan diturunkan dari ledger;
+        # nilai tersimpan dilaporkan terpisah supaya perbedaan keduanya terlihat, bukan ditutupi.
+        row["items_done_stored"] = row.get("items_done")
+        row["items_done"] = items_done_in_window(conn, engine, int(row.get("on_epoch") or 0))
+        return row
     ph = "%s" if engine == "POSTGRESQL" else "?"
     until = now() + int(minutes) * 60 if minutes else None
     if mode.upper() == "ON":
@@ -505,10 +588,97 @@ def autopilot(conn, engine, mode=None, minutes=None, budget=None, who="operator"
             f"item_budget={ph}, items_done=0, off_reason=NULL, changed_by={ph} WHERE id=1",
             (now(), until, budget or 12, who))
     else:
+        # OFF juga menutup tangan. Level `resume` yang dibiarkan menggantung akan dibuka lagi
+        # oleh ON berikutnya tanpa ada orang yang menaikkannya malam itu.
         run(conn, engine,
-            f"UPDATE autopilot_state SET mode='OFF', off_reason={ph}, changed_by={ph} WHERE id=1",
+            f"UPDATE autopilot_state SET mode='OFF', off_reason={ph}, changed_by={ph}, "
+            f"level='observe', level_until=NULL WHERE id=1",
             (reason or "dimatikan", who))
     return autopilot(conn, engine)
+
+
+# --- F10.3: tangga tangan drainer -------------------------------------------
+# `mode` (ON/OFF) menjawab SIAPA yang memegang mesin; `level` menjawab JAUH MANA tangan boleh
+# bergerak. Keduanya tinggal di baris yang sama, supaya tidak ada dua laporan yang boleh
+# berbeda (§12).
+
+
+LEVELS = ("observe", "dispatch", "resume")
+ARM_DEFAULT_MINUTES = 45
+ARM_MAX_MINUTES = 240
+
+
+def has_tty() -> bool:
+    """Ada terminal pengendali di belakang pemanggil ini — diukur lewat /dev/tty, bukan ditebak.
+
+    Terukur 2026-10-08: `systemd-run --user --wait` (jalur timer) dan Bash tool milik Qoder sama-sama
+    gagal dengan ENXIO, sementara tiap pane `station-*` memegang pts sendiri. Jadi tidak ada jalur
+    tak-berpengawas yang bisa mempersenjatai dirinya sendiri. Yang TIDAK dijaga pagar ini: mengetik
+    ke pane operator lewat send-keys — dan itu justru tangan yang sedang dijaga, jadi kontrak F10.8
+    sudah melarangnya lebih dulu. Pagar ini membuat kelalaian tidak mungkin, bukan pembangkangan
+    tidak mungkin; menyebutnya batas keamanan akan lebih berbahaya daripada tanpa pagar sama sekali.
+    """
+    try:
+        fd = os.open("/dev/tty", os.O_RDONLY)
+    except OSError:
+        return False
+    os.close(fd)
+    return True
+
+
+def drain_level(conn, engine):
+    """Tingkat tangan sebagai turunan: apa yang berlaku MENIT INI, bukan apa yang pernah ditulis."""
+    try:
+        rows = run(conn, engine,
+                   "SELECT level, level_until, changed_by FROM autopilot_state WHERE id=1")
+    except Exception:  # noqa: BLE001
+        return {"level": None, "requested": None, "readable": False, "expired": None,
+                "seconds_left": 0, "changed_by": None, "allows_dispatch": False,
+                "allows_resume": False,
+                "why": "baris autopilot tidak terbaca — tertutup karena UNKNOWN, bukan karena observe"}
+    row = rows[0] if rows else {}
+    want = row.get("level") or "observe"
+    until = row.get("level_until")
+    effective, why = want, []
+    if want not in LEVELS:
+        effective = "observe"
+        why.append(f"level '{want}' bukan kosakata — tangga terkecil yang dipakai")
+    elif want != "observe":
+        if until is None:
+            effective = "observe"
+            why.append(f"{want} ditulis tanpa batas waktu; sakelar yang tinggal ON karena lupa "
+                       "bukan sakelar (F10.8 §2)")
+        elif int(until) <= now():
+            effective = "observe"
+            why.append(f"{want} kedaluwarsa {now() - int(until)}s lalu")
+    return {"level": effective, "requested": want, "readable": True,
+            "expired": effective != want, "changed_by": row.get("changed_by"),
+            "seconds_left": max(0, int(until) - now()) if (until and effective != "observe") else 0,
+            "allows_dispatch": effective in ("dispatch", "resume"),
+            "allows_resume": effective == "resume", "why": why}
+
+
+def set_level(conn, engine, level, minutes=ARM_DEFAULT_MINUTES, who="operator", tty=_MEASURE):
+    """Naikkan tangan — butuh terminal pengendali. Menurunkan tangan tidak pernah butuh apa pun.
+
+    Asimetrinya intinya, bukan kenyamanan: invarian 6 bilang jalan mati tidak boleh bergantung pada
+    kerja sama AI, jadi `observe` bisa ditulis dari mana saja — termasuk timer yang sedang berlari
+    dan selftest yang tidak punya tty. Yang naik tangga-lah yang harus diketik orang.
+    """
+    if level not in LEVELS:
+        return False, f"level '{level}' bukan kosakata: {'/'.join(LEVELS)}"
+    if minutes < 1 or minutes > ARM_MAX_MINUTES:
+        return False, f"menit harus 1..{ARM_MAX_MINUTES} (dapat {minutes}); tanpa batas waktu ditolak"
+    tty = has_tty() if tty is _MEASURE else tty
+    if level != "observe" and not tty:
+        return False, (f"menaikkan tangan ke '{level}' butuh terminal pengendali — /dev/tty tidak "
+                       "terbuka dari proses ini. Menurunkan (`disarm`) tidak butuh tty.")
+    until = None if level == "observe" else now() + int(minutes) * 60
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    run(conn, engine,
+        f"UPDATE autopilot_state SET level={ph}, level_until={ph}, changed_by={ph} WHERE id=1",
+        (level, until, who))
+    return True, json.dumps(drain_level(conn, engine), default=str)
 
 
 def decide(conn, engine, question, options=None, weight="heavy"):
@@ -767,7 +937,15 @@ ROADMAP_ITEMS = [
              "= UNKNOWN", "build", ["f108"],
              "python3 tools/work_order.py selftest && python3 tools/work_order.py heartbeat"),
     ("f103", "F10.3 drainer systemd timer dengan circuit breaker + batas kuota per malam", "build",
-     ["f84", "f108", "f101"], "systemctl --user list-timers irsofka-autopilot.timer"),
+     ["f84", "f108", "f101"],
+     # Gerbang ini pernah `systemctl --user list-timers irsofka-autopilot.timer`, dan diukur
+     # 2026-10-08 02:58: perintah itu keluar 0 dengan tabel KOSONG untuk unit yang tidak ada sama
+     # sekali. Gerbang yang selalu benar adalah undangan bagi drainer untuk menandai itemnya sendiri
+     # COMPLETED tanpa bukti — bentuk kegagalan yang justru dilarang §12. Bentuk sekarang hanya
+     # benar kalau berkasnya terpasang DAN timer-nya di-enable; hari ini keduanya belum, dan itu
+     # memang sisanya: seorang yang bangun yang menyalakannya.
+     "test -f ~/.config/systemd/user/irsofka-autopilot.timer && "
+     "systemctl --user is-enabled irsofka-autopilot.timer"),
     ("f91", "F9.1 deterministic environment state: exit code + process tree + delta pane "
             "disuapkan ke prompt (jalan paralel, tidak bergantung antrean)", "build", None,
      "bash bin/deploy_engine.sh --check"),
@@ -936,10 +1114,84 @@ def selftest():
         ap = autopilot(conn, "SQLITE")
         check("autopilot default OFF", ap and ap["mode"] == "OFF", str(ap))
         ap = autopilot(conn, "SQLITE", "ON", minutes=30, budget=4)
-        check("ON menyimpan budget dan expiry", ap["mode"] == "ON" and ap["items_done"] == 0
-              and ap["until_epoch"] > now())
+        check("ON menyimpan budget dan expiry", ap["mode"] == "ON" and ap["item_budget"] == 4
+              and ap["until_epoch"] > now(), str(ap))
         ap = autopilot(conn, "SQLITE", "OFF", reason="selftest selesai")
         check("OFF menyimpan alasan", ap["mode"] == "OFF" and "selftest" in (ap["off_reason"] or ""))
+
+        # --- F10.3: tangga tangan, dan pagar yang membuatnya tak bisa dinaikkan sendiri ---
+        lvl = drain_level(conn, "SQLITE")
+        check("tangga lahir tertutup: observe, nol izin dispatch dan nol izin resume",
+              lvl["level"] == "observe" and not lvl["allows_dispatch"]
+              and not lvl["allows_resume"], str(lvl))
+        check("turun-naik tangan ditulis oleh `arm`, tapi default tidak pernah menulis apa pun",
+              lvl["readable"] is True and lvl["level"] == "observe", str(lvl))
+        ok, msg = set_level(conn, "SQLITE", "resume", 30, "selftest", tty=False)
+        check("naik tangga tanpa terminal pengendali ditolak", not ok and "/dev/tty" in msg, msg)
+        check("penolakan tidak mengubah keadaan", drain_level(conn, "SQLITE")["level"] == "observe")
+        ok, msg = set_level(conn, "SQLITE", "observe", 30, "selftest", tty=False)
+        check("menurunkan tangan tidak butuh tty — jalan mati tidak minta izin", ok, msg)
+        ok, msg = set_level(conn, "SQLITE", "shoot", 30, "selftest", tty=True)
+        check("kata di luar kosakata ditolak", not ok and "kosakata" in msg, msg)
+        ok, msg = set_level(conn, "SQLITE", "dispatch", 0, "selftest", tty=True)
+        check("naik tangga tanpa batas waktu ditolak", not ok and "batas waktu" in msg, msg)
+        ok, msg = set_level(conn, "SQLITE", "dispatch", ARM_MAX_MINUTES + 1, "selftest", tty=True)
+        check("batas menit atas ditegakkan, bukan dipotong diam-diam",
+              not ok and str(ARM_MAX_MINUTES) in msg, msg)
+        ok, msg = set_level(conn, "SQLITE", "dispatch", 30, "selftest", tty=True)
+        lvl = drain_level(conn, "SQLITE")
+        check("dispatch boleh mulai engine tapi tidak boleh mengetik",
+              ok and lvl["level"] == "dispatch" and lvl["allows_dispatch"]
+              and not lvl["allows_resume"], str(lvl))
+        check("sisa menit dilaporkan dalam detik, bukan hanya statusnya",
+              1770 <= lvl["seconds_left"] <= 1800, str(lvl))
+        ok, msg = set_level(conn, "SQLITE", "resume", 30, "selftest", tty=True)
+        check("resume membuka tangan", ok and drain_level(conn, "SQLITE")["allows_resume"], msg)
+        conn.execute("UPDATE autopilot_state SET level_until=? WHERE id=1", (now() - 5,))
+        lvl = drain_level(conn, "SQLITE")
+        check("kedaluwarsa menutup tangan tanpa ada yang mengetik disarm",
+              lvl["level"] == "observe" and lvl["expired"] and not lvl["allows_resume"], str(lvl))
+        check("alasan penutupan ikut dilaporkan, tidak hilang bersama tutupnya",
+              "kedaluwarsa" in " ".join(lvl["why"]), str(lvl["why"]))
+        conn.execute("UPDATE autopilot_state SET level='teleport', level_until=? WHERE id=1",
+                     (now() + 600,))
+        lvl = drain_level(conn, "SQLITE")
+        check("level asing diturunkan ke tangga terkecil, bukan dipercaya",
+              lvl["level"] == "observe" and lvl["requested"] == "teleport", str(lvl))
+        conn.execute("UPDATE autopilot_state SET level='resume', level_until=NULL WHERE id=1")
+        lvl = drain_level(conn, "SQLITE")
+        check("resume tanpa batas waktu terbaca tertutup: lupa bukan izin",
+              lvl["level"] == "observe" and not lvl["allows_resume"], str(lvl))
+        # OFF pada sakelar ikut menutup tangan; kalau tidak, ON berikutnya menemukan level yang
+        # diangkat orang lain pada malam yang berbeda.
+        set_level(conn, "SQLITE", "resume", 30, "selftest", tty=True)
+        ap = autopilot(conn, "SQLITE", "OFF", reason="selftest: pagar OFF menutup tangan")
+        check("OFF pada sakelar ikut menutup tangan",
+              drain_level(conn, "SQLITE")["level"] == "observe" and ap["mode"] == "OFF")
+        check("has_tty adalah ukuran, bukan dugaan", isinstance(has_tty(), bool), str(has_tty()))
+
+        # --- F10.3: anggaran sentuhan ditegakkan di tempat tulisannya terjadi, bukan di timer.
+        # Presedennya circuit breaker di `claim()`: manusia yang mengetik perintah yang sama
+        # menabrak angka yang sama. Selama batasnya hidup di pemanggil, pemanggil berikutnya
+        # boleh lupa membawa batasnya.
+        conn.execute("INSERT INTO quest_tasks (title, status) VALUES ('nudge-target','PENDING')")
+        conn.commit()
+        nid = run(conn, "SQLITE", "SELECT id FROM quest_tasks WHERE title='nudge-target'")[0]["id"]
+        for k in range(MAX_RESUME):
+            ok, msg = nudge(conn, "SQLITE", nid)
+            check(f"sentuhan {k + 1} dari {MAX_RESUME} diizinkan dan terbaca kembali",
+                  ok and int(get_item(conn, "SQLITE", nid)["resume_count"] or 0) == k + 1, msg)
+        ok, msg = nudge(conn, "SQLITE", nid)
+        check("sentuhan berikutnya ditolak: item ini macet, bukan tertidur",
+              not ok and "habis" in msg and str(MAX_RESUME) in msg, msg)
+        check("penolakan tidak menaikkan angka diam-diam",
+              int(get_item(conn, "SQLITE", nid)["resume_count"] or 0) == MAX_RESUME,
+              str(get_item(conn, "SQLITE", nid)["resume_count"]))
+        check("nudge hanya menghitung — status item tidak ikut ditulis",
+              get_item(conn, "SQLITE", nid)["status"] == "PENDING",
+              str(get_item(conn, "SQLITE", nid)["status"]))
+        ok, msg = nudge(conn, "SQLITE", 999999)
+        check("item yang tidak ada ditolak, tidak dibuatkan angka", not ok and "tidak ada" in msg, msg)
 
         d = decide(conn, "SQLITE", "A atau B?", ["A", "B"], weight="heavy")
         check("keputusan tercatat OPEN", d and d[0]["state"] == "OPEN")
@@ -1042,7 +1294,7 @@ def selftest():
 
         stt = status(conn, "SQLITE")
         check("status punya semua bagian yang dibaca GUI",
-              all(k in stt for k in ("autopilot", "night", "limits", "per_status",
+              all(k in stt for k in ("autopilot", "drain", "night", "limits", "per_status",
                                      "human_queue", "decisions_open", "stalled", "next")),
               str(sorted(stt)))
         check("laporan GUI turunan, bukan karangan: tree kotor berarti night.ok false",
@@ -1076,6 +1328,57 @@ def selftest():
             check("batas kegagalan terlihat di night_state", not st["ok"], str(st["why"]))
         finally:
             globals()["tree_dirty"] = orig_tree_dirty
+
+        # --- anggaran item per jendela: diturunkan, dan jendelanya benar-benar dipakai ---
+        # Jebakan yang diikat di sini terukur, bukan dicurigai: `strftime('%%s', ...)` menghasilkan
+        # TEKS '%s' di SQLite (parameternya tidak diinterpolasi di sana), dan SQLite membandingkan
+        # teks melawan integer dengan aturan "teks selalu lebih besar" — filter jendela yang begitu
+        # menjadi benar untuk semua baris, selamanya, tanpa pernah menampilkan kesalahan apa pun.
+        check("strftime('%%s') menghasilkan teks, bukan angka",
+              run(conn, "SQLITE", "SELECT strftime('%%s', '2026-01-01 00:00:00') AS v")[0]["v"] == "%s",
+              str(run(conn, "SQLITE", "SELECT strftime('%%s', '2026-01-01 00:00:00') AS v")))
+        check("strftime yang BENAR pun mengembalikan teks — tanpa CAST jendela mana pun selalu benar",
+              run(conn, "SQLITE",
+                  "SELECT typeof(strftime('%s', '2026-01-01 00:00:00')) AS t")[0]["t"] == "text")
+        conn.execute("INSERT INTO quest_tasks (title, status, completed_at) "
+                     "VALUES ('selesai-lama', 'COMPLETED', datetime('now','-3 days'))")
+        conn.commit()
+        total = run(conn, "SQLITE",
+                    "SELECT COUNT(*) AS n FROM quest_tasks WHERE status='COMPLETED'")[0]["n"]
+        check("jendela di masa depan tidak menampung apa pun — pembuktian filternya hidup",
+              items_done_in_window(conn, "SQLITE", now() + 3600) == 0,
+              str(items_done_in_window(conn, "SQLITE", now() + 3600)))
+        check("item yang selesai tiga hari lalu tidak dihitung untuk jendela yang baru dibuka",
+              total > 0 and items_done_in_window(conn, "SQLITE", now()) < total,
+              f"total={total} in_window={items_done_in_window(conn, 'SQLITE', now())}")
+        check("tanpa jendela ON, tidak ada angka yang dikarang",
+              items_done_in_window(conn, "SQLITE", 0) == 0)
+        before = items_done_in_window(conn, "SQLITE", now() - 30)
+        conn.execute("INSERT INTO quest_tasks (title, status, completed_at) "
+                     "VALUES ('selesai-baru', 'COMPLETED', datetime('now'))")
+        conn.commit()
+        check("item yang baru selesai menambah hitungan satu, tidak lebih",
+              items_done_in_window(conn, "SQLITE", now() - 30) == before + 1,
+              f"before={before} after={items_done_in_window(conn, 'SQLITE', now() - 30)}")
+        before_ap = autopilot(conn, "SQLITE")["items_done"]
+        conn.execute("INSERT INTO quest_tasks (title, status, completed_at) "
+                     "VALUES ('selesai-lagi', 'COMPLETED', datetime('now'))")
+        conn.commit()
+        ap = autopilot(conn, "SQLITE")
+        check("angka yang dibaca kedua permukaan bergerak bersama ledger, bukan kolom mati",
+              ap["items_done"] == before_ap + 1 and ap["items_done_stored"] == 0,
+              f"before={before_ap} {ap}")
+
+        # --- bentuk gerbang yang terbukti tidak membuktikan apa pun ---
+        # Diukur 2026-10-08 02:58 di mesin ini: `systemctl --user list-timers irsofka-tidak-ada.timer`
+        # keluar 0 dengan tabel kosong. Karena drainer menutup item atas angka keluar, gerbang model
+        # ini akan menandai pekerjaannya sendiri COMPLETED tanpa melakukan apa pun — laporan yang
+        # ditulis tangan tanpa mengaku menulis tangan (§12). Jadi bentuknya yang dilarang, dicek.
+        vacuous = [title for _k, title, _p, _d, gate in ROADMAP_ITEMS
+                   if "list-timers" in (gate or "")]
+        check("tidak ada gerbang ROADMAP yang berupa list-timers telanjang", not vacuous, str(vacuous))
+        no_gate = [title for _k, title, _p, _d, gate in ROADMAP_ITEMS if not (gate or "").strip()]
+        check("setiap butir ROADMAP yang di-seed membawa gerbang", not no_gate, str(no_gate))
     finally:
         conn.close()
         tmp.unlink(missing_ok=True)
@@ -1172,6 +1475,72 @@ def selftest_live():
               all(b["state"] != "UNKNOWN" or not (b["pane_readable"] and b["action_log_readable"])
                   for b in beats),
               str([b for b in beats if b["state"] == "UNKNOWN"]))
+        # F10.3 di backend produksi, dengan pengukuran NYATA: proses ini tidak punya terminal
+        # pengendali, jadi naik tangga harus ditolak di sini. Semua cek di atas menyuntik tty=False
+        # supaya bisa diuji; yang satu ini membuktikan suntikannya cocok dengan dunia.
+        lvl = drain_level(conn, engine)
+        check("drain_level terbaca dan kosakatanya tertutup rapi di produksi",
+              lvl["readable"] is True and lvl["level"] in LEVELS
+              and (not lvl["allows_resume"] or lvl["level"] == "resume"), str(lvl))
+        ok, msg = set_level(conn, engine, "dispatch", 30, "selftest-live")
+        check("proses tanpa tty ditolak NAIK tangga di produksi, tanpa menulis apa pun",
+              not ok and "/dev/tty" in msg, msg)
+        check("penolakan di produksi tidak mengubah level yang terbaca",
+              drain_level(conn, engine)["level"] == lvl["level"], str(drain_level(conn, engine)))
+        # `nudge()` adalah satu-satunya tempat anggaran sentuhan ditulis. Placeholder-nya berbeda
+        # per backend (%s vs ?), dan kesalahan placeholder tidak bersuara di SQLite — ia cuma
+        # menghasilkan tulisan ke baris yang salah. Jadi dihitung di backend nyata.
+        run(conn, engine, f"INSERT INTO quest_tasks (title, status) VALUES ({ph}, 'PENDING')",
+            (f"{mark}-nudge",))
+        nud = run(conn, engine, f"SELECT id FROM quest_tasks WHERE title={ph}",
+                  (f"{mark}-nudge",))
+        nudge_id = int(nud[0]["id"])
+        for k in range(MAX_RESUME):
+            ok, msg = nudge(conn, engine, nudge_id)
+            check(f"produksi: sentuhan {k + 1}/{MAX_RESUME} diterima dan terbaca kembali",
+                  ok and int((get_item(conn, engine, nudge_id) or {}).get("resume_count") or 0) == k + 1,
+                  msg)
+        ok, msg = nudge(conn, engine, nudge_id)
+        check("produksi: sentuhan ke-4 ditolak, dan tidak ada yang mengetik karenanya",
+              not ok and "habis" in msg, msg)
+        # Anggaran item per jendela di backend NYATA. Bentuk SQLite-nya salah dua kali dan kedua
+        # salah itu tidak bersuara, jadi asersi yang sama dijalankan di sini dengan dua baris
+        # bertanda yang dihapus lagi: satu selesai sekarang, satu selesai tiga hari lalu.
+        old_stamp = (f"{mark}-lama", )
+        run(conn, engine,
+            f"INSERT INTO quest_tasks (title, status, completed_at) VALUES ({ph}, 'COMPLETED', "
+            f"CURRENT_TIMESTAMP - INTERVAL '3 days')", old_stamp)
+        run(conn, engine,
+            f"INSERT INTO quest_tasks (title, status, completed_at) VALUES ({ph}, 'COMPLETED', "
+            "CURRENT_TIMESTAMP)", (f"{mark}-baru",))
+        try:
+            future = items_done_in_window(conn, engine, now() + 3600)
+            wide = items_done_in_window(conn, engine, now() - 86400 * 7)
+            tight = items_done_in_window(conn, engine, now() - 30)
+            check("produksi: jendela masa depan kosong — filter tipe benar di backend ini",
+                  future == 0, str(future))
+            check("produksi: baris tiga hari lalu hanya masuk jendela yang lebar",
+                  wide - tight >= 1, f"wide={wide} tight={tight} selisih={wide - tight}")
+            check("produksi: baris yang baru selesai masuk jendela 30 detik",
+                  tight >= 1, str(tight))
+            if engine == "POSTGRESQL":
+                # Asumsi zona waktu diuji, bukan diasumsikan. `completed_at` tanpa zona dibaca
+                # EXTRACT sebagai UTC, dan selisihnya persis offset Asia/Jakarta: +25 200 detik.
+                # Baris yang baru ditulis ini epoch-nya diketahui dalam sedetik, jadi bentuk
+                # `::timestamptz` harus cocok — kalau tidak, seluruh jendela malam ini salah.
+                seen = run(conn, engine,
+                           "SELECT EXTRACT(EPOCH FROM completed_at::timestamptz)::bigint AS e "
+                           f"FROM quest_tasks WHERE title={ph}", (f"{mark}-baru",))
+                check("produksi: epoch yang dibaca PG sama dengan jam Python (selisih < 5s)",
+                      seen and abs(int(seen[0]["e"]) - now()) < 5,
+                      f"{seen and int(seen[0]['e']) - now()}s")
+            ap = autopilot(conn, engine)
+            check("produksi: items_done yang dibaca GUI adalah turunan, dan nilai tersimpan "
+                  "dipisahkan", isinstance(ap.get("items_done"), int)
+                  and "items_done_stored" in ap, str({k: ap.get(k) for k in ("items_done", "items_done_stored")}))
+        finally:
+            for t in (f"{mark}-lama", f"{mark}-baru"):
+                run(conn, engine, f"DELETE FROM quest_tasks WHERE title={ph}", (t,))
     finally:
         like = f"{mark}%"
         run(conn, engine, "DELETE FROM quest_tasks WHERE title LIKE "
@@ -1218,9 +1587,12 @@ def status(conn, engine, older_than=180):
     return {
         "engine": engine,
         "autopilot": ap,
+        "drain": drain_level(conn, engine),
         "night": night_state(conn, engine),
         "limits": {"max_failures": NIGHT_MAX_FAILURES, "max_items": NIGHT_MAX_ITEMS,
-                   "lease_seconds": LEASE_SECONDS, "max_resume": MAX_RESUME},
+                   "lease_seconds": LEASE_SECONDS, "max_resume": MAX_RESUME,
+                   "arm_default_minutes": ARM_DEFAULT_MINUTES, "arm_max_minutes": ARM_MAX_MINUTES,
+                   "levels": list(LEVELS)},
         "per_status": per_status,
         "human_queue": human,
         "decisions_open": dec,
@@ -1251,6 +1623,11 @@ def main(argv=None):
     p = sub.add_parser("autopilot"); p.add_argument("mode", nargs="?", choices=["on", "off", "show"])
     p.add_argument("--minutes", type=int); p.add_argument("--budget", type=int)
     p.add_argument("--reason", default=None); p.add_argument("--by", default="operator")
+    p = sub.add_parser("arm"); p.add_argument("level", choices=list(LEVELS))
+    p.add_argument("--minutes", type=int, default=ARM_DEFAULT_MINUTES)
+    p.add_argument("--by", default="operator")
+    p = sub.add_parser("disarm"); p.add_argument("--by", default="operator")
+    sub.add_parser("drain")
     p = sub.add_parser("decide"); p.add_argument("question"); p.add_argument("--options", default="")
     p.add_argument("--weight", default="heavy", choices=["heavy", "light", "irreversible"])
     p.add_argument("--route", action="store_true", help="langsung kiratkan ke tangga resolver")
@@ -1318,6 +1695,18 @@ def main(argv=None):
         mode = None if a.mode in (None, "show") else a.mode.upper()
         print(json.dumps(autopilot(conn, engine, mode, a.minutes, a.budget, a.by, a.reason),
                          default=str, indent=2))
+    elif a.cmd == "arm":
+        ok, msg = set_level(conn, engine, a.level, a.minutes, a.by)
+        print(msg)
+        return 0 if ok else 1
+    elif a.cmd == "disarm":
+        # Jalan mati tidak pernah minta izin — invarian 6, dan karena itu disarm sengaja tidak
+        # memeriksa tty: kalau pagar yang sama menutup jalur kembali, ia bukan jalan mati.
+        ok, msg = set_level(conn, engine, "observe", ARM_DEFAULT_MINUTES, a.by)
+        print(msg)
+        return 0 if ok else 1
+    elif a.cmd == "drain":
+        print(json.dumps(drain_level(conn, engine), default=str, indent=2))
     elif a.cmd == "decide":
         rows = decide(conn, engine, a.question, parse_options_arg(a.options), a.weight)
         row = rows[0]

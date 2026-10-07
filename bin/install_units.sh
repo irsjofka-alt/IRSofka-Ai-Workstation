@@ -14,9 +14,13 @@ STATION="${STATION_DIR:-$HOME/.ai-station}"
 SRC="$STATION/systemd"
 DEST="${SYSTEMD_DIR_OVERRIDE:-$HOME/.config/systemd/user}"
 UNITS=(irsofka-ai-workstation.service irsofka-tabs.service irsofka-action-log.service
-       irsofka-memory-backup.service irsofka-memory-backup.timer)
+       irsofka-memory-backup.service irsofka-memory-backup.timer
+       irsofka-autopilot.service irsofka-autopilot.timer)
 ENABLE=(irsofka-ai-workstation.service irsofka-tabs.service irsofka-action-log.service
         irsofka-memory-backup.timer)
+# irsofka-autopilot.timer sengaja tidak ikut ENABLE. Sakelar yang menyalakan loop ini harus
+# dinyalakan oleh orang yang sadar dan bisa melihat lognya, bukan oleh installer yang berjalan
+# di tengah kerja mesin. Menyalakannya: systemctl --user enable --now irsofka-autopilot.timer
 
 DRY=0; FORCE=0
 for arg in "$@"; do

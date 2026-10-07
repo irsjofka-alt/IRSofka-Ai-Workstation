@@ -1,0 +1,20 @@
+[Unit]
+# F10.3 drainer: satu tick deterministik atas antrean kerja, tanpa LLM dan tanpa terminal.
+# Unit ini TIDAK di-enable oleh install_units.sh. Mengaktifkannya adalah keputusan orang yang
+# bangun, bukan keputusan yang bisa dibuat kode: lihat `arm` di tools/work_order.py.
+Description=Irsofka AI Workstation - Autopilot drainer tick
+Documentation=https://github.com/irsjofka-alt/IRSofka-Ai-Workstation
+After=network-online.target irsofka-ai-workstation.service
+Wants=irsofka-ai-workstation.service
+
+[Service]
+Type=oneshot
+# Gerbang sebuah item boleh berjalan sampai 240 detik (CHECK_TIMEOUT di tools/drainer.py).
+# TimeoutStartSec harus lebih besar dari itu: systemd yang membunuh tick di tengah gerbang
+# meninggalkan anak proses yang memegang RSS — pers kebocoran yang kontrak §4 dibuat untuknya.
+TimeoutStartSec=300
+ExecStart=%h/.ai-station/bin/autopilot_tick.sh
+Nice=10
+IOSchedulingClass=idle
+StandardOutput=journal
+StandardError=journal

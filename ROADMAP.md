@@ -14,6 +14,7 @@ F4 Native Rust Window GUI         ✅ Completed
 F5 Memory & Session Integrity     ✅ Completed (Oct 6)
 F6 Cross-Verification Ecosystem   🟡 In Progress
 F7 Creative Studio (ComfyUI/UE5)  ⬜ Planned
+F8 Station — System of Record     ⬜ Planned
 ```
 
 ## F1–F4 — Foundation (Completed & Re-verified Oct 6)
@@ -91,6 +92,63 @@ Pending:
 ## F7 — Creative Studio ⬜
 
 Planned integration: ComfyUI HTTP API (`:8188`) integration via `comfy_workflow` MCP tool sharing the same VRAM gate to prevent resource contention with local LLMs and graphical viewports.
+
+## F8 — Station: System of Record ⬜
+
+**What it is.** The Workstation (this cockpit) is where the operator *gives orders*; it must stay
+open and is terminal-centric. The Station is where results are *seen* — a human-facing, modern web
+view of inputs, outputs, reports and settings, modelled on an ERP: one system of record that every
+other tool writes into.
+
+Body and brain already exist (PostgreSQL, hooks, engines); the hands are still being built; the face
+is not there yet. F8 is the face.
+
+### Two invariants (the cheap-to-skip, expensive-to-revert part)
+
+1. **One vocabulary.** `job`, `artifact`, `cost`, `role` are defined exactly once, in the schema.
+   A second definition anywhere guarantees two reports that disagree, and nothing identifies which
+   one is true. The cost of an ERP is paid in schema design, not in UI.
+2. **Reports are derived, never editable.** No field on a report screen may be written by hand.
+   One manual correction is enough for the whole ledger to lose its authority.
+
+Consequence for build order: the ledger is finished before the dashboard. A clean interface on top
+of a partial ledger displays wrong numbers confidently — and the operator trusts the neatness.
+
+### Modules and current state
+
+| ERP concept | Station equivalent | Today |
+|---|---|---|
+| Master data | teams, roles, verifier per role | `config/slots.yaml` + `config/engines.json` exist; no face |
+| Transactions | prompts, commands, responses, failures | `action_log`, `session_turns`, `incident_log`; no face |
+| Warehouse | images, models, commits, deploys | **no table exists** |
+| Work order | project → phases → DONE | `quest_tasks` only, no phases, no team binding |
+| Reporting | daily digest, weekly progress | none |
+| Treasury | credits and quota left, cost per engine | none — raw data is already in transactions |
+
+### Build order (agreed with the operator, Oct 7)
+
+- ⬜ **F8.1 Warehouse.** `artifacts` table (path, kind, producer engine, originating action id,
+  workspace, checksum, created_at) written by the ingestor, not by the AI that made the file.
+  *Acceptance:* generate an image through ComfyUI and a git commit; both appear in the Station
+  within one ingest cycle, with the command that produced them linked.
+- ⬜ **F8.2 Treasury.** Daily cost and remaining quota per engine, read from `action_log` plus
+  CLI-reported usage. *Acceptance:* the numbers match what each CLI itself reports for the same
+  day, or the row is marked `UNAVAILABLE` — never estimated.
+- ⬜ **F8.3 Master data face.** Editor for slots and engine registry: pick model per role, save.
+  Writes go through schema validation, keep a timestamped backup, and refuse to save a registry
+  that no engine can start from. *Acceptance:* change the verifier to another model, and the next
+  `ai-station verify` run resolves the new one from config — never from memory.
+- ⬜ **F8.4 Work order.** Project entity with phases (intake → plan → build → debug → done),
+  bound team and leader. *Open decision:* whether each phase requires the operator's approval
+  before the next one runs. Recommendation on record: yes — with a thin wallet, an unattended
+  pipeline is a meter running.
+- ⬜ **F8.5 Daily digest.** `/api/day` grouping the day's transactions per session, summarised by
+  the local model, raw rows always one click below the summary.
+
+**Open question (F8.1):** record metadata only (path + provenance), or store a small copy of each
+result (thumbnail, diff, screenshot) so the Station renders it without touching the producing app?
+Metadata-only is cheaper and cannot go stale silently; copies look better and survive deletion of
+the original. Not yet decided.
 
 ## Known Boundaries & Constraints
 

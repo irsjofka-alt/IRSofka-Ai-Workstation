@@ -980,9 +980,7 @@
                     return;
                 }
                 if (terms[activeTab]) terms[activeTab].clear();
-                flagProfileSaved(d.killed
-                    ? `✓ ${t}: ending old CLI, starting a new session…`
-                    : `✓ ${t}: pane cleared (no AI CLI to restart)`, false);
+                flagProfileSaved(`✓ ${t}: ${d.detail || (d.killed ? 'restarting' : 'nothing to restart')}`, false);
             } catch (e) {
                 flagProfileSaved(`✗ new session: ${e}`, true);
             }

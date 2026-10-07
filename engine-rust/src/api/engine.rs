@@ -188,6 +188,17 @@ pub(crate) async fn restart_cli_tab(State(state): State<AppState>, Json(body): J
         }
     }
 
+    // Dijelaskan SEBELUM menembak, supaya catatan di respons menyebut sasaran yang benar
+    // dan bukan keadaan setelahnya.
+    let note = match state.sessions.get(&tab) {
+        None => "tab not known to the daemon".to_string(),
+        Some(_) if hint.is_none() => "shell tab: pane cleared, no CLI to terminate".to_string(),
+        Some(s) => match tab_cli_target(s.root_pid, hint) {
+            Some((pid, comm, true)) => format!("{comm} (pid {pid}) terminated"),
+            _ => "no live CLI: the supervisor loop relaunches it with the fresh marker"
+                .to_string(),
+        },
+    };
     let killed = match state.sessions.get(&tab) {
         Some(s) if hint.is_some() => kill_tab_cli_root(s.root_pid, hint),
         _ => false,
@@ -210,7 +221,7 @@ pub(crate) async fn restart_cli_tab(State(state): State<AppState>, Json(body): J
         "tab_restart",
         &tab,
         format!(
-            "CLI tab dihentikan agar spawn ulang dengan profil terkini; killed={killed} fresh={fresh_started} backlog_cleared={cleared}"
+            "New Session: killed={killed} fresh={fresh_started} backlog_cleared={cleared} — {note}"
         ),
         cwd,
         Some("restart"),
@@ -220,18 +231,29 @@ pub(crate) async fn restart_cli_tab(State(state): State<AppState>, Json(body): J
         "tab": tab,
         "killed": killed,
         "fresh": fresh_started,
-        "backlog_cleared": cleared
+        "backlog_cleared": cleared,
+        "detail": note
     }))
 }
 
 pub(crate) fn kill_tab_cli_root(root: u32, hint: Option<&str>) -> bool {
     match tab_live_process(root, hint) {
-        Some(live) => {
+        // `root` adalah bash penunggu loop pane. Ia tidak boleh jadi korban: tidak ada
+        // watchdog yang membuat pane yang mati, dan restart daemon akan MENGADOPSI pane
+        // mati itu (has-session masih true) alih-alih menggantinya. Jadi kalau tidak ada
+        // CLI yang hidup, kembalikan false dan biarkan loop menyalakan ulang sendiri.
+        Some(live) if live.pid != root => {
             let _ = Command::new("kill")
                 .args(["-TERM", &live.pid.to_string()])
                 .spawn();
             true
         }
-        None => false,
+        _ => false,
     }
+}
+
+/// Proses mana yang sebenarnya jadi sasaran, untuk pesan yang jujur ke operator.
+pub(crate) fn tab_cli_target(root: u32, hint: Option<&str>) -> Option<(u32, String, bool)> {
+    let live = tab_live_process(root, hint)?;
+    Some((live.pid, live.comm, live.pid != root))
 }

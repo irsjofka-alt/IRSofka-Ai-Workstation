@@ -123,3 +123,23 @@ canonical knowledge base is `brain/`.
 
 Selective Loading Policy: **Do not read entire indices into context.** Select the single
 relevant entry and open only that file. Context is precious.
+
+## 10. Language Convention
+
+**Documentation and UI are written in English.** This covers: `README.md`, `INSTALL.md`,
+`ROADMAP.md`, everything under `documents/`, `brain/**/*.md` notes and skill files, all GUI
+labels and messages in `engine-rust/src/gui.html`, and any string an engine prints into the
+terminal for a human or another engine to read — including hook denial messages and
+context-recovery briefings.
+
+**Code comments may stay in Indonesian.** `//`, `/* */`, `#`, `--`, `<!-- -->` and docstrings
+that only a maintainer reads are exempt: the reasoning that made a line exist is easier to
+keep accurate in the language it was formed in.
+
+Why English: this workstation is published, and every engine on it reads the same files.
+Mixed-language documentation forces each reader to hold two vocabularies for one contract,
+and translation drift is silent — a rule understood differently is a rule not enforced.
+
+When you edit a file that is still in Indonesian, convert the parts you touch and say so in
+the commit message. Do not rewrite untouched sections just for language: that buries the
+actual change under noise.

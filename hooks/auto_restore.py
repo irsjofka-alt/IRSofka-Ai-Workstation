@@ -25,7 +25,7 @@ def db_lines():
     try:
         from db_state import get_db_connection
     except Exception as exc:  # noqa: BLE001
-        return [f"(db_state tidak terbaca: {exc})"]
+        return [f"(db_state import failed: {exc})"]
     try:
         conn, engine = get_db_connection()
         cur = conn.cursor()
@@ -34,18 +34,18 @@ def db_lines():
         cur.execute(f"SELECT id, title, model_assigned FROM quest_tasks "
                     f"WHERE status = {ph} ORDER BY id DESC LIMIT 5", ("IN_PROGRESS",))
         quests = cur.fetchall()
-        out.append("Quest berjalan: " + ("; ".join(f"#{q[0]} {q[1]}" for q in quests) if quests else "tidak ada"))
+        out.append("Active quests: " + ("; ".join(f"#{q[0]} {q[1]}" for q in quests) if quests else "tidak ada"))
 
         cur.execute(f"SELECT key, substr(content,1,160) FROM world_memory ORDER BY updated_at DESC LIMIT 4")
         for key, content in cur.fetchall():
-            out.append(f"Memori `{key}`: {str(content).strip()[:150]}")
+            out.append(f"Memory `{key}`: {str(content).strip()[:150]}")
 
         cur.execute(f"SELECT kind, tab, substr(summary,1,90) FROM action_log ORDER BY id DESC LIMIT 8")
         acts = " | ".join(f"{k}/{t}:{s.strip()[:60]}" for k, t, s in cur.fetchall())
-        out.append("8 aksi terakhir: " + (acts or "-"))
+        out.append("Last 8 actions: " + (acts or "-"))
         conn.close()
     except Exception as exc:  # noqa: BLE001
-        out.append(f"(basis data tidak terbaca: {type(exc).__name__}: {str(exc)[:90]})")
+        out.append(f"(database unreadable: {type(exc).__name__}: {str(exc)[:90]})")
     return out
 
 
@@ -71,32 +71,32 @@ def handoff_lines():
         n += 1
         if n >= 12:
             break
-    return [f"Handoff terbaru ({newest.name}):"] + ["  " + a for a in ambil]
+    return [f"Latest handoff ({newest.name}):"] + ["  " + a for a in ambil]
 
 
 def index_lines():
     """Hanya judul indeks — aturan selective loading: jangan sedot seluruh skill ke konteks."""
     out = []
-    for label, path in (("Skill", STATION / "brain/skills/SKILLS.md"),
-                        ("Memori", STATION / "brain/memory/MEMORY.md")):
+    for label, path in (("Skills", STATION / "brain/skills/SKILLS.md"),
+                        ("Memory", STATION / "brain/memory/MEMORY.md")):
         try:
             heads = [l.strip().lstrip("#").strip() for l in path.read_text(encoding="utf-8").splitlines()
                      if l.strip().startswith("###")][:8]
-            out.append(f"{label} terdaftar: " + ("; ".join(heads) or "-"))
+            out.append(f"{label} registered: " + ("; ".join(heads) or "-"))
         except OSError:
             continue
     return out
 
 
 def build():
-    parts = ["KONTEKS SESI INI BARU SAJA DIRINGKAS. Ini ingatan yang masih tersimpan — "
-             "baca dulu, jangan mulai kerja sebelum cocokkan dengan database.", ""]
+    parts = ["THIS SESSION'S CONTEXT WAS JUST COMPRESSED. This is the memory that survived — "
+             "read it before acting, and cross-check the database instead of trusting recall.", ""]
     parts += db_lines() + [""] + handoff_lines() + [""] + index_lines()
-    parts += ["", "Perintah lengkap kalau perlu gali lebih dalam: `ai-station recovery 40`, "
-              "`ai-station handoff`, `ai-station recall 10`. Riwayat tidak tercatat = tidak pernah terjadi."]
+    parts += ["", "Full commands when you need to dig deeper: `ai-station recovery 40`, "
+              "`ai-station handoff`, `ai-station recall 10`. Unrecorded history never happened."]
     text = "\n".join(p for p in parts if p is not None)
     if len(text) > MAX_CHARS:
-        text = text[:MAX_CHARS] + "\n… (dipangkas — gali utuhnya dengan `ai-station recovery 40`)"
+        text = text[:MAX_CHARS] + "\n… (truncated — read it in full with `ai-station recovery 40`)"
     return text
 
 

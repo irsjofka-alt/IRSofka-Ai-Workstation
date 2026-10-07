@@ -80,7 +80,7 @@ pub(crate) fn default_profiles() -> HashMap<String, TabProfile> {
 const RUNNER_SCRIPT: &str = r#"#!/usr/bin/env bash
 # run_tab.sh <tab> — resolve a tab's CLI profile, launch it, relaunch it when it exits.
 # This is the supervisor loop inside one tmux pane. Written by the daemon on every
-# start (this constant is the only source); edit it in main.rs, not in config/.
+# start (this constant is the only source); edit it in profile.rs, not in config/.
 TAB="${1:-qoder}"
 PROF="$HOME/.ai-station/config/cli_profiles.json"
 
@@ -143,7 +143,34 @@ if [ -n "${WORKSPACE:-}" ] && [ -d "$WORKSPACE" ]; then
     cd "$WORKSPACE" || cd "$HOME"
 fi
 if [ "${#CMDLINE[@]}" -eq 0 ]; then echo "run_tab: perintah kosong untuk $TAB"; exit 1; fi
-exec "${CMDLINE[@]}"
+
+HAS_CONTINUE=0
+for arg in "${CMDLINE[@]}"; do
+    if [ "$arg" = "--continue" ] || [ "$arg" = "-c" ]; then
+        HAS_CONTINUE=1
+        break
+    fi
+done
+
+// Exit 42 dari qoder berarti "no conversation found to continue": tidak ada sesi di
+// direktori ini, biasanya karena workspace profil baru saja dipindah. Diturunkan
+// percobaan demi percobaan, BUKAN ditulis ke cli_profiles.json — kalau dipersist, tab
+// kehilangan resume selamanya walau sesi baru sudah ada beberapa detik kemudian.
+if [ "$HAS_CONTINUE" -eq 1 ]; then
+    "${CMDLINE[@]}"
+    EXIT_CODE=$?
+    if [ "$EXIT_CODE" -eq 42 ]; then
+        NEW_CMD=()
+        for arg in "${CMDLINE[@]}"; do
+            [ "$arg" != "--continue" ] && [ "$arg" != "-c" ] && NEW_CMD+=("$arg")
+        done
+        printf '\n\033[1;33m[run_tab] No session to continue in this directory — starting a new one.\033[0m\n\n'
+        exec "${NEW_CMD[@]}"
+    fi
+    exit "$EXIT_CODE"
+else
+    exec "${CMDLINE[@]}"
+fi
 "#;
 
 pub(crate) fn ensure_config() -> HashMap<String, TabProfile> {

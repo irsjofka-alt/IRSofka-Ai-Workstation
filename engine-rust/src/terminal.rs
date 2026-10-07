@@ -173,9 +173,21 @@ fn pty_loop_command(tab: &str, profile: &TabProfile) -> String {
     if profile.engine == "shell" {
         format!("exec {}", shell_words(&[runner.as_str(), tab]))
     } else {
+        // Loop supervisor. Dulu `while true` buta: tab yang mati seketika — model salah
+        // nama, flag ditolak, biner hilang — disalakan ulang setiap detik selamanya, dan
+        // pane terkubur pesan "selesai" sampai operator tidak bisa mengirim apa pun.
+        // Kematian di bawah 5 detik dihitung; tiga berturut-turut menghentikan loop dan
+        // menyerahkan pane ke shell yang bisa dipakai. Durasi panjang me-reset hitungan.
         format!(
-            "while true; do {} {}; echo -e '\\n\\033[1;33m[Sesi {} selesai. Memulai ulang dengan profil terkini...]\\033[0m'; sleep 1; done",
-            runner, tab, tab
+            "fails=0; while true; do start=$(date +%s); {runner} {tab}; code=$?; \
+             dur=$(( $(date +%s) - start )); \
+             if [ \"$dur\" -lt 5 ]; then fails=$((fails+1)); sleep 2; else fails=0; sleep 1; fi; \
+             if [ \"$fails\" -ge 3 ]; then \
+             printf '\\n\\033[1;31m[station] tab {tab} died within 5s three times (last exit %s) - relaunching stopped.\\033[0m\\n' \"$code\"; \
+             printf '[station] fix its profile, then start it by hand: %s {tab}\\n' '{runner}'; \
+             exec bash -i; fi; \
+             printf '\\n\\033[1;33m[Session {tab} ended (exit %s, %ss). Restarting with the current profile...]\\033[0m\\n' \"$code\" \"$dur\"; \
+             done"
         )
     }
 }

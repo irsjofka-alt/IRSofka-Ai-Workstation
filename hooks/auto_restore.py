@@ -108,9 +108,13 @@ def main():
     if os.environ.get("STATION_AUTO_RESTORE") == "0":
         return 0
     context = build()
+    # Nama event HARUS sama dengan event pemicunya: Qoder menolak hookSpecificOutput yang
+    # hookEventName-nya tidak cocok, jadi menulis "PostCompact" saat dipanggil SessionStart
+    # membuat jalur refresh tidak pernah menyalurkan isinya sama sekali.
+    event_name = event.get("hook_event_name") or "PostCompact"
     json.dump({
         "hookSpecificOutput": {
-            "hookEventName": "PostCompact",
+            "hookEventName": event_name,
             "additionalContext": context,
         }
     }, sys.stdout)

@@ -177,3 +177,22 @@ Files that structurally cannot carry a comment are the only exception, and they 
 their reason in the `FALLBACK` table inside `bin/arch_map.sh`. Do not grow that table to dodge
 writing a real header — `"_comment"` keys parse fine in every JSON file here except ones bound
 to a typed schema.
+
+## 12. Two Surfaces: Workstation and Station
+
+The **Workstation** is the cockpit in `engine-rust/src/gui.html`: terminal-centric, always open,
+where the operator gives orders. The **Station** (roadmap F8) is the human-facing record: what went
+in, what came out, what it cost, and who is on the team. Do not merge them — a console that also
+tries to be a report ends up being neither.
+
+Two rules apply to everything in F8, and they are not negotiable at implementation time:
+
+1. **One vocabulary.** `job`, `artifact`, `cost`, `role` are defined once, in the database schema.
+   A second definition in a second module produces two reports that disagree, with no way to tell
+   which one is true.
+2. **Reports are derived.** Nothing shown as a report may be written by hand. One manual
+   correction is enough to destroy the ledger's authority.
+
+Related rule for engines: never select a model, verifier or teammate from memory. Resolve the role
+from `config/slots.yaml` and `config/engines.json` at the moment of use — those files are the
+contract, and the operator edits them from the Station.

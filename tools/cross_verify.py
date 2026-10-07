@@ -86,6 +86,104 @@ def load_registry():
     return reg
 
 
+def treasury_quota():
+    """(baris kuota, batas umur pembacaan) dari Treasury. (None, None) kalau tak ada sumber.
+
+    Sumbernya API daemon; kalau daemon tidak hidup, tanyakan langsung ke ingestor. Keduanya
+    query, bukan angka yang kita karang: gate kuota yang menebak lebih buruk daripada gate
+    yang tidak ada, karena ia mengizinkan pemanggilan model sambil berpura-pura sudah
+    memeriksa sisanya.
+    """
+    payload = None
+    try:
+        payload = json.loads(daemon_get("/api/treasury", timeout=20))
+    except Exception:  # noqa: BLE001
+        payload = None
+    if payload is None:
+        try:
+            sys.path.insert(0, str(AI_STATION / "tools"))
+            from session_ingestor import Store, latest_quota
+            payload = {"quota": latest_quota(Store()), "interval_s": 900}
+        except Exception:  # noqa: BLE001
+            return None, None
+    interval = payload.get("interval_s") or 900
+    return payload.get("quota") or [], max(2 * int(interval), 1800)
+
+
+def _finite(value):
+    """float hanya untuk angka yang benar-benar angka: None, teks, NaN dan inf semua gagal."""
+    try:
+        out = float(value)
+    except (TypeError, ValueError):
+        return None
+    return out if out == out and abs(out) != float("inf") else None
+
+
+def _age_seconds(ts):
+    """Umur sebuah pembacaan meter, atau None kalau cap waktunya tidak bisa dibaca."""
+    if not ts:
+        return None
+    try:
+        when = datetime.fromisoformat(str(ts))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.astimezone()
+    return (datetime.now().astimezone() - when).total_seconds()
+
+
+def quota_gate_reason(spec):
+    """Alasan mesin ini TIDAK boleh diberangkatkan, atau None kalau jendelanya masih ada.
+
+    Pemilik mesin memutuskan kolam Anthropic/GPT boleh dihabiskan untuk verifikasi — tapi
+    keputusannya bersyarat: 'selama kuota 5 hours ada dan weekly nya ada'. Syarat yang tidak
+    dibaca adalah syarat yang dilanggar diam-diam, jadi setiap jalan yang membuat kita tidak
+    punya bukti (state bukan laporan, angka tak terbaca, cap waktu hilang atau dari masa
+    depan, baris lama menggeser yang baru) berujung penolakan, bukan keberangkatan.
+    """
+    gate = spec.get("quota_gate")
+    if not gate:
+        return None
+    engine, scope = str(gate.get("engine") or ""), str(gate.get("scope") or "")
+    windows = list(gate.get("windows") or [])
+    floor = _finite(gate.get("min_fraction", 0.0)) or 0.0
+    rows, fresh_s = treasury_quota()
+    if rows is None:
+        return (f"kuota {engine}/{scope} tidak terbaca: daemon mati dan ingestor tidak "
+                "menghasilkan angka — tidak ada bukti jendela ini masih ada")
+    newest = {}
+    for r in rows:
+        if str(r.get("engine")) != engine or str(r.get("scope")) != scope:
+            continue
+        w = str(r.get("limit_window"))
+        if w not in newest or str(r.get("ts") or "") > str(newest[w].get("ts") or ""):
+            newest[w] = r
+    for w in windows:
+        r = newest.get(w)
+        if r is None:
+            return (f"meter tidak pernah melaporkan jendela {w} untuk {engine}/{scope} — "
+                    "tidak ada dasar untuk memberangkatkan mesin ini")
+        state = str(r.get("state") or "")
+        if state != "REPORTED":
+            return (f"pembacaan terakhir jendela {w} berstate {state or 'kosong'}, bukan "
+                    "REPORTED: tidak ada bukti kuota")
+        frac = _finite(r.get("remaining_fraction"))
+        if frac is None:
+            return f"jendela {w} dilaporkan tanpa angka sisa yang bisa dibaca"
+        if frac <= floor:
+            return f"jendela {w} tinggal {frac:.3f} (habis)"
+        age = _age_seconds(r.get("ts"))
+        if age is None:
+            return f"pembacaan jendela {w} tidak punya cap waktu yang bisa dibaca"
+        if age < 0:
+            return (f"pembacaan jendela {w} berumur {age / 60:.0f} menit — jam mesin dan "
+                    "cap meter tidak sepakat, jadi kesegarannya tidak bisa dibuktikan")
+        if age > fresh_s:
+            return (f"pembacaan jendela {w} berumur {age / 60:.0f} menit, lebih tua dari "
+                    f"2x interval meter ({fresh_s / 60:.0f} menit)")
+    return None
+
+
 def engine_present(spec):
     """Apakah mesin ini BENAR-BENAR bisa dipakai sekarang.
 
@@ -104,7 +202,10 @@ def engine_present(spec):
         except Exception as exc:  # noqa: BLE001
             return False, f"daemon tidak menjawab ({type(exc).__name__})"
     if kind == "cli":
-        return bool(shutil.which(spec.get("binary", ""))), ""
+        if not shutil.which(spec.get("binary", "")):
+            return False, ""
+        blocked = quota_gate_reason(spec)
+        return (False, blocked) if blocked else (True, "")
     if kind == "ollama":
         # Probe dan pemanggilan HARUS memakai sumber URL yang sama. Dulu probe membaca
         # spec.get("url","") tanpa bawaan, sehingga mesin yang hanya ada di engines.json
@@ -344,11 +445,36 @@ def run_engine(spec, prompt, timeout):
         out = (res.stdout or "").strip()
         if res.returncode != 0:
             return "FAILED", out or f"exit {res.returncode} tanpa output"
-        return ("COMPLETED" if out else "FAILED"), out or "(mesin tidak menghasilkan output)"
+        if not out:
+            return "FAILED", "(mesin tidak menghasilkan output)"
+        # 'exit 0 + teks' BUKAN bukti pemeriksaan. Terukur 2026-10-07: `agy -p` headless
+        # menolak tool yang minta izin, mengembalikan response berisi penolakannya, dan
+        # exit 0 — audit seperti itu tercatat COMPLETED padahal tidak ada yang diperiksa.
+        # Format VERDICT adalah satu-satunya tanda mesin itu benar-benar menjawab brief.
+        reply = unwrap_cli_response(out)
+        if "VERDICT" not in reply.upper():
+            return "FAILED", (out + "\n\n(mesin menjawab tanpa baris VERDICT: tidak ada "
+                              "pemeriksaan yang bisa dicatat sebagai terverifikasi)")
+        return "COMPLETED", out
     except subprocess.TimeoutExpired:
         return "TIMEOUT", f"Batas {timeout}s terlampaui; pemeriksaan tidak selesai."
     except Exception as exc:  # noqa: BLE001
         return "FAILED", f"{type(exc).__name__}: {exc}"
+
+
+def unwrap_cli_response(text):
+    """Ambil isi jawaban dari sampul yang dicetak CLI (--output-format json).
+
+    Hanya dibuka kalau teksnya memang JSON dengan kunci 'response'; teks polos lewat utuh.
+    """
+    try:
+        first = text.split("\n", 1)[0]
+        d = json.loads(first) if first.lstrip().startswith("{") else None
+    except Exception:  # noqa: BLE001
+        return text
+    if isinstance(d, dict) and isinstance(d.get("response"), str):
+        return d["response"]
+    return text
 
 
 def parse_verdict(text):
@@ -420,9 +546,9 @@ def main():
         print("=== mesin verifikasi tersedia ===")
         for name, spec in sorted(reg.items()):
             ok, why = engine_present(spec)
-            state = "ada" if ok and not why else ("TIDAK terpasang" if not ok else why)
-            print(f"  {name:<8} {spec.get('role','?'):<10} {spec.get('model',''):<24} "
-                  f"{state:<28} {spec.get('note','')}")
+            state = why if why else ("ada" if ok else "TIDAK terpasang")
+            print(f"  {name:<14} {spec.get('role','?'):<10} {spec.get('model',''):<24} "
+                  f"{state:<34} {spec.get('note','')}")
         print(f"\n  registry tambahan: {REGISTRY_PATH} "
               f"({'ada' if REGISTRY_PATH.exists() else 'belum ada — menambah mesin baru tidak perlu ubah kode'})")
         return 0
@@ -448,6 +574,14 @@ def main():
     if not subject.strip():
         print("❌ beri subjek: teks klaim atau --file <path>")
         return 2
+
+    blocked = quota_gate_reason(spec)
+    if blocked:
+        print(f"❌ {args.engine} tidak diberangkatkan: {blocked}")
+        record(ref, args.engine, spec.get("model", ""), "UNAVAILABLE", "UNAVAILABLE",
+               blocked, 0)
+        print("\n⚠ Klaim ini BELUM diverifikasi mesin kedua. Jangan catat sebagai terverifikasi.")
+        return 3
 
     started = time.time()
     status, text = run_engine(spec, build_prompt(subject, args.focus), args.timeout)

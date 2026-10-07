@@ -46,6 +46,24 @@ resolve_message(message_id=N, status="ANSWERED" | "DISPUTED")
 
 For real-time terminal interaction: `read_terminal(tab=...)`, `send_to_terminal(tab=..., text=...)`.
 
+**Verification tier.** When a verdict must be independent rather than cheap, resolve the
+`decider` / `verifier` role from `config/slots.yaml` and `config/engines.json` at the moment of
+use — `tools/cross_verify.py --list` prints what is registered and what is currently allowed.
+On this workstation those roles point at `claude-opus-5-5-high` and `claude-sonnet-5-5-high`,
+reached through the Antigravity CLI (`agy --model <id> --print`). Quota pools are separate and
+this is the reason the tier exists: the `Claude and GPT models` pool (shared by Opus, Sonnet and
+GPT-OSS) does not draw on the `Gemini Models` pool, so a real independent audit does not shorten
+the working agent's breath. The operator authorised spending that pool on verification whenever
+its `5h` **and** `weekly` windows still have allowance; that authorisation is enforced by the
+`quota_gate` block in the registry, not by an engine remembering it. A gate that cannot read a
+meter refuses the dispatch as `UNAVAILABLE` — absence of evidence never means the quota exists.
+
+Two measured limits of this tier, so no one rediscovers them as a false pass:
+- `agy -p` is headless and cannot approve tool permissions. A verifier that must inspect code
+  has to receive that code in the prompt (`cross_verify.py --file`); it will not go looking.
+- Exit 0 with text is not evidence of an audit. A headless run that only prints a permission
+  denial exits 0; `cross_verify.py` now records such an answer as `FAILED`, never `COMPLETED`.
+
 Verification Policy:
 - If you are **uncertain** about code, do not speculate — request verification from peer engines.
 - Responses lacking sufficient evidence must be marked `DISPUTED`, not `ANSWERED`.

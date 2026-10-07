@@ -20,6 +20,22 @@ teams:
         title: "QA & Code Auditor"
         engine: "qoder_cli"
         instruction_ref: "skills/coding_standards.md"
+      # Verifier roles resolve their model from config/engines.json at the moment of use
+      # (contract §12). Do not copy a model name into a prompt or a note and trust it later.
+      - role_id: "decider"
+        title: "Independent Verifier (final decide)"
+        engine: "antigravity_cli"
+        model: "claude-opus-5-5-high"
+        registry_key: "claude-opus"
+        quota_pool: "Claude and GPT models"
+        windows: ["5h", "weekly"]
+      - role_id: "verifier"
+        title: "Second-tier Verifier (same pool, cheaper)"
+        engine: "antigravity_cli"
+        model: "claude-sonnet-5-5-high"
+        registry_key: "claude-sonnet"
+        quota_pool: "Claude and GPT models"
+        windows: ["5h", "weekly"]
 
   - id: "visual_operator"
     name: "Visual & Desktop Automation Squad"

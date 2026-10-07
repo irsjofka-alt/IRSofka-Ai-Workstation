@@ -1,5 +1,5 @@
 {
-  "_comment": "Registry mesin AI workstation. Menambah perangkat cukup di sini — cross_verify.py dan local_llm.py membacanya, tidak perlu ubah kode. Nilai 'kind': pane (CLI hidup di tab tmux), cli (spawn proses baru), ollama (model lokal). Blok 'usage' (F8.2 Treasury) adalah satu-satunya tempat meter sebuah mesin dinyatakan: 'engine' = nama di kosakata action_log, 'probe' = argv yang dijalankan (list, atau string yang dipecah shlex), 'parser' = nama pembaca hasilnya. 'extra' = daftar meter tambahan pada mesin yang sama, tiap entry punya probe/parser sendiri. 'probe' null atau parser 'none' berarti mesin itu tidak punya meter dan Treasury menulis UNSUPPORTED, bukan nol.",
+  "_comment": "Registry mesin AI workstation. Menambah perangkat cukup di sini — cross_verify.py dan local_llm.py membacanya, tidak perlu ubah kode. Nilai 'kind': pane (CLI hidup di tab tmux), cli (spawn proses baru), ollama (model lokal). Blok 'usage' (F8.2 Treasury) adalah satu-satunya tempat meter sebuah mesin dinyatakan: 'engine' = nama di kosakata action_log, 'probe' = argv yang dijalankan (list, atau string yang dipecah shlex), 'parser' = nama pembaca hasilnya. 'extra' = daftar meter tambahan pada mesin yang sama, tiap entry punya probe/parser sendiri. 'probe' null atau parser 'none' berarti mesin itu tidak punya meter dan Treasury menulis UNSUPPORTED, bukan nol. Kunci 'cli' memakai 'template' (placeholder {model} dan {prompt}) dan boleh membawa 'quota_gate': anteseden jendela kuota yang harus masih tersisa sebelum mesin itu boleh diberangkatkan.",
   "engines": {
     "gemini": {
       "kind": "pane",
@@ -35,6 +35,56 @@
           }
         ]
       }
+    },
+    "claude-opus": {
+      "kind": "cli",
+      "binary": "agy",
+      "role": "decider",
+      "model": "claude-opus-5-5-high",
+      "template": [
+        "agy",
+        "--model",
+        "{model}",
+        "--print",
+        "{prompt}",
+        "--output-format",
+        "json"
+      ],
+      "quota_gate": {
+        "engine": "antigravity",
+        "scope": "Claude and GPT models",
+        "windows": [
+          "5h",
+          "weekly"
+        ]
+      },
+      "breath": "paling mahal: satu turn prompts pendek menghabiskan 5.7% jendela 5h dan 2.9% weekly (terukur 2026-10-07, num_turns 1, input 28550 token)",
+      "note": "Verifikasi/putus akhir yang harus benar-benar independen. Kontrak melarang memilih model dari ingatan: nama model di atas adalah hasil `agy models`, dan kuotanya dibaca dari grup 'Claude and GPT models' milik meter gemini (kolom 'usage' sengaja tidak ada di sini supaya satu meter tidak dibaca dua kali). Headless: `agy -p` tidak bisa menyetujui permintaan izin tool, jadi bukti HARUS ikut terkirim (pakai --file), bukan dicari sendiri oleh verifier."
+    },
+    "claude-sonnet": {
+      "kind": "cli",
+      "binary": "agy",
+      "role": "reviewer",
+      "model": "claude-sonnet-5-5-high",
+      "template": [
+        "agy",
+        "--model",
+        "{model}",
+        "--print",
+        "{prompt}",
+        "--output-format",
+        "json"
+      ],
+      "quota_gate": {
+        "engine": "antigravity",
+        "scope": "Claude and GPT models",
+        "windows": [
+          "5h",
+          "weekly"
+        ]
+      },
+      "breath": "satu kolam kuota dengan Opus dan GPT-OSS, dipakai untuk audit rutin kalau Opus sedang tidak proporsional",
+      "note": "Audit lapis kedua di pool yang sama. Bila jendela 5h atau weekly grup ini habis, cross_verify menolak berangkat dan melaporkan UNAVAILABLE — bukan menyamar sebagai Gemini."
     },
     "qoder": {
       "kind": "pane",

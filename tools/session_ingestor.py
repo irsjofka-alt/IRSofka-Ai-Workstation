@@ -20,6 +20,7 @@ import json
 import os
 import re
 import shlex
+import shutil
 import sqlite3
 import subprocess
 import sys
@@ -958,14 +959,49 @@ def _probe_argv(probe) -> list:
     return shlex.split(str(probe))
 
 
-def _run(cmd: list, timeout: int = 30) -> tuple[int, str]:
+METER_SEARCH_GLOBS = (".local/bin", "bin", ".cargo/bin", "runtime/local/bin",
+                      ".gemini/*/bin", ".gemini/*/*/bin")
+
+
+def _meter_search_path(extra=()) -> str:
+    """PATH tempat perintah meter benar-benar dicari.
+
+    Layanan systemd dan server tmux mewarisi PATH sistem saja (/usr/bin, /bin), sementara
+    biner CLI dipasang di luar itu. Terukur di mesin ini: agy = ~/.local/bin (symlink ke
+    ~/runtime/local/bin), qoder = ~/.gemini/antigravity/bin (symlink ke
+    engines/qoder/bin/qodercli). Keduanya ELF, jadi shebang `env node` tidak menjadi soal di
+    sini — tapi PATH yang sama tetap ikut diberikan ke proses anak, karena asumsi "biner
+    statis" tidak boleh diwarisi oleh mesin lain yang meng-clone repo ini. GLOBS hanyalah
+    kenyamanan bawaan; host lain menuliskan "search_path" di blok usage-nya sendiri.
+    """
+    home = str(Path.home())
+    found = [p for pat in METER_SEARCH_GLOBS for p in glob.glob(os.path.join(home, pat))]
+    dirs = [str(p) for p in list(found) + list(extra) if os.path.isdir(str(p))]
+    base = [p for p in os.environ.get("PATH", "").split(os.pathsep) if p]
+    return os.pathsep.join(dict.fromkeys(base + dirs))
+
+
+def _resolve_argv(cmd: list, extra=()) -> list:
+    """Ganti nama perintah meter dengan path absolutnya bila PATH saat ini tidak melihatnya."""
+    if not cmd or os.path.sep in str(cmd[0]):
+        return cmd
+    if shutil.which(cmd[0]):
+        return cmd
+    found = shutil.which(cmd[0], path=_meter_search_path(extra))
+    return [found or cmd[0], *cmd[1:]]
+
+
+def _run(cmd: list, timeout: int = 30, extra_path=()) -> tuple[int, str]:
     """Jalankan perintah meter. rc != 0 tetap mengembalikan teksnya: alasannya perlu dilaporkan."""
+    cmd = _resolve_argv(list(cmd), extra_path)
+    env = {**os.environ, "PATH": _meter_search_path(extra_path)}
     try:
         res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, timeout=timeout)
+                             text=True, timeout=timeout, env=env)
         return res.returncode, (res.stdout or "").strip()
     except FileNotFoundError:
-        return 127, f"(command {cmd[0]!r} is not installed on this machine)"
+        return 127, (f"(command {cmd[0]!r} is not installed on this machine; "
+                     f"searched {env['PATH']!r})")
     except subprocess.TimeoutExpired:
         return 124, f"(meter did not answer within {timeout}s)"
     except Exception as exc:  # noqa: BLE001
@@ -1180,7 +1216,8 @@ def read_qoder_panel(cfg: dict) -> tuple[str, str]:
     # mewariskan env SERVER, dan server itu bisa saja duluan dibangun oleh proses yang
     # env-nya penuh. Yang dibuang justru QODER_PID/QODER_CLI — penanda "ini anak dari sesi
     # X", dan probe tidak boleh jadi anak siapa pun.
-    cmd = ["env", *(f"-u{k}" for k in PANEL_ENV_UNSET), *cmd]
+    cmd = ["env", *(f"-u{k}" for k in PANEL_ENV_UNSET),
+           f"PATH={_meter_search_path(cfg.get('search_path') or ())}", *cmd]
     mcp_file = cfg.get("mcp_config") or ""
     if mcp_file:
         # Path relatif di engines.json dihitung dari akar workstation, bukan dari cwd
@@ -1303,7 +1340,7 @@ def _read_one_meter(reg_key: str, cfg: dict) -> tuple[list[dict], str, str]:
         source = "qoder /usage panel"
     else:
         argv = _probe_argv(probe)
-        rc, text = _run(argv, int(cfg.get("timeout_s", 60)))
+        rc, text = _run(argv, int(cfg.get("timeout_s", 60)), cfg.get("search_path") or ())
         err = "" if rc == 0 else text[:TREASURY_DETAIL_MAX]
         source = " ".join(argv)
     if err:

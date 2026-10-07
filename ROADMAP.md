@@ -375,7 +375,8 @@ only agreed with is not a review:
   deterministic, read-only, no dependency on the queue — and F10.7 needs exactly those measurements to
   exist. Parking it costs the one thing F10 is built on. F9.1 stays unblocked and parallel.
 
-Order as it will be built: **F8.4 + F10.2** (✅ 01:00) → **F10.8** → **F10.1** → **F10.7** →
+Order as it will be built: **F8.4 + F10.2** (✅ 01:00) → **F10.8** (🟡 01:30, switch shipped; expiry
+and drainer still owed) → **F10.1** → **F10.7** →
 **F10.3** → F10.4 / F10.5 / F10.6. The seeded queue encodes this through `depends_on`, so an engine
 that skips the order cannot claim.
 
@@ -501,13 +502,14 @@ that skips the order cannot claim.
   watched over an operator's shoulder, and F10.7 is the one module whose failure mode is a machine
   typing into a person's terminal. Built after F10.8 for that reason: a thing that sends `CONTINUE` must
   have a switch that stops it before it has users.
-- ⬜ **F10.8 Autopilot switch — ON means the machine is entrusted, not that it is unowned.** A toggle on
+- 🟡 **F10.8 Autopilot switch — ON means the machine is entrusted, not that it is unowned.** A toggle on
   the Workstation cockpit (`gui.html` is the control surface; the *state* of the toggle is recorded as
   a row so the Station can show who had the machine and when). The operator's framing is the spec:
   ON = this computer belongs to the AI and its ecosystem for the night; OFF = a human is at the desk.
   Four things make that survivable, and they are the non-negotiable part of this module:
   1. **Three off paths, none of which asks permission.** The GUI toggle, `ai-station autopilot off`
-     from any shell, and `systemctl --user stop` of the drainer timer. Invariant 6: if the loop is
+     from any shell, and `systemctl --user stop` of the drainer timer — the last one only once F10.3
+     exists, which it did not when this was first written down. Invariant 6: if the loop is
      misbehaving at 03:00, waking it to negotiate is not an off switch.
   2. **Self-expiry.** ON carries a wall-clock boundary and an item count; either one reached ends the
      run and emits the morning digest. A switch that stays ON because everyone forgot is a background
@@ -527,6 +529,25 @@ that skips the order cannot claim.
      *Acceptance:* with the toggle ON, walk away; the morning digest lists every item attempted, every
      item skipped and why, which pool each cost came from, and the queue contains only items whose
      measured resource line actually crossed its threshold.
+  Shipped 2026-10-08 01:30 (`a7726cf`, `35f0c80`), split the way F8.3 split: `work_order.py` owns the
+  vocabulary and every breaker number, `api/autopilot.rs` owns HTTP and the process boundary and copies
+  no policy, and neither HTML page restates a rule — each figure on screen is read from
+  `work_order.py status`. The Station's Human Decide tab has **no buttons on purpose**: it is the record
+  of what waits for a person, not a control surface (F8's two-surfaces rule).
+  Remaining, and named so nobody mistakes the switch for the loop:
+  - **Self-expiry is checked at claim time, not by a timer.** A window that lapses at 02:00 stops
+    nothing until the next `claim`. Tolerable while no drainer exists to make claims unattended;
+    F10.3 must re-read the window per item, not once per run.
+  - **ON currently governs nothing.** The switch is honest — it says who held the machine, and for how
+    long — but the drainer that acts on it is F10.3. The order was set the other way round on purpose:
+    a loop with no off is the failure this module exists to prevent.
+  - **`CONTINUE` injection is deliberately not shipped.** An engine that looks idle may be thinking.
+  - The morning digest (F8.5) reads the same table but does not emit yet.
+  Measured: `selftest` 32/32, `selftest --live` on `POSTGRESQL` 12/12; deploy gates green (cargo test 3
+  passed, call-worker guard "0 left behind / 3 pane processes protected", arch map 75 files / 0
+  undocumented); endpoint round-trip ON→OFF with both 400 paths refused; the 503 body forced by hiding
+  `work_order.py` names only routes proven to exist; `ai-station autopilot` verified without the daemon;
+  4 `autopilot_switch` rows reached `action_log`; both surfaces confirmed by screenshot.
 
 ## Known Boundaries & Constraints
 

@@ -133,6 +133,11 @@ operator. Internal strings — hook denial reasons, context-recovery briefings, 
 notes consumed by engines — may stay in Indonesian; they are conversation with the machine,
 not with a person.
 
+**Commit messages are written in English.** Subject and body, no exceptions: history is the
+one artifact every engine and every future reader greps, and a bilingual log forces a
+translation step onto whoever is doing `git bisect`. This rule was set by the operator on
+2026-10-07; commits before that date are Indonesian and stay as they are.
+
 **Code comments may stay in Indonesian.** `//`, `/* */`, `#`, `--`, `<!-- -->` and docstrings
 that only a maintainer reads are exempt: the reasoning that made a line exist is easier to
 keep accurate in the language it was formed in.

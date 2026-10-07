@@ -170,8 +170,10 @@ False status reports harm system reliability because subsequent engines build up
 for a bounded run; OFF means a human is at the desk and watching. Three rules are load-bearing:
 
 - **Turning it off must not need the AI's cooperation.** The GUI toggle, `ai-station autopilot off` from
-  any shell, and stopping the drainer's user timer each end the run on their own. If stopping requires
-  asking the loop politely, it is not a switch.
+  any shell, and (once F10.3 ships) stopping the drainer's user timer each end the run on their own. If
+  stopping requires asking the loop politely, it is not a switch. An escape route named before it exists
+  is worse than one fewer route: it teaches an operator to type a command that fails at the exact moment
+  they have lost control of the machine. Verify a path works, then add it to the list.
 - **ON grants panes and headless APIs; it does not grant `ydotool`.** Moving the real mouse and typing
   real keys steals the desktop of a sleeping person, and a misclick into whatever window is frontmost at
   03:00 is the one failure the ledger cannot undo — no `action_log` row restores a file deleted inside an

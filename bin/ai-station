@@ -35,6 +35,11 @@ case "$1" in
   workers)
     python3 "$SCRIPT_DIR/tools/call_workers.py" "${@:2}"
     ;;
+  autopilot)
+    # Escape route, not a convenience: this must work with the daemon down, the GUI closed and
+    # no AI's cooperation (contract §6), so it calls the tool directly instead of the HTTP API.
+    python3 "$SCRIPT_DIR/tools/work_order.py" autopilot "${2:-show}" "${@:3}"
+    ;;
   snapshot)
     python3 "$SCRIPT_DIR/tools/session_ingestor.py" snapshot "${2:-25}"
     ;;
@@ -62,6 +67,7 @@ case "$1" in
     echo "  handoff                 Baca serah-terima pekerjaan tertunda (world_memory + quest aktif)"
     echo "  verify <mesin> [--file P|teks]  Minta AI lain memeriksa pekerjaan AI ini (gemini|qoder|local)"
     echo "  workers [--list|--audit|--cut|--guard]  Panggilan engine yang masih hidup di luar Active Workspace"
+    echo "  autopilot [on|off|show] [--minutes N] [--budget N]  Autopilot switch; 'off' works without the daemon"
     echo "  snapshot [N]            Tulis handoff mekanis sekarang (dipanggil otomatis saat sesi mati)"
     echo "  recovery [N]            recall + handoff sekaligus, untuk memulihkan konteks sesi baru"
     echo "  logstats                Statistik isi action_log & save-state"

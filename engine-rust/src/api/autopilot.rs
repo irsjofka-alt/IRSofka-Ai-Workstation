@@ -16,9 +16,8 @@
 //!    grup itu saat batas lewat (kontrak §4) — panggilan yang menggantung tidak boleh meninggalkan
 //!    worker yang memegang RAM.
 //! 3. Mode OFF adalah jalur yang paling tidak boleh gagal. Kalau proses anak mati, responsnya
-//!    menyebut dua jalur mati lain yang tetap jalan tanpa bantuan AI (`ai-station autopilot off`
-//!    dari shell mana pun, dan menghentikan timer drainer), supaya operator tidak pernah berdiri
-//!    di depan satu-satunya tombol yang rusak.
+//!    menyebut jalur lain yang tetap jalan tanpa bantuan AI — `OFF_PATHS` di bawah, dan setiap
+//!    barisnya dibuktikan ada lebih dulu sebelum ditulis ke sana (kontrak §6).
 use axum::body::Body;
 use axum::extract::Json;
 use axum::http::header::CONTENT_TYPE;
@@ -82,16 +81,25 @@ async fn run_tool_async(args: Vec<String>) -> Result<String, String> {
         .map_err(|e| format!("task work_order berhenti: {e}"))?
 }
 
+/// Jalan keluar ketika memanggil sakelar justru yang gagal.
+///
+/// Daftarnya harus benar hari ini. Sebuah respons yang menyebut `systemctl --user stop timer
+/// drainer` sebelum timer itu ada (F10.3 belum dibangun) mengajari operator perintah yang
+/// gagal tepat di saat paling buruk: ia sudah kehilangan kendali atas mesinnya. Menambah
+/// baris di sini berarti lebih dulu membuktikan bahwa baris itu memang bekerja.
+const OFF_PATHS: &[&str] = &[
+    "tombol Autopilot di kokpit (kalau daemon masih hidup, ini yang paling cepat)",
+    "ai-station autopilot off — dari shell mana pun, tanpa daemon",
+    "python3 ~/.ai-station/tools/work_order.py autopilot off — menulis langsung ke database",
+];
+
 /// GET /api/autopilot — keadaan sakelar, pemutus malam, antrean manusia, kandidat resume.
 pub(crate) async fn get_state() -> Response {
     match run_tool_async(vec!["status".to_string()]).await {
         Ok(text) => raw_json(StatusCode::OK, text),
         Err(e) => envelope(
             StatusCode::SERVICE_UNAVAILABLE,
-            json!({"ok": false, "error": e,
-                   "off_paths": ["tombol Autopilot di kokpit",
-                                  "ai-station autopilot off dari shell mana pun",
-                                  "systemctl --user stop timer drainer"]}),
+            json!({"ok": false, "error": e, "off_paths": OFF_PATHS}),
         ),
     }
 }
@@ -171,8 +179,7 @@ pub(crate) async fn post_state(Json(body): Json<Value>) -> Response {
             return envelope(
                 StatusCode::SERVICE_UNAVAILABLE,
                 json!({"ok": false, "error": e, "mode_requested": mode,
-                       "off_paths": ["ai-station autopilot off dari shell mana pun",
-                                      "systemctl --user stop timer drainer"],
+                       "off_paths": OFF_PATHS,
                        "note": "kalau yang gagal adalah jalur ON, mesin tidak memegang apa pun; kalau yang gagal jalur OFF, pakai salah satu off_paths di atas"}),
             );
         }

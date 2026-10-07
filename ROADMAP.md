@@ -108,6 +108,33 @@ Pending:
   that self-updated under it (`agy` runs from a file marked `(deleted)`) and rejects its neighbours.
   End-to-end proof on a real leak: an orphaned `qoder -p` at 259.6 MB was flagged, cut by group, the
   three workspace panes survived, audit back to zero.
+- ✅ **The same file audited by an engine that is not the one that wrote it.** Asked independently,
+  per contract §4: `claude-opus` returned nothing usable — headless `agy -p` tried to call a tool it
+  cannot approve and was auto-denied, and `cross_verify` recorded `FAILED` rather than a pass, which
+  is the documented limit of that tier. The `gemini` reviewer answered (the harness reported `TIMEOUT`
+  because it answered after the window closed; the pane content was read separately, so the dispatch
+  record stays honest and the verdict still had to be checked by hand) and returned **FAIL** with four
+  findings. Three were real, and all three were catastrophic rather than cosmetic:
+  1. `pane_roots()` returned `{}` when tmux could not be read. Empty and unknown are not the same
+     fact: an empty persistent set marks every pane process as a stray. Demonstrated live with the
+     kill path neutralised — with a bogus socket the old code reported `ok: true` and named
+     **pid 498148 (`agy`, 271.3 MB) and pid 727828 (`qoder`, 827.6 MB)**, the operator's own two
+     sessions, as things to cut. `pane_roots` now returns `None` for unreadable, the audit answers
+     `ok: false`, and `--cut` refuses to act on an unknown set.
+  2. `cut_strays()` signalled every PGID it found, and `killpg` reaches the whole group. A worker
+     that escaped its pane by re-parenting still carries the pane's PGID, so the cut could kill the
+     operator's CLI while killing the leak. A group is now killed whole only when no persistent PID
+     stands in it; otherwise the cut narrows to the individual stray PIDs and says so. A stray whose
+     own PID is in the persistent set is skipped outright.
+  3. The group was swept only on timeout. A CLI that exits 0 after daemonising a worker leaves that
+     group leaderless and resident — the same leak with a friendlier exit code. Both `run_grouped`
+     and `probe::run_bounded` now sweep on the success path as well.
+  Finding 4 — `setsid()`/double-fork escapes any PGID signal — is a real boundary that cannot be
+  fixed by this mechanism; it is closed later, by identity, at the next audit or deploy gate, and the
+  contract now says a green audit is not proof that no such worker exists.
+  Each of the three fixes was proven to have teeth the same way as before: remove the fix, watch the
+  test fail, restore. Removing the success sweep leaves one grandchild alive in the Rust test and one
+  in the Python selftest. `cargo test` is now 3 tests and is a deploy gate.
 
 ## F7 — Creative Studio ⬜
 

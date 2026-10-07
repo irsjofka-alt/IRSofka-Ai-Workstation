@@ -37,6 +37,33 @@ pub(crate) fn kill_process_group(pid: u32) {
         .status();
 }
 
+/// Masih ada yang menghuni grup ini? Dipakai sebelum mengirim sinyal di jalur sukses: pemimpin
+/// grup sudah mati saat itu, jadi `/proc/<pgid>` tidak lagi ada dan satu-satunya bukti yang sah
+/// adalah keanggotaan. Ini juga menjaga dari memakai ulang PID yang kebetulan sama.
+pub(crate) fn group_alive(pgid: u32) -> bool {
+    let Ok(entries) = std::fs::read_dir("/proc") else {
+        return false;
+    };
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(text) = name.to_str() else { continue };
+        if text.is_empty() || !text.chars().all(|c| c.is_ascii_digit()) {
+            continue;
+        }
+        let Ok(raw) = std::fs::read_to_string(entry.path().join("stat")) else {
+            continue;
+        };
+        // Nama proses bisa mengandung spasi dan kurung, jadi hitung dari penutup kurung terakhir:
+        // setelahnya field ke-3 (0-based) adalah pgrp.
+        if let Some((_, rest)) = raw.rsplit_once(") ") {
+            if rest.split_whitespace().nth(2).and_then(|v| v.parse::<u32>().ok()) == Some(pgid) {
+                return true;
+            }
+        }
+    }
+    false
+}
+
 fn cache() -> &'static Mutex<HashMap<String, (Instant, Value)>> {
     static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Value)>>> = OnceLock::new();
     CACHE.get_or_init(Default::default)
@@ -117,8 +144,22 @@ pub(crate) fn run_bounded(program: &str, args: &[&str], stdin: Option<&[u8]>,
     });
 
     let out = match rx.recv_timeout(limit) {
-        Ok(Ok(out)) => out,
-        Ok(Err(_)) => return empty(false),
+        // Jalur sukses pun disapu. CLI yang keluar 0 setelah me-daemon-kan worker meninggalkan
+        // grup tanpa pemimpin, dan grup itulah yang terus memegang RSS sampai sweep berikutnya
+        // sempat jalan — padahal kontrak §4 berbunyi "dipotong begitu jawabannya dibaca".
+        // Temuan 4 audit independen 2026-10-07, untuk Python dan Rust sekaligus.
+        Ok(Ok(out)) => {
+            if group_alive(pid) {
+                kill_process_group(pid);
+            }
+            out
+        }
+        Ok(Err(_)) => {
+            if group_alive(pid) {
+                kill_process_group(pid);
+            }
+            return empty(false);
+        }
         Err(_) => {
             kill_process_group(pid);
             return empty(true);
@@ -216,5 +257,24 @@ mod tests {
         assert!(!probe.timed_out);
         assert_eq!(probe.stdout, "hello");
         assert_eq!(run_capture("printf", &["x"]), Some("x".to_string()));
+    }
+
+    #[test]
+    fn worker_yang_ditinggalkan_probe_sukses_ikut_mati() {
+        // Token kedua, supaya dua uji yang berjalan paralel tidak saling melihat cucunya.
+        let want = format!("{}21338", std::process::id());
+        let script = format!("sleep {want} >/dev/null 2>&1 & exit 0");
+        let probe = run_bounded("sh", &["-c", &script], None, Duration::from_secs(10));
+        assert!(probe.ok, "shell keluar 0; probe harus dilaporkan sukses, bukan timeout");
+        assert!(!probe.timed_out);
+        let mut left = survivors(&want);
+        for _ in 0..20 {
+            if left.is_empty() {
+                break;
+            }
+            std::thread::sleep(Duration::from_millis(100));
+            left = survivors(&want);
+        }
+        assert_eq!(left, Vec::<u32>::new(), "grup tidak disapu pada jalur sukses");
     }
 }

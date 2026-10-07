@@ -94,30 +94,36 @@ def read_processes() -> dict[int, dict]:
     return table
 
 
-def pane_roots() -> dict[str, int]:
+def pane_roots() -> dict[str, int] | None:
     """The persistent set: the PID behind each tmux session on the workstation socket.
 
     Keyed by session name, not window name: every window here is called 'bash', so keying by
     window collapses four panes into one and leaves three tabs unprotected. Measured 2026-10-07.
+
+    None means the pane list could not be read, and that is a different fact from an empty list.
+    An empty persistent set makes every pane process — the operator's own editor included — look
+    like a stray, so a caller that treats unknown as nothing has built a way to kill the workspace
+    it is guarding. Unknown is refused, never flattened. Found by the independent audit of this
+    file on 2026-10-07; the tmux probe itself goes through run_grouped so it cannot leak either.
     """
     try:
-        out = subprocess.run(
+        out = run_grouped(
             ["tmux", "-L", TMUX_SOCKET, "list-panes", "-a",
              "-F", "#{session_name}\t#{pane_pid}"],
-            stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, text=True, timeout=10,
+            timeout=10, text=True,
         )
     except (OSError, subprocess.SubprocessError):
-        return {}
+        return None
     if out.returncode != 0:
-        return {}
+        return None
     roots: dict[str, int] = {}
-    for line in out.stdout.splitlines():
+    for line in (out.stdout or "").splitlines():
         if "\t" not in line:
             continue
         name, pid = line.rsplit("\t", 1)
         if pid.isdigit():
             roots[name] = int(pid)
-    return roots
+    return roots or None
 
 
 def persistent_pids(table: dict[int, dict], roots: dict[str, int]) -> set[int]:
@@ -288,7 +294,8 @@ def process_age(pid: int) -> float:
 def audit(cut_now: bool = False) -> dict:
     table = read_processes()
     roots = pane_roots()
-    keep = persistent_pids(table, roots)
+    unknown = roots is None
+    keep = set() if unknown else persistent_pids(table, roots)
     identities = engine_identities()
     me = os.getpid()
 
@@ -305,7 +312,10 @@ def audit(cut_now: bool = False) -> dict:
             "age_s": round(process_age(pid), 1),
             "cmdline": proc["cmdline"][:160],
         }
-        if pid in keep or pid == me:
+        if unknown:
+            record["why"] = "daftar pane tidak terbaca — tidak ada yang boleh dipotong"
+            refused.append(record)
+        elif pid in keep or pid == me:
             record["why"] = "inside an Active Workspace pane tree"
             protected.append(record)
         elif _is_daemon(proc):
@@ -324,24 +334,57 @@ def audit(cut_now: bool = False) -> dict:
             strays.append(record)
 
     result = {
-        "ok": True,
-        "persistent": [{"pane": name, "pid": pid} for name, pid in sorted(roots.items())],
+        "ok": not unknown,
+        "persistent": None if unknown else [{"pane": name, "pid": pid}
+                                            for name, pid in sorted(roots.items())],
         "engine_binaries": engine_binaries(),
         "protected": protected,
         "in_flight": refused,
         "strays": strays,
         "stray_mb": round(sum(s["rss_mb"] for s in strays), 1),
     }
+    if unknown:
+        result["root_error"] = ("tmux -L %s list-panes tidak mengembalikan satu pun pane. "
+                                "Persistent set tidak diketahui, jadi audit ini tidak bisa "
+                                "membedakan yatim dari pekerjaan operator." % TMUX_SOCKET)
     if cut_now:
-        result["cut"] = cut_strays(strays)
+        result["cut"] = cut_strays(strays, keep, table)
     return result
 
 
-def cut_strays(strays: list[dict]) -> list[dict]:
-    """Terminate whole process groups, by explicit PID — never by pattern (§6 forbids pattern kills)."""
+def cut_strays(strays: list[dict], keep=frozenset(), table: dict | None = None) -> list[dict]:
+    """Terminate whole process groups, by explicit PID — never by pattern (§6 forbids pattern kills).
+
+    A group is only killed whole when nothing persistent stands in it. A stray that escaped its
+    pane by re-parenting still carries the pane's PGID, so an unconditional killpg on that PGID
+    reaches the operator's CLI as well — the independent audit of 2026-10-07 named this as the
+    second way this file could destroy the thing it exists to protect. When the group is shared
+    with a protected PID, the cut narrows to the individual stray PIDs and says so.
+    """
     done = []
-    groups = {s["pgrp"] for s in strays if s["pgrp"] > 1}
-    for pgid in sorted(groups):
+    by_pid = table or {}
+    kept = set(keep)
+    for pgid in sorted({s["pgrp"] for s in strays}):
+        guarded_group = [s for s in strays
+                         if s["pgrp"] == pgid and s["pid"] in kept]
+        for s in guarded_group:
+            done.append({"pid": s["pid"], "pgrp": pgid,
+                         "outcome": "refused: pid ada di persistent set"})
+        targets = [s for s in strays if s["pgrp"] == pgid and s["pid"] not in kept]
+        if not targets:
+            continue
+        members = {p for p, proc in by_pid.items() if proc.get("pgrp") == pgid}
+        guarded = sorted(members & kept) if pgid > 1 else []
+        if pgid <= 1 or guarded:
+            outcome = ("pid %d tidak punya grup yang bisa dipakai (pgrp=%d)" % (targets[0]["pid"], pgid)
+                       if pgid <= 1 else
+                       "grup %d dihuni pid persisten %s — dipotong per PID, bukan per grup"
+                       % (pgid, guarded))
+            for s in targets:
+                done.append({"pid": s["pid"], "pgrp": pgid,
+                             "outcome": _kill_one(s["pid"]) or outcome})
+            done.append({"pgrp": pgid, "outcome": outcome})
+            continue
         try:
             os.killpg(pgid, signal.SIGTERM)
             outcome = "SIGTERM"
@@ -363,6 +406,45 @@ def cut_strays(strays: list[dict]) -> list[dict]:
                 pass
         done.append({"pgrp": pgid, "outcome": outcome})
     return done
+
+
+def _kill_one(pid: int) -> str | None:
+    """SIGTERM, then SIGKILL if it is still there. Returns an outcome string, or None if gone."""
+    try:
+        os.kill(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        return None
+    except PermissionError:
+        return f"pid {pid} refused: not our process"
+    for _ in range(10):
+        time.sleep(0.1)
+        if not _pid_alive(pid):
+            return f"pid {pid} SIGTERM"
+    try:
+        os.kill(pid, signal.SIGKILL)
+    except (ProcessLookupError, PermissionError):
+        pass
+    return f"pid {pid} SIGKILL"
+
+
+def _pid_alive(pid: int) -> bool:
+    return Path(f"/proc/{pid}").exists()
+
+
+def _unused_pgid() -> int | None:
+    """Sebuah pgid yang pasti kosong, supaya uji keputusan grup tidak pernah melukai proses nyata.
+
+    Diambil dari ujung atas rentang PID kernel: nomor di sana belum pernah dialokasikan sejak boot,
+    jadi sinyal yang salah alamat mati dengan ProcessLookupError alih-alih membunuh orang lain.
+    """
+    try:
+        pid_max = int(Path("/proc/sys/kernel/pid_max").read_text().strip())
+    except (OSError, ValueError):
+        return None
+    for candidate in range(pid_max - 2, max(2, pid_max - 64), -1):
+        if not _group_alive(candidate) and not _pid_alive(candidate):
+            return candidate
+    return None
 
 
 def _group_alive(pgid: int) -> bool:
@@ -400,18 +482,17 @@ def run_grouped(cmd: list[str], timeout: float, *, stdin: bytes | None = None,
     )
     try:
         out, err = child.communicate(input=stdin, timeout=timeout)
+        # The success path sweeps too. A CLI that exits 0 after daemonising a worker leaves that
+        # worker in this very group, and the group outlives its leader: the contract is "cut when
+        # the answer has been read", not "cut when the answer timed out". Named as finding 4 of the
+        # independent audit of 2026-10-07.
+        _sweep_group(child.pid)
         if text:
             out = (out or b"").decode("utf-8", "replace")
             err = (err or b"").decode("utf-8", "replace") if err is not None else None
         return subprocess.CompletedProcess(cmd, child.returncode, out, err)
     except subprocess.TimeoutExpired as exc:
-        for sig in (signal.SIGTERM, signal.SIGKILL):
-            try:
-                os.killpg(child.pid, sig)
-            except (ProcessLookupError, PermissionError):
-                break
-            if sig == signal.SIGTERM:
-                time.sleep(0.5)
+        _sweep_group(child.pid)
         try:
             child.wait(timeout=5)
         except subprocess.TimeoutExpired:
@@ -422,22 +503,57 @@ def run_grouped(cmd: list[str], timeout: float, *, stdin: bytes | None = None,
         raise subprocess.TimeoutExpired(cmd, timeout, output=partial,
                                         stderr=exc.stderr or b"") from None
     except BaseException:
-        try:
-            os.killpg(child.pid, signal.SIGKILL)
-        except (ProcessLookupError, PermissionError):
-            pass
+        _sweep_group(child.pid, immediate=True)
         raise
+
+
+def _sweep_group(pgid: int, immediate: bool = False) -> None:
+    """SIGTERM then SIGKILL to a process group, swallowing the honest answers.
+
+    ProcessLookupError means the group is already empty, which is the normal outcome and not a
+    failure worth raising into a caller that just wanted a probe. PermissionError means it belongs
+    to someone else; the stray sweep reports that instead of retrying.
+
+    Membership is checked before signalling, not `/proc/<pgid>`: after the leader we started is
+    reaped, the directory is gone while the abandoned worker is still in that group, and a leader
+    directory test would skip exactly the case this exists for. It also keeps a reused PID from
+    being signalled by accident in the common case where nothing is left.
+    """
+    if pgid <= 1 or not _group_alive(pgid):
+        return
+    signals = (signal.SIGKILL,) if immediate else (signal.SIGTERM, signal.SIGKILL)
+    for sig in signals:
+        try:
+            os.killpg(pgid, sig)
+        except (ProcessLookupError, PermissionError):
+            return
+        if sig == signal.SIGTERM and len(signals) > 1:
+            for _ in range(6):
+                time.sleep(0.1)
+                if not _group_alive(pgid):
+                    return
 
 
 PROBE_TOKEN = "31337"
 
 
+def probe_token() -> str:
+    """Token unik per berjalan, bukan konstanta yang tertulis di berkas ini.
+
+    `_probe_survivors` mencocokkan cmdline, dan konstanta '31337' juga hidup di teks sumber ini —
+    shell mana pun yang sedang membaca berkasnya dihitung sebagai cucu yang bocor. Uji Rust
+    kehilangan tesnya karena sebab yang sama pada 2026-10-07.
+    """
+    return f"{os.getpid()}{PROBE_TOKEN}"
+
+
 def _probe_cmd(body: str) -> list[str]:
-    return ["sh", "-c", f"sleep {PROBE_TOKEN} & {body}"]
+    return ["sh", "-c", f"sleep {probe_token()} & {body}"]
 
 
 def _probe_survivors() -> list[int]:
-    return sorted(p["pid"] for p in read_processes().values() if PROBE_TOKEN in p["cmdline"])
+    want = probe_token()
+    return sorted(p["pid"] for p in read_processes().values() if want in p["cmdline"])
 
 
 def selftest() -> int:
@@ -483,7 +599,88 @@ def selftest() -> int:
         return 1
     print("  ✓ perintah yang selesai normal tetap mengembalikan output apa adanya")
 
+    # Jalur SUKSES harus menyapu grup juga. Temuan 4 audit independen 2026-10-07: pemotongan hanya
+    # terjadi di blok timeout, padahal CLI yang exit 0 setelah me-daemon-kan worker meninggalkan
+    # grup tanpa pemimpin — dan grup itulah yang memegang RSS sampai sweep berikutnya sempat jalan.
+    run_grouped(["sh", "-c", f"sleep {probe_token()} >/dev/null 2>&1 & exit 0"], timeout=10)
+    time.sleep(0.2)
+    left = _probe_survivors()
+    for pid in left:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+    if left:
+        print(f"  ✗ {len(left)} cucu lolos dari jalur sukses run_grouped: {left}")
+        return 1
+    print("  ✓ worker yang ditinggalkan perintah sukses ikut dipotong (bukan hanya yang timeout)")
+
+    # Temuan 1: daftar pane yang tidak terbaca tidak boleh diterjemahkan menjadi "tidak ada yang
+    # persisten", karena itu mengubah seluruh isi workspace operator menjadi yatim yang layak CUT.
+    saved_socket = TMUX_SOCKET
+    globals()["TMUX_SOCKET"] = f"tidak-ada-{probe_token()}"
+    try:
+        blind = audit(cut_now=True)
+    finally:
+        globals()["TMUX_SOCKET"] = saved_socket
+    if blind["ok"] or blind["persistent"] is not None:
+        print("  ✗ tmux yang gagal terbaca dilaporkan sebagai set persisten yang sah")
+        return 1
+    if blind["strays"] or blind["cut"]:
+        print(f"  ✗ tanpa daftar pane ada yang dipotong: {len(blind['strays'])} yatim, "
+              f"{len(blind['cut'])} tindakan")
+        return 1
+    if not blind["in_flight"]:
+        print("  · audit buta tidak menemukan proses engine sama sekali — tidak ada yang dibuktikan")
+        return 1
+    print(f"  ✓ daftar pane tak terbaca → ok=false, {len(blind['in_flight'])} proses ditahan, "
+          "0 dipotong (unknown bukan kosong)")
+
+    # Kontrol untuk temuan 1: bahayanya nyata, bukan khayalan penjaga. roots={} diperiksa TANPA
+    # cut_now, jadi tidak ada sinyal yang dikirim — cukup untuk membuktikan bahwa satu-satunya hal
+    # yang menahan pane adalah keputusan None di atas.
+    real_roots = pane_roots() or {}
+    if len(real_roots) >= 3:
+        empty_keep = persistent_pids(read_processes(), {})
+        victims = [pid for pid in real_roots.values() if pid not in empty_keep]
+        if not victims:
+            print("  ✗ kontrol tumpul: pane akar tetap terlindungi walau daftar pane kosong")
+            return 1
+        print(f"  ✓ kontrol terbukti: dengan roots={{}} pane {victims} akan jadi yatim — "
+              "inilah yang dicegah oleh None")
+
+    # Temuan 2: killpg menjangkau SEMUA anggota grup, termasuk pid yang seharusnya persisten. Yatim
+    # yang lolos dari pane lewat re-parent masih membawa PGID pane-nya, jadi grup itu tidak boleh
+    # dipotong utuh; pemotongan menyempit ke PID yatimnya saja. Dua bentuk diuji: keputusan per grup
+    # dengan pgid yang dipastikan bebas (tidak ada proses nyata yang tersentuh), dan satu proses
+    # nyata yang diklaim persisten — kalau penjaga salah, proses itu mati dan ujiannya bilang begitu.
+    free = _unused_pgid()
+    if free is None:
+        print("  · tidak menemukan pgid bebas — keputusan grup berjaga tidak bisa dibuktikan")
+        return 1
+    verdicts = cut_strays([{"pid": free, "pgrp": free, "binary": "sleep", "source": "selftest",
+                            "exe": "", "rss_mb": 0.0, "age_s": 999.0, "cmdline": "sleep"}],
+                          {free}, {free: {"pgrp": free}})
+    outcome = " ".join(str(v.get("outcome", "")) for v in verdicts)
+    if "persistent set" not in outcome:
+        print(f"  ✗ pid persisten ikut masuk jalur pemotongan: {outcome}")
+        return 1
+    if _group_alive(free) or _pid_alive(free):
+        print(f"  ✗ grup bebas {free} malah tercipta oleh uji ini")
+        return 1
+    share = cut_strays([{"pid": free, "pgrp": free, "binary": "sleep", "source": "selftest",
+                         "exe": "", "rss_mb": 0.0, "age_s": 999.0, "cmdline": "sleep"}],
+                      {free + 1}, {free: {"pgrp": free}, free + 1: {"pgrp": free}})
+    outcome2 = " ".join(str(v.get("outcome", "")) for v in share)
+    if "per PID" not in outcome2:
+        print(f"  ✗ grup yang berbagi dengan pid persisten dipotong utuh: {outcome2}")
+        return 1
+    print("  ✓ pid persisten ditolak sama sekali; grup yang berbagi diturunkan ke potong per PID")
+
     report = audit()
+    if report["persistent"] is None:
+        print("  ✗ audit normal tidak bisa membaca daftar pane — sisanya tidak bisa diuji")
+        return 1
     if not report["engine_binaries"]:
         print("  ✗ registry engine tidak terbaca — audit tidak akan tahu apa yang dihitung")
         return 1
@@ -589,6 +786,11 @@ def guard() -> int:
         print(f"  ✓ {len(engine_binaries())} biner engine hanya dipanggil lewat run_grouped")
 
     report = audit()
+    if not report["ok"]:
+        rc = 1
+        print("  ✗ daftar pane tidak terbaca — audit buta, tidak ada yang boleh dianggap bocor")
+        print(f"     {report.get('root_error')}")
+        return rc
     if report["strays"]:
         rc = 1
         print(f"  ✗ {len(report['strays'])} panggilan engine tertinggal "
@@ -611,17 +813,21 @@ def main(argv: list[str]) -> int:
     if mode == "--list":
         report = audit()
         print("=== Active Workspace (persisten) ===")
-        for pane in report["persistent"]:
+        for pane in (report["persistent"] or []):
             print(f"  {pane['pane']:<22} pid {pane['pid']}")
         if not report["persistent"]:
-            print("  (socket tmux tidak terdeteksi — audit tidak akan melindungi apa pun)")
+            print("  (socket tmux tidak terdeteksi — audit tidak akan melindungi apa pun, "
+                  "dan karena itu tidak boleh memotong apa pun)")
         print("=== binary yang dihitung sebagai panggilan engine ===")
         for binary, sources in sorted(report["engine_binaries"].items()):
             print(f"  {binary:<12} {', '.join(sources)}")
-        return 0
+        return 0 if report["ok"] else 1
     if mode in ("--audit", "--cut"):
         report = audit(cut_now=(mode == "--cut"))
         print(json.dumps(report, indent=2, ensure_ascii=False))
+        if not report["ok"]:
+            print(f"\nAUDIT BUTA: {report['root_error']}", file=sys.stderr)
+            return 1
         if not report["strays"] and mode == "--audit":
             print("\n0 panggilan yang tertinggal — tidak ada yang perlu di-CUT")
         return 0

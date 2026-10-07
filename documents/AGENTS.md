@@ -80,10 +80,24 @@ PIDs change at every boot, and a remembered list is a wrong list (§12).
   `subprocess.run(timeout=…)` kills only the direct child: measured on this workstation, one hung
   call left one grandchild alive holding its memory. `deploy_engine.sh` fails a deploy while any
   engine binary is spawned outside those two helpers, or while a stray call worker is alive.
+- The sweep runs on the **success** path too, not only on timeout. A CLI that exits 0 after
+  daemonising a worker leaves that group leaderless and resident, which is the same leak with a
+  friendlier exit code.
+- **Unknown is never treated as empty.** When the pane list cannot be read, the audit reports
+  `ok: false` and refuses to cut anything. An empty persistent set reads as "nothing here is
+  protected", and that misclassification was demonstrated live on 2026-10-07 to name the
+  operator's own Qoder and Antigravity PIDs as strays. Absence of evidence is not permission.
+- A process group is killed whole **only when no persistent PID stands in it**. A worker that
+  escaped its pane by re-parenting still carries the pane's PGID, and `killpg` on that PGID reaches
+  every process in it — including the operator's CLI. The cut then narrows to the individual stray
+  PIDs and says so.
 - Never cut by name pattern (§6 says the same about `pkill`). Cuts are PID-specific and
   group-wide. Identity is the resolved executable path, not `argv[0]`: the Qoder desktop IDE is
   also named `qoder`, and a name-only audit classified its 15 Electron processes as 2.18 GB of
   leaked workers. Killing that would be the operator's editor, not a leak.
+- Known boundary: a worker that calls `setsid()` or double-forks leaves its group and cannot be
+  reached by any PGID signal. It is caught later, by identity, at the next audit or deploy gate —
+  so the sweep must keep running, and a green audit is not proof that no such worker exists.
 - "Call worker" is not the same thing as a stray GUI window of the daemon (`--clean-orphans` in
   `deploy_engine.sh`). Two different failures, two different words.
 

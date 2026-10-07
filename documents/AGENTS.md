@@ -144,3 +144,31 @@ and translation drift is silent — a rule understood differently is a rule not 
 When you edit a file that is still in Indonesian, convert the parts you touch and say so in
 the commit message. Do not rewrite untouched sections just for language: that buries the
 actual change under noise.
+
+## 11. Architecture Map — Generated, Never Hand-Written
+
+`~/.ai-station/brain/memory/projects/ARCHITECTURE.md` is the file map of the workstation:
+folder → file → what it is for. Read it before grepping; the section that owns the behaviour
+tells you which directory to search, and folder boundaries are the design.
+
+| Need | Command |
+|---|---|
+| Rebuild the map | `bash ~/.ai-station/bin/arch_map.sh` (runs automatically at the end of every `deploy_engine.sh`) |
+| Audit documentation debt | `bash ~/.ai-station/bin/arch_map.sh --check` — exits non-zero while a mapped file has no purpose |
+
+A new file requires **no edit to the map**. It requires one line about itself, in whatever the
+file type supports:
+
+| File type | Where the purpose is read from |
+|---|---|
+| Rust | `//!` module doc as the first line of the file |
+| Python | module docstring (first line = one-sentence summary) |
+| Shell / systemd / YAML / TOML | first `#` comment after the shebang |
+| HTML | first `<!-- -->` block |
+| Markdown | first `# ` heading |
+| JSON | a top-level `"_comment"` key |
+
+Files that structurally cannot carry a comment are the only exception, and they are named with
+their reason in the `FALLBACK` table inside `bin/arch_map.sh`. Do not grow that table to dodge
+writing a real header — `"_comment"` keys parse fine in every JSON file here except ones bound
+to a typed schema.

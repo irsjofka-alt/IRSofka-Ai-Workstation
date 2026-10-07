@@ -1,3 +1,14 @@
+//! Irsofka AI Workstation daemon — one process, both the native window and the API.
+//!
+//! Two launch modes share one state: `--headless` / `--daemon` / `--server` serves
+//! only http://127.0.0.1:8999; otherwise tao + wry open `src/gui.html` and talk to
+//! the same router. Terminal panes are tmux sessions on socket `-L irsofka`, hosted
+//! by `irsofka-tabs.service` outside this process's cgroup, so restarting the daemon
+//! never kills a running CLI.
+//!
+//! This file still holds startup, config resolution, state types and the router.
+//! Reading the process table already lives in `procinfo.rs`; the remaining split is
+//! tracked in `brain/memory/projects/ARCHITECTURE.md`.
 use axum::{
     extract::{Path, Query, State},
     http::{header, HeaderValue, StatusCode},
@@ -255,6 +266,9 @@ fn default_profiles() -> HashMap<String, TabProfile> {
 }
 
 const RUNNER_SCRIPT: &str = r#"#!/usr/bin/env bash
+# run_tab.sh <tab> — resolve a tab's CLI profile, launch it, relaunch it when it exits.
+# This is the supervisor loop inside one tmux pane. Written by the daemon on every
+# start (this constant is the only source); edit it in main.rs, not in config/.
 TAB="${1:-qoder}"
 PROF="$HOME/.ai-station/config/cli_profiles.json"
 

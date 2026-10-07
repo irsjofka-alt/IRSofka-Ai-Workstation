@@ -1,4 +1,11 @@
 <!DOCTYPE html>
+<!--
+  gui.html — the whole workstation cockpit in one page, loaded by wry and by a browser.
+  Layout: engine bar and context meter on top, Active Workspace and Session Memory down
+  the left, tmux panes filling the rest, composer pinned at the bottom. Every state
+  change goes through the daemon at http://127.0.0.1:8999 — this file holds no logic of
+  its own. Text shown to the user is English; in-code comments may stay Indonesian.
+-->
 <html lang="en">
 <head>
     <meta charset="UTF-8">

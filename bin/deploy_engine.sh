@@ -49,6 +49,12 @@ if [ -f "$BIN_DST" ]; then
   cp -p "$BIN_DST" "$BIN_DST.bak-$STAMP"
   echo "🗄️  cadangan lama: $BIN_DST.bak-$STAMP"
 fi
+# Cadangan lama menumpuk ~5 MB tiap deploy dan tidak ada yang me-rollback 20 langkah.
+# Sisa 8 terbaru (±40 MB) cukup untuk membandingkan regresi; sisanya dibuang.
+ls -1t "$BIN_DST.bak-"* 2>/dev/null | tail -n +9 | while IFS= read -r old; do
+  rm -f "$old"
+  echo "🧹 cadangan usang dihapus: $(basename "$old")"
+done
 install -m 0755 "$BIN_SRC" "$BIN_DST"
 echo "📦 biner baru terpasang ($(stat -c %s "$BIN_DST") byte, build $(stat -c %y "$BIN_SRC" | cut -d. -f1))"
 
@@ -139,6 +145,14 @@ for k,t in (d.get('tabs') or {}).items():
     s=t.get('session') or {}
     print(f\"  {k:<12} alive={t['alive']} cwd={t['live_cwd']} model_cmd={t['model_in_command'] or '-'} sesi={(s.get('session_id') or '-')[:8]}\")
 " || echo "  (gagal membaca workspace)"
+
+# Peta struktur ikut segar setiap deploy: berkas baru muncul sendiri di
+# brain/memory/projects/ARCHITECTURE.md, tanpa ada yang perlu mengingatnya.
+if [ -f "$HOME/.ai-station/bin/arch_map.sh" ]; then
+  echo
+  echo "=== peta struktur ==="
+  bash "$HOME/.ai-station/bin/arch_map.sh" | sed 's/^/  /' || echo "  (peta gagal dibangkitkan — bukan penyebab deploy gagal)"
+fi
 
 if [ "$CLEAN_ORPHANS" = "1" ]; then
   echo

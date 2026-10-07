@@ -1,6 +1,6 @@
 # 🗺️ Roadmap — Irsofka AI Workstation
 
-Latest status: **October 6, 2026.** Every verified milestone includes reproducible evidence;
+Latest status: **October 7, 2026.** Every verified milestone includes reproducible evidence;
 untested components are explicitly labeled. This document consolidates and supersedes
 `ai_workstation_master_plan.md` and `PROJECT_SUMMARY_IRSOFKA_AI_WORKSTATION.md` along with `README.md`.
 
@@ -47,7 +47,7 @@ Verified improvements:
 ## F6 — Cross-Verification Ecosystem 🟡
 
 Completed:
-- `ai-station verify` — Bidirectional verification between Qoder and Gemini. Verified: Gemini rejects invalid claims and validates sound logic referencing exact source lines (`main.rs:1384`, `1426-1431`).
+- `ai-station verify` — Bidirectional verification between Qoder and Gemini. Verified: Gemini rejects invalid claims and validates sound logic referencing exact source lines (`main.rs:1384`, `1426-1431` — line numbers predate the Oct 7 source split).
 - `config/engines.json` — Configuration-based engine registry allowing new engines without code modifications.
 - Message box `ai_message` + MCP tools `ask_peer` / `check_messages` / `resolve_message`.
 - `local_llm.py` — Tri-guard GPU resource management with VRAM safety gates and CPU/RAM fallback.
@@ -66,6 +66,27 @@ Pending:
 - ✅ **Zero-response bug resolved:** Set `num_ctx=12288`, `num_predict=1200`, and `think=false` for local verification models to prevent reasoning token starvation.
 - ✅ **Symlink guard verified:** Fixed symlink nesting bug (`ln -sfn`) with directory safety guards.
 - ✅ **Handoff git tracking corrected:** Accurate repository detection relative to `~/.ai-station` root directory.
+
+### Verified Milestones (Oct 7)
+
+- ✅ **Daemon source split by domain:** `main.rs` reduced from 2,261 to 234 lines. Startup, window and
+  the router table are all that remains; behaviour moved to `paths`, `profile`, `terminal`, `spool`,
+  `probe`, `engineinfo`, `save_state`, `procinfo` and `api/{workspace,engine,stats,terminal,desktop,daemon,static_files}`.
+  Release build: zero warnings. Verified live after deploy — `/api/cli/config` 200, `/api/screenshot/latest`
+  772 KB, `/api/term/history` 512 KB, GPU/RAM/disk populated, three tabs `alive`, `db_engine: POSTGRESQL`.
+- ✅ **Two portability defects closed during the move:** the PostgreSQL default user was a compiled-in
+  constant (`"irsofka"`) that made foreign clones attempt login with an account that is not theirs; and
+  `count()` interpolated table names into SQL without validation.
+- ✅ **Generated architecture map:** `bin/arch_map.sh` writes `brain/memory/projects/ARCHITECTURE.md`
+  (folder → file → purpose), reading each purpose from the file's own header comment — no second copy to
+  drift. 68 files mapped, 0 undocumented; refreshed at the end of every deploy; `--check` exits non-zero
+  on undocumented files. Contract §11 records the rule for new files.
+- ✅ **Memory restore briefing corrected:** duplicate `handoff_auto_*` rows no longer crowd out real
+  memory; empty handoffs are neither written nor displayed; session id recovered from the transcript
+  filename when the hook payload omits it; budget raised so the briefing no longer truncates its own
+  pointer lines.
+- ✅ **Binary backup rotation:** `deploy_engine.sh` keeps the 8 newest backups; `bin/` dropped from
+  114 MB to 50 MB.
 
 ## F7 — Creative Studio ⬜
 

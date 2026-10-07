@@ -1,95 +1,81 @@
-# 🛠️ Katalog Perkakas Workstation
+# 🛠️ Workstation Toolset Catalog
 
-**Direktori:** `~/.ai-station/tools/` — ini yang ikut repo.
-**Host referensi:** Pop!_OS 24.04 LTS (COSMIC Desktop, Wayland), PostgreSQL 16.
-**Yang melayani port 8999 adalah daemon Rust** (`engine-rust/`, biner
-`irsofka-station-core`), bukan skrip Python di folder ini.
+**Directory:** `~/.ai-station/tools/` — tracked in the repository.
+**Reference Host:** Pop!_OS 24.04 LTS (COSMIC Desktop, Wayland), PostgreSQL 16.
+**Port 8999 is served by the Rust daemon** (`engine-rust/`, binary `irsofka-station-core`),
+not Python scripts in this folder.
 
-Setiap perkakas punya `--help` sendiri; dokumen ini hanya bilang **kapan** suatu perkakas
-dipakai dan **apa yang dijaminnya**, supaya mesin tidak menebak dari nama berkas.
+Every tool provides its own `--help` flag; this document specifies **when** to use a tool and
+**what guarantees it provides**, preventing engines from guessing behavior from filenames.
 
 ```
 tools/
-├── db_state.py                adapter penyimpanan dua engine
-├── session_ingestor.py        perekam jejak nyata ke SQL
-├── mcp_workstation_local.py   server MCP (13 tool) untuk semua CLI
-├── cross_verify.py            satu AI mengaudit pekerjaan AI lain
-├── local_llm.py               pemanggil Ollama yang tidak menahan GPU
-├── parallel_tri_engine.py     dispatcher tiga engine paralel
-├── incident_recorder.py       penghitung kegagalan → skill otomatis
-├── wayland_actor.py           screenshot & input di COSMIC/Wayland
-├── brain_bridge.py            penaut memori/skill ke workspace proyek
-└── model_check.py             penilai kelayakan model lokal
+├── db_state.py                Dual-engine database storage adapter (PostgreSQL / SQLite)
+├── session_ingestor.py        Records verified CLI actions and turns to SQL
+├── mcp_workstation_local.py   MCP server (13 tools) shared across all CLIs
+├── cross_verify.py            Auditing tool for cross-engine peer verification
+├── local_llm.py               Ollama invoker enforcing strict GPU discipline
+├── parallel_tri_engine.py     Parallel tri-engine dispatcher
+├── incident_recorder.py       Failure aggregator triggering automated skill creation
+├── wayland_actor.py           Wayland / COSMIC desktop screenshots & input automation
+├── brain_bridge.py            Links brain memory & skills to project workspaces
+└── model_check.py             Local LLM benchmark and validation utility
 ```
 
-## Isi
+## Tool Documentation
 
-### `db_state.py` — satu pintu ke memori faktual
-PostgreSQL primer, SQLite cadangan. `get_db_connection()` mengembalikan pasangan
-`(koneksi, 'POSTGRESQL'|'SQLITE')` dan pemakai **wajib** memakai placeholder yang cocok —
-di sinilah beberapa kegagalan tulis terjadi ketika dua basis data dianggap sama.
-Dijalankan langsung (`python3 tools/db_state.py`) akan memanggil `init_db()` dan mencetak
-engine aktif. Tabel inti: `action_log`, `world_memory`, `quest_tasks`, `session_turns`,
-`incident_log`, `skills_inventory`, `ai_message`, `player_profile`.
+### `db_state.py` — Single Gateway to Factual Memory
+PostgreSQL primary, SQLite fallback. `get_db_connection()` returns a tuple `(connection, 'POSTGRESQL'|'SQLITE')`
+and callers **must** utilize the corresponding parameter syntax. Running directly (`python3 tools/db_state.py`)
+invokes `init_db()` and reports the active database engine. Core tables: `action_log`, `world_memory`,
+`quest_tasks`, `session_turns`, `incident_log`, `skills_inventory`, `ai_message`, `player_profile`.
 
-### `session_ingestor.py` — jejak, bukan kesan
-`watch` memantau log sesi Qoder dan menulis tiap prompt/perintah/jawaban ke SQL; `snapshot`
-menulis handoff mekanis; `sweep_failures` menghitung kegagalan per `error_signature`
-(path direduksi ke basename supaya kegagalan identik menumpuk di satu hitungan, bukan
-menyebar jadi banyak insiden palsu).
+### `session_ingestor.py` — Real Actions, Not Assumptions
+`watch` monitors Qoder CLI session logs and writes prompts, commands, and responses to SQL;
+`snapshot` writes mechanical handoff state; `sweep_failures` calculates error recurrence grouped by
+`error_signature` (paths sanitized to basenames to aggregate identical failures into single signatures).
 
-### `mcp_workstation_local.py` — tangan AI ke mesin
-13 tool: `take_screenshot_wayland`, `get_hardware_telemetry`, `query_workstation_db`,
+### `mcp_workstation_local.py` — Workstation Hands & Eyes
+13 tools: `take_screenshot_wayland`, `get_hardware_telemetry`, `query_workstation_db`,
 `update_quest_task`, `send_desktop_notification`, `control_system_volume`, `read_terminal`,
 `send_to_terminal`, `refresh_workstation_ui`, `restart_workstation_daemon`, `ask_peer`,
-`check_messages`, `resolve_message`. Server ini wajib menjawab **setiap** request MCP —
-`resources/list`, `prompts/list`, `ping` termasuk. Versi dulu diam pada metode yang tidak
-diketahui, dan karena itu Antigravity berhenti memuat tool sama sekali.
+`check_messages`, `resolve_message`. Responds to all standard MCP RPC calls (`resources/list`,
+`prompts/list`, `ping`).
 
-### `cross_verify.py` — verifikasi lintas mesin
-Membaca `config/engines.json` (tidak ada engine yang di-hardcode di sini). Tiga transport:
-`pane` (tab tmux yang hidup — cepat, dan memakai sesi yang sudah login), `cli` (spawn proses
-baru), `ollama` (model lokal). `VERDICT:` diambil dari kemunculan **terakhir**, karena
-scrollback pane menyimpan verdict lama; mengambil yang pertama memberi hasil salah yang
-terlihat benar. Engine yang tidak ada dilaporkan `UNAVAILABLE`.
+### `cross_verify.py` — Cross-Engine Peer Verification
+Reads `config/engines.json`. Three transports: `pane` (live tmux tab — fast, reuses logged-in session),
+`cli` (spawns new sub-process), `ollama` (local model). `VERDICT:` is extracted from the **latest**
+occurrence to prevent stale scrollback contamination. Offline engines report `UNAVAILABLE`.
 
-### `local_llm.py` — disiplin GPU yang bisa dijalankan
-Tiga penjaga: gerbang VRAM sebelum muat (`min_free_mib` dari registry), `keep_alive=0` supaya
-model tidak tertahan lima menit, dan `ollama stop` + periksa VRAM benar-benar kembali (cetak
-⚠ kalau tidak). Tanpa GPU cukup, jalankan di CPU/RAM (`--cpu`, `options.num_gpu=0`).
-`--status` menjelaskan apa yang menghalangi sekarang.
+### `local_llm.py` — Enforced GPU Discipline
+Tri-guard protection: VRAM safety gate before loading (`min_free_mib` from registry), `keep_alive=0`
+to prevent lingering memory usage, and `ollama stop` with verified VRAM recovery. If VRAM is
+insufficient, executes on CPU/RAM (`--cpu`, `options.num_gpu=0`). `--status` details current GPU holders.
 
-### `parallel_tri_engine.py` — tiga engine sekaligus
-Dispatcher paralel yang **membaca registry yang sama** dengan `cross_verify.py`. Batas waktu
-lama 120 detik terbukti menghasilkan laporan `FAILED` palsu (satu giliran kerja Qoder yang sah
-bisa belasan menit), sekarang `STATION_TASK_TIMEOUT` default 1800. `TIMEOUT`, `UNAVAILABLE`,
-dan `FAILED` adalah status berbeda dan tidak pernah dilebur.
+### `parallel_tri_engine.py` — Concurrent Tri-Engine Dispatcher
+Parallel dispatcher sharing the engine registry with `cross_verify.py`. Default task timeout is 1800s.
+Statuses `TIMEOUT`, `UNAVAILABLE`, and `FAILED` are strictly distinguished.
 
-### `incident_recorder.py` — kegagalan yang berulang jadi pelajaran
-Hitungan per `error_signature` masuk ke `incident_log`; pada kelipatan 5x ia menulis
-`brain/skills/learned/<signature>.md`, mendaftar skill di `skills_inventory`
-(`auto_learned = TRUE`), dan menandai insiden `resolved`. Tanpa pendaftaran ke SQL, skill
-"terbelajar" hanya ada sebagai teks yang tidak pernah dihitung oleh siapa pun.
+### `incident_recorder.py` — Recurrent Errors to Learned Skills
+Error counts per `error_signature` are logged to `incident_log`. On 5x multiples, it writes
+`brain/skills/learned/<signature>.md`, registers the skill in `skills_inventory` (`auto_learned = TRUE`),
+and marks the incident `resolved`.
 
-### `wayland_actor.py` — mata dan tangan
-Tangkap layar COSMIC/Wayland dan kirim input mouse/keyboard. Batasnya nyata: Wayland menolak
-screenshot dari proses tanpa sesi desktop, dan `ydotool` butuh akses socket uinput. Kalau keduanya gagal, jawabannya "belum terverifikasi visual", bukan "aplikasinya rusak".
+### `wayland_actor.py` — Desktop Vision & Actuation
+Captures COSMIC / Wayland screenshots and dispatches mouse/keyboard events. Operates within Wayland
+security boundaries: processes without desktop session tokens cannot capture screens, and `ydotool`
+requires uinput socket access.
 
-### `brain_bridge.py` — menautkan, tidak menyalin
-Menghubungkan workspace proyek ke `~/.ai-station/brain/` lewat berkas pointer, supaya satu
-perubahan memori cukup ditulis sekali. Menyalin isi brain ke folder proyek adalah cara tercepat mendapatkan dua AI dengan cerita berbeda.
+### `brain_bridge.py` — Link, Do Not Duplicate
+Connects project workspaces to `~/.ai-station/brain/` via pointer files, keeping memory updates
+centralized in a single place.
 
-### `model_check.py` — penilai model sebelum menempati disk
-Menjawab dengan angka, bukan perasaan: apakah satu model Ollama **layak dipertahankan**.
-Diukur: jawaban tidak kosong, puncak VRAM, apakah GPU benar-benar dilepas sesudahnya
-(`ollama ps` kosong), VRAM kembali ke awal, dan kecepatan token/detik. Keluaran akhirnya
-berisi keputusan: pertahankan, atau `ollama rm`. Dipakai tiap kali menambah tier ke
-`config/engines.json`.
+### `model_check.py` — Empirical Model Validation
+Evaluates whether an Ollama model is **worth retaining** on disk. Measures non-empty output, peak VRAM,
+verified GPU release (`ollama ps` empty), returned VRAM, and tokens/sec generation speed. Outputs clear
+verdicts: retain or remove via `ollama rm`.
 
-## Yang tidak ada di daftar ini, dan alasannya
+## Excluded Tools & Historical Context
 
-`tools/pty_station_server.py` (server Python lama) masih ada di mesin ini sebagai arsip
-lokal dan di-gitignore. Ia **digantikan** `engine-rust/src/main.rs`; dokumen lama sempat
-menuliskannya sebagai `[CORE]`, yang membuat orang mengira systemd menghidupkan skrip
-Python itu di port 8999. Kalau kamu menemukan berkas itu: jangan dijalankan, dan jangan
-dijadikan rujukan.
+`tools/pty_station_server.py` (legacy Python server) is archived locally and gitignored. It is
+superseded by `engine-rust/src/main.rs`. Never run or reference the legacy Python server script.

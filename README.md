@@ -1,56 +1,54 @@
 # Irsofka AI Workstation
 
-Konsol orkestrasi AI untuk Pop!_OS 24.04 COSMIC (Wayland). Satu daemon Rust meng-host
-beberapa CLI AI interaktif di dalam terminal yang hidup di tmux, menampilkannya pada satu
-jendela desktop native, dan mencatat **setiap** aksi ke basis data — supaya sesi bisa
-dipulihkan setelah apa pun yang memutusnya.
+An AI orchestration console for Pop!_OS 24.04 COSMIC (Wayland). A single Rust daemon hosts
+multiple interactive AI CLIs inside persistent tmux terminals, presents them in a single
+native desktop window, and records **every** action to a relational database — ensuring sessions
+can be recovered after any interruption.
 
-Bukan IDE. Tidak ada editor, pohon berkas, atau debugger di sini. Fokusnya: beberapa mesin
-AI bekerja bersamaan, saling memverifikasi, dan semuanya meninggalkan jejak yang bisa dibaca
-kembali.
+This is not an IDE. There is no built-in text editor, file tree, or debugger. The focus is:
+multiple AI engines working concurrently, cross-verifying each other, and leaving an immutable
+audit trail that can be recovered at any time.
 
-## Instal
+## Installation
 
-Panduan lengkap dan berurutan ada di **[INSTALL.md](INSTALL.md)** — prasyarat, cara memasang
-dua CLI AI tanpa mengotori `$HOME`, workspace bersama, database, unit systemd, dan cara
-memeriksa bahwa semuanya benar-benar hidup. Ringkasnya:
+A complete, step-by-step setup guide is available in **[INSTALL.md](INSTALL.md)** — prerequisites,
+installing AI CLIs without cluttering `$HOME`, shared workspace setup, database configuration,
+systemd user units, and verification steps. Summary:
 
 ```bash
-# 1. CLI yang di-host (installer resmi; sebaiknya dibaca dulu sebelum dieksekusi)
+# 1. Hosted CLIs (official installers; inspect before executing)
 curl -fsSL https://qoder.com/install | bash
 curl -fsSL https://antigravity.google/cli/install.sh | bash
 
-# 2. Workstation-nya
+# 2. Clone the workstation repository
 git clone https://github.com/irsjofka-alt/IRSofka-Ai-Workstation.git ~/.ai-station
 ```
 
-Kalau kamu memang baru mau mencoba Qoder dan tidak keberatan membantu mesin ini tetap
-berjalan, daftar lewat tautan referral ini — **1.000 kredit** saat pembayaran pertama
-dalam 30 hari:
+If you are trying Qoder for the first time and wish to support this project, you may register
+using this referral link — granting **1,000 credits** upon first payment within 30 days:
 <https://qoder.com/activities?referral_code=bBfZBkx5dhkUBQDRBYz29LOXv59SLZiB>
 
 > When your friend registers via your link and makes their first payment within 30 days,
 > you get 1,000 Credits and your friend gets 500 Credits.
 
-Tautan di atas adalah referral milik pemilik repo. Tidak ada kewajiban memakai kode apa pun
-untuk menggunakan proyek ini, dan lisensinya tetap berlaku sama persis kalau kamu mendaftar
-langsung.
+Using the referral link is entirely optional. The software and license terms are identical
+regardless of how you register.
 
-Yang **tidak** ikut ter-clone: `brain/` (memori & skill), `config/db_local.json` (kredensial),
-`logs/`, dan `engines/` (state milik CLI). Repo ini sengaja hanya membawa kode, aturan, dan
-templat — hasilnya, clone yang bersih gagal terhubung ke database secara terang-terangan
-daripada membawa password orang lain.
+What is **not** included in the git clone: `brain/` (machine memory & skills),
+`config/db_local.json` (credentials), `logs/`, and `engines/` (CLI local states). The repository
+deliberately tracks only code, rules, and templates — a clean clone will fail cleanly when
+connecting to the database rather than shipping personal credentials.
 
-## Arsitektur
+## Architecture
 
 ```
                     ┌──────────────────────────────────────┐
-  Pengguna ───────► │  jendela native (tao + wry + webkit) │
+   User ──────────► │  native window (tao + wry + webkit)  │
                     └───────────────┬──────────────────────┘
                                     │ HTTP :8999
                     ┌───────────────▼──────────────────────┐
                     │  irsofka-station-core (--headless)   │
-                    │  axum · portable-pty · spool JSONL   │
+                    │  axum · portable-pty · JSONL spool   │
                     └───┬───────────────┬──────────────┬───┘
               tmux -L irsofka           │              │
         ┌───────────────┬───────────────┐   MCP    ┌───▼────────────┐
@@ -65,28 +63,28 @@ daripada membawa password orang lain.
                     └────────────────────────────────┘
 ```
 
-Tiga lapis memori, dan itu inti proyek ini:
+Three layers of memory form the core of this system:
 
-| Lapisan | Wujud | Umur |
+| Layer | Medium | Lifespan |
 |---|---|---|
-| konteks percakapan | di dalam proses CLI | pendek, hilang saat proses mati |
-| **memori panjang** | PostgreSQL: `action_log`, `session_turns`, `world_memory`, `quest_tasks`, `incident_log`, `ai_message` | permanen, lintas-direktori & lintas-mesin |
-| grimoire | `brain/**/*.md` (rules, skills, identitas) | permanen, dibaca manusia & AI |
+| Conversation context | In-memory inside CLI process | Ephemeral, lost when process exits |
+| **Long-term memory** | PostgreSQL: `action_log`, `session_turns`, `world_memory`, `quest_tasks`, `incident_log`, `ai_message` | Permanent, cross-directory & cross-engine |
+| Grimoire | `brain/**/*.md` (rules, skills, identity) | Permanent, readable by human & AI |
 
-## Peta direktori
+## Directory Map
 
 ```
-bin/            daemon launcher, CLI hub `ai-station`, deploy, cadangan & pemulihan
-engine-rust/    sumber Rust: daemon + GUI (axum, portable-pty, tao, wry)
-tools/          ingestor log→SQL, server MCP, verifier lintas-mesin, local LLM, adapter DB
-hooks/          penegak keselamatan sesi + pencatat handoff otomatis
-config/         engines.json (registry mesin), slots.yaml; sisanya dihasilkan saat startup
-~/runtime/      DI LUAR $HOME: cache, data, toolchain, hasil install, backups/
+bin/            daemon launcher, `ai-station` CLI hub, deployment, backup & restore scripts
+engine-rust/    Rust source: daemon + GUI (axum, portable-pty, tao, wry)
+tools/          log→SQL ingestor, MCP server, cross-engine verifier, local LLM, DB adapter
+hooks/          session safety guards + automated handoff recorder
+config/         engines.json (registry), slots.yaml; runtime files generated at startup
+~/runtime/      OUTSIDE $HOME: cache, data, toolchains, package installs, backups/
 ```
 
-## Menjalankan
+## Running the Workstation
 
-Butuh: Rust (diuji 1.99), PostgreSQL 16 (atau fallback SQLite otomatis), `tmux`,
+Requirements: Rust (tested on 1.99), PostgreSQL 16 (or automatic SQLite fallback), `tmux`,
 `python3` + `psycopg2`.
 
 ```bash
@@ -95,123 +93,123 @@ install -m 0755 target/release/irsofka-station-core ~/.ai-station/bin/
 ~/.ai-station/bin/launch_gui.sh
 ```
 
-Unit systemd user: `irsofka-ai-workstation` (daemon), `irsofka-tabs` (server tmux, di luar
-cgroup daemon), `irsofka-action-log` (ingestor log→SQL), `irsofka-memory-backup` (timer).
+Systemd user units: `irsofka-ai-workstation` (daemon), `irsofka-tabs` (tmux server, isolated
+outside daemon cgroup), `irsofka-action-log` (log→SQL ingestor), `irsofka-memory-backup` (timer).
 
-### Kredensial (tidak ada di repo)
+### Database Credentials (Not Tracked in Git)
 
-Koneksi PostgreSQL dibaca berjenjang: variabel lingkungan → `config/db_local.json` → bawaan
-tanpa password.
+PostgreSQL credentials resolve in order: environment variables → `config/db_local.json` →
+default local trust socket.
 
 ```bash
 cat > ~/.ai-station/config/db_local.json <<'JSON'
-{ "host": "localhost", "port": 5432, "user": "isi_user_anda",
-  "password": "isi_password_anda", "dbname": "irsofka_ai_workstation" }
+{ "host": "localhost", "port": 5432, "user": "your_username",
+  "password": "your_password", "dbname": "irsofka_ai_workstation" }
 JSON
 chmod 600 ~/.ai-station/config/db_local.json
 ```
 
-Hasil clone tanpa berkas ini gagal terhubung secara terang-terangan, bukan ikut membawa
-password orang lain. Identitas pemilik juga dari lingkungan: `STATION_OWNER_NAME`,
+A clean clone without this file will fail connection openly rather than leaking credentials.
+Station owner identities also resolve via environment: `STATION_OWNER_NAME`,
 `STATION_EMAIL_QODER`, `STATION_EMAIL_ANTIGRAVITY`.
 
-## Tab tidak mati saat daemon restart
+## Tabs Survive Daemon Restarts
 
-Tab berjalan di `tmux -L irsofka`, bukan sebagai anak daemon, dan `run_tab.sh` menambah
-`--continue` bila `cli_profiles.json` menyalakan `continue_session`.
+Tabs run under `tmux -L irsofka`, completely decoupled from the daemon cgroup. `run_tab.sh`
+automatically appends `--continue` when `cli_profiles.json` enables `continue_session`.
 
 ```bash
-curl -s localhost:8999/api/workspace | grep -o '"backend":"[a-z]*"'   # harus "tmux"
+curl -s localhost:8999/api/workspace | grep -o '"backend":"[a-z]*"'   # must return "tmux"
 tmux -L irsofka ls
 ```
 
-Perubahan `gui.html` cukup dimuat ulang (daemon membacanya dari disk tiap permintaan).
-Perubahan `main.rs` wajib build + deploy + restart daemon.
+Changes to `gui.html` are dynamically reloaded on each request.
+Changes to `main.rs` require a rebuild, deployment, and daemon restart.
 
-## Memulihkan konteks
+## Context Recovery
 
 ```bash
-ai-station recovery 40    # riwayat aksi + serah-terima, bekerja dari direktori mana pun
-ai-station handoff        # hanya handoff & quest aktif
-ai-station snapshot       # tulis handoff mekanis sekarang
+ai-station recovery 40    # action history + handoff, runnable from any directory
+ai-station handoff        # active quests and handoff summaries only
+ai-station snapshot       # write mechanical handoff snapshot immediately
 ```
 
-Hook `SessionEnd` dan `PreCompact` menulis handoff mekanis secara otomatis — jejak perintah
-yang benar-benar tereksekusi, bukan karangan AI yang sedang kehilangan konteks.
+The `SessionEnd` and `PreCompact` hooks write mechanical handoff records automatically —
+capturing real executed commands rather than hallucinated post-compaction summaries.
 
-## Verifikasi silang antar mesin
+## Cross-Engine Verification
 
-Kalau satu mesin tidak yakin soal kode, mesin lain yang memeriksa. Registry ada di
-`config/engines.json` — menambah perangkat cukup di situ.
+When one AI engine is uncertain about code, the peer engine verifies it. Registered engines
+live in `config/engines.json`.
 
 ```bash
 ai-station verify gemini --file engine-rust/src/main.rs
-ai-station verify gemini "Klaim: fungsi X aman karena Y"
-python3 tools/local_llm.py --status          # VRAM kosong, RAM tersedia, pemegang GPU
+ai-station verify gemini "Claim: Function X is safe because Y"
+python3 tools/local_llm.py --status          # inspect free VRAM, RAM, and GPU holders
 python3 tools/local_llm.py --tier verify "..."
 ```
 
-| Mesin | Peran | Catatan |
+| Engine | Role | Notes |
 |---|---|---|
-| Qoder | builder | konteks besar; jalur utama penulisan kode |
-| Antigravity / Gemini | reviewer | punya tool sendiri: membaca kode Anda sebelum memberi verdict |
-| Local LLM (Ollama) | validator | offline; tier `light`/`verify`/`heavy`. Di mesin referensi ini Ollama terpasang tapi **belum ada model di-pull**, jadi jalurnya sengaja mengembalikan `UNAVAILABLE` — bukan `COMPLETED` |
+| Qoder | Builder | Massive context window (1M); primary code implementer |
+| Antigravity / Gemini | Reviewer | Equipped with tools to inspect code before rendering verdicts |
+| Local LLM (Ollama) | Validator | Offline; tiers: `light` / `verify` / `heavy`. Returns `UNAVAILABLE` when models are not loaded |
 
-Kedua CLI memakai server MCP yang sama, jadi verifikasi berjalan **dua arah** lewat tabel
-`ai_message`: `ask_peer`, `check_messages`, `resolve_message`. Ketidaksepakatan ditandai
-`DISPUTED`, tidak ditutup diam-diam.
+Both CLIs share the same local MCP server, allowing **bidirectional** peer verification via the
+`ai_message` database table: `ask_peer`, `check_messages`, `resolve_message`. Disagreements are
+flagged as `DISPUTED`, never silently resolved.
 
-## Disiplin GPU
+## GPU Resource Discipline
 
-VRAM adalah barang rebutan (mesin grafis, compositor, UI generatif). Local LLM hanya tamu:
+GPU VRAM is shared between desktop compositor, graphical engines, and local AI models.
+Local LLMs operate under strict constraints:
 
-1. **gerbang VRAM** sebelum memuat — kalau kurang, jatuh ke CPU/RAM (`num_gpu=0`), GPU dibiarkan utuh
-2. **`keep_alive=0`** — model dibuang begitu respons selesai, bukan ditahan 5 menit
-3. **`ollama stop`** + verifikasi VRAM benar-benar kembali; kalau tidak, ia mencetak peringatan
+1. **VRAM Gate**: Verifies available VRAM before loading. If insufficient, falls back to CPU/RAM (`num_gpu=0`).
+2. **`keep_alive=0`**: Unloads models immediately after response generation rather than lingering.
+3. **`ollama stop`**: Enforces memory deallocation and asserts VRAM recovery.
 
 ```bash
-ollama ps        # harus kosong setelah verifikasi
+ollama ps        # must be empty following verification
 ```
 
-## Server MCP `local-workstation`
+## MCP Server `local-workstation`
 
-Terdaftar pada kedua CLI. 13 tool: telemetri hardware, tangkapan layar Wayland, notifikasi
-desktop, kontrol volume, baca save-state SQL, catat quest, **baca/tulis isi terminal**
-(`read_terminal` ~2 ms, `send_to_terminal`), muat ulang UI, restart daemon, dan kotak pesan
-antar-mesin.
+Registered in both AI CLIs. Exposes 13 tools: hardware telemetry, Wayland desktop screenshots,
+system notifications, volume control, SQL state queries, quest task logging, terminal PTY
+read/write (`read_terminal`, `send_to_terminal`), UI refresh, daemon restart, and inter-engine
+peer messaging.
 
-## Aturan keselamatan
+## Safety Guardrails
 
-Dua hal di bawah ini adalah penyebab sesi AI pernah hilang di sistem ini, dan kini ditegakkan
-oleh hook, bukan hanya ditulis sebagai imbauan:
+Two critical rules are enforced by hooks rather than mere guidelines:
 
-- **Jangan** `pkill -f "irsofka-station-core"` — pola itu ikut menghanguskan daemon produksi;
-  systemd menghidupkannya lagi, dan PTY di dalamnya mati bersama sesinya.
-- **Jangan** `tmux -L irsofka kill-server` — menghapus seluruh tab beserta sesi CLI di dalamnya.
+- **Never** run `pkill -f "irsofka-station-core"` — this terminates the production daemon,
+  triggering systemd respawn and killing active PTY sessions.
+- **Never** run `tmux -L irsofka kill-server` — this destroys all running AI tabs and shells.
 
-`hooks/self_preservation.py` juga memblokir penghapusan memori (`rm -rf brain/`,
-`DROP/TRUNCATE`, `DELETE` tanpa `WHERE`, `>` yang mengosongkan berkas memori) dan menolak
-lahirnya entri baru di `$HOME` — data dan hasil install menuju `~/runtime`.
-Ujinya: `hooks/test_self_preservation.py`.
+`hooks/self_preservation.py` also blocks destructive file system operations (`rm -rf brain/`,
+`DROP/TRUNCATE`, `DELETE` without `WHERE`, empty file redirects to memory files) and prevents
+unauthorized root `$HOME` creation by directing runtime artifacts to `~/runtime`.
+Verification suite: `hooks/test_self_preservation.py`.
 
-## Cadangan
+## Backups & State Preservation
 
 ```bash
-~/.ai-station/bin/station_backup.sh          # sekali jalan
+~/.ai-station/bin/station_backup.sh          # run manual backup
 systemctl --user list-timers irsofka-memory-backup.timer
-~/.ai-station/bin/station_restore.sh --check # uji restore ke DB sementara (produksi aman)
+~/.ai-station/bin/station_restore.sh --check # test restore to temporary DB (production safe)
 ```
 
-Timer tiap jam, `Persistent=true` (mengejar setelah mesin mati), retensi 24 titik per-jam +
-30 harian ke `~/runtime/backups/`. Restore selalu diuji ke database sementara sebelum
-dianggap sah.
+Automated hourly backups with `Persistent=true` catch up after power cycles, retaining 24 hourly
+and 30 daily snapshots in `~/runtime/backups/`. Restore operations are verified against a temporary
+database before acceptance.
 
-## Lisensi
+## License
 
-Kode di repo ini: **PolyForm Noncommercial License 1.0.0** — bebas dipakai, dimodifikasi, dan
-disebarkan selama bukan untuk komersial. Teks lengkap di [`LICENSE`](LICENSE).
+Code in this repository is licensed under the **PolyForm Noncommercial License 1.0.0** — free to
+use, modify, and distribute for noncommercial purposes. Full terms in [`LICENSE`](LICENSE).
 
-Aset pihak ketiga **tidak** ikut dibatasi: xterm.js (MIT) dan font Inter/JetBrains Mono
-(SIL OFL 1.1) — rinciannya di [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
+Third-party dependencies maintain their respective licenses: xterm.js (MIT) and Inter / JetBrains Mono
+fonts (SIL OFL 1.1) — see [`THIRD_PARTY_NOTICES.md`](THIRD_PARTY_NOTICES.md).
 
 > Required Notice: Copyright © 2026 irsjofka-alt

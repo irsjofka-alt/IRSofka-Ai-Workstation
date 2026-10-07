@@ -1,82 +1,75 @@
-# Templat katalog skill (`brain/skills/SKILLS.md`)
+# Skill Catalog Template (`brain/skills/SKILLS.md`)
 
-Salin berkas ini ke `~/.ai-station/brain/skills/SKILLS.md` pada mesin target, lalu isi
-baris katalognya. Sama seperti memori: yang dibawa antar mesin adalah aturan, bukan
-pengalaman.
+Copy this file to `~/.ai-station/brain/skills/SKILLS.md` on the target host and populate the catalog
+entries. As with memory: rules and templates are shared across machines, not private data.
 
-## Dua bentuk, jangan dicampur
+## Two Distinct Formats (Do Not Mix)
 
-**1. Skill workstation** — catatan cara kerja, satu topik satu file:
+**1. Workstation Skills** — operational notes, one topic per file:
 
 ```
-skills/<kategori>/<topik>.md
+skills/<category>/<topic>.md
    coding/  sysadmin/  visual/  analysis/  learned/
 ```
 
-Dibaca lewat indeks `SKILLS.md`, tidak didaftarkan ke CLI mana pun.
+Read via the `SKILLS.md` index; not directly registered as CLI tool packs.
 
-**2. Skill yang dimuat engine** — direktori dengan `SKILL.md` ber-frontmatter, dan file
-bernomor di dalamnya:
-
-```
-skills/<nama-skill>/
-  SKILL.md                      frontmatter: name, description, when_to_use + tabel index
-  01-<topik>.md                 baca kalau ...
-  02-<topik>.md
-  references/<bukti>.md         kutipan sumber, jangan dicampur dengan instruksi
-  scripts/<alat>.py            alat yang dipakai skill itu
-```
-
-Penomoran wajib dua digit dan urut. Mesin pembaca skill hanya memuat `SKILL.md`
-(lengkap) dan file bernomor (atas permintaan). Nama file yang tidak bernomor dianggap
-referensi, bukan instruksi.
-
-**Jebakan yang sudah pernah terjadi:** `description:` yang tidak diberi tanda kutip tapi
-berisi `: ` di tengah teks (mis. "Contains verified hard limits: Landscape cannot ...")
-membuat YAML frontmatter tidak terbaca, dan pack-nya **hilang diam-diam** dari daftar
-engine — tanpa pesan error. Kalau sebuah pack tidak muncul: kutip nilainya, lalu
-`python3 -c "import yaml,sys; yaml.safe_load(open(sys.argv[1]).read().split('---')[1])" SKILL.md`.
-
-## Pintu masuk per engine
-
-Satu pohon skill, dibaca semua engine. Pohonnya adalah daftar symlink:
+**2. Engine-Loaded Skills** — directories containing frontmatter-enabled `SKILL.md` and numbered reference files:
 
 ```
-~/.ai-station/engines/agents/skills/<nama-pack>/SKILL.md
-   ^ isi aslinya tetap di ~/.ai-station/brain/skills/, tidak pernah disalin
+skills/<skill-name>/
+   SKILL.md                      Frontmatter: name, description, when_to_use + table of contents
+   01-<topic>.md                 Read when...
+   02-<topic>.md
+   references/<evidence>.md      Source quotations (keep separate from instructions)
+   scripts/<tool>.py             Scripts utilized by this skill
 ```
 
-| Engine | Ia memuat skill dari | Status |
+Numbering must be two digits and sequential. Skill readers load `SKILL.md` completely, and load
+numbered files on demand. Unnumbered files are treated as supplementary reference documentation.
+
+**Past Gotcha:** Unquoted `description:` fields containing colons (e.g. `description: Contains verified limits: ...`)
+corrupt YAML frontmatter parsing, causing the pack to **silently disappear** from engine lists without
+error messages. Always quote string descriptions when containing special characters.
+
+## Entry Points per Engine
+
+A unified skill tree read by all engines, constructed from symlinks:
+
+```
+~/.ai-station/engines/agents/skills/<pack-name>/SKILL.md
+   ^ Canonical source remains in ~/.ai-station/brain/skills/, never raw copies
+```
+
+| Engine | Loaded From | Status |
 |---|---|---|
-| Qoder CLI | `~/.agents/skills/` (kunci `loadFromAgentsDirectory`, bawaan aktif) | terverifikasi: 11 pack muncul di daftar skill sesi yang sedang berjalan, tanpa respawn |
-| Antigravity/Gemini | `~/.gemini/config/plugins/station-rules/skills/` | terverifikasi: 11 pack + 7 skill bawaan = 18, ditanya langsung lewat pane tmux-nya |
-| Model lokal | tidak membaca skill; prompt dirakit `tools/cross_verify.py` dari `config/engines.json` | |
+| Qoder CLI | `~/.agents/skills/` (`loadFromAgentsDirectory`, enabled by default) | Verified: recognized across active sessions without restarts |
+| Antigravity / Gemini | `~/.gemini/config/plugins/station-rules/skills/` | Verified: recognized by global plugins |
+| Local models | Do not read skill directories; prompts assembled by `tools/cross_verify.py` | |
 
-`~/.agents` sendiri adalah symlink ke `~/.ai-station/engines/agents`, didaftarkan di
-`config/home_shims.json`. Guard `hooks/self_preservation.py` mengizinkan nama terdaftar
-**hanya** untuk bentuk `ln -s <dalam workstation atau runtime> ~/.nama`; `mkdir` atau
-redirect ke nama yang sama tetap diblokir.
+`~/.agents` is a symlink to `~/.ai-station/engines/agents`, registered in `config/home_shims.json`.
+The guard `hooks/self_preservation.py` permits symlink creation targeting workstation paths while
+blocking arbitrary folder creation.
 
-Kalau menambah pack baru: buat direktori berisi `SKILL.md` di `brain/skills/`, lalu
-tautkan satu symlink ke `engines/agents/skills/`. Jangan menaruh berkas skill langsung
-di dalam engine — itu yang membuat tiap engine punya salinan sendiri yang berbeda isi.
+When adding new packs: create the directory in `brain/skills/` containing `SKILL.md`, then symlink
+into `engines/agents/skills/`. Never place skills directly inside engine state folders.
 
-## Aturan belajar otomatis
+## Autonomous Self-Learning Protocol
 
-`tools/incident_recorder.py` menghitung kegagalan per `error_signature`. Pada kelipatan
-5x ia:
-1. menulis `skills/learned/<signature>.md`,
-2. mendaftarkannya di tabel `skills_inventory` (`auto_learned = TRUE`),
-3. menandai insidennya `resolved`,
-4. menambahkan barisnya ke indeks ini.
+`tools/incident_recorder.py` tracks failure patterns grouped by `error_signature`.
+Upon reaching 5 repeated occurrences:
+1. Generates `skills/learned/<signature>.md`,
+2. Registers the skill in table `skills_inventory` (`auto_learned = TRUE`),
+3. Marks the incident `resolved`,
+4. Appends the entry to this index.
 
-Skill otomatis tidak pernah dihapus oleh manusia tanpa jejak; kalau salah, koreksi isinya
-dan catat alasannya di dalam file itu.
+Automated skills must not be deleted without record; if inaccurate, revise their content and document
+the rationale within the file.
 
-## Selective loading
+## Selective Loading Rules
 
-1. Jangan baca katalog lalu membuka semua file. Satu tugas = satu skill.
-2. Skill lama dari mesin lain boleh dipakai sebagai pengetahuan, tapi path di dalamnya
-   jangan dipakai sebagai lokasi — petanya ada di `memory/legacy/LEGACY_MAP.md`.
-3. Katalog tanpa baris = skill tidak terdaftar. Daftarkan atau jangan tulis.
-4. Isi `skills/` tidak pernah di-push. Repo hanya membawa templat ini.
+1. Never load the entire catalog into context. One task = one skill.
+2. Legacy skills from previous hosts serve as reference knowledge; obsolete file paths within them
+   must not be accessed (consult `memory/legacy/LEGACY_MAP.md`).
+3. An unindexed skill is an undiscoverable skill. Always maintain the catalog.
+4. Contents of `skills/` are never committed to public git. The repository tracks only this template.

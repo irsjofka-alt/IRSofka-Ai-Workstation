@@ -1,45 +1,42 @@
-# `documents/` — peta masuk, bukan tempat penyimpanan
+# `documents/` — Architectural Map, Not Storage
 
-Isi folder ini adalah **templat dan aturan** untuk mengarahkan workspace AI CLI ke dalam
-workstation. Folder ini ikut ter-push ke repo publik; `brain/` tidak.
+Files in this folder provide **templates and operational rules** that route AI CLI workspaces
+into the workstation. This directory is tracked in the public git repository; `brain/` is not.
 
-Garis pemisahnya keras dan disengaja:
+The boundary is deliberate and strictly maintained:
 
-| | Repo publik (ini) | Mesin (`~/.ai-station/brain/`) |
+| | Public Repository (Here) | Local Host (`~/.ai-station/brain/`) |
 |---|---|---|
-| Berisi | aturan, templat kosong, kontrak bersama | memori, skill, insiden, handoff, catatan akun |
-| Boleh dibaca AI lain | ya | ya, lewat filesystem mesin |
-| Berisi data pribadi/kredensial | **tidak pernah** | ya, karena itu di-gitignore |
-| Dianggap state | tidak | ya |
+| Content | Rules, blank templates, shared contracts | Memory, skills, incidents, handoffs, account notes |
+| Read Access | Public | Machine local filesystem |
+| Private Data / Secrets | **Never** | Gitignored local files |
+| System State | Stateless | Stateful |
 
-Kalau kamu mengkloning repo ini ke mesin baru, folder ini **bukan** memori. Ia hanya
-memberi tahu CLI ke mana ia harus menulis. Salin templat ke mesin target, lalu arahkan
-CLI ke sana. Kalau suatu templat mulai berisi pengalaman, ia salah tempat — pindahkan
-ke `brain/`.
+When cloning this repository to a new host, this directory is **not** your memory store. It merely
+instructs CLIs where to read and write. Copy templates to the target machine, then point the CLIs
+accordingly.
 
-## Berkas di sini
+## Directory Manifest
 
-Pasang dari nol di mesin baru: lihat [`../INSTALL.md`](../INSTALL.md). Folder ini menjelaskan
-ke mana AI harus menulis; `INSTALL.md` menjelaskan cara membuat mesinnya ada.
+To install from scratch on a new machine, refer to [`../INSTALL.md`](../INSTALL.md).
 
-| Berkas | Untuk siapa | Fungsi |
+| File | Audience | Purpose |
 |---|---|---|
-| `AGENTS.md` | semua engine | kontrak bersama; menang kalau bertabrakan dengan berkas lain |
-| `QODER.md` | Qoder CLI | pointer; isinya cuma menuju `AGENTS.md` |
-| `GEMINI.md` | Antigravity/Gemini CLI | pointer yang sama |
-| `MEMORY.md` | penulis templat | templat indeks memori + aturan selective loading |
-| `SKILLS.md` | penulis templat | templat katalog skill + aturan penomoran file |
+| `AGENTS.md` | All engines | Shared contract; takes precedence over all other docs |
+| `QODER.md` | Qoder CLI | Pointer referencing `AGENTS.md` |
+| `GEMINI.md` | Antigravity / Gemini CLI | Pointer referencing `AGENTS.md` |
+| `MEMORY.md` | Template author | Memory index template + selective loading rules |
+| `SKILLS.md` | Template author | Skill catalog template + file numbering schema |
 
-## Letak sebenarnya di mesin ini
+## Canonical Host Paths
 
 ```
-workspace bersama : ~/Documents/ai-workstation/     (AGENTS.md live ada di sini)
-memori             : ~/.ai-station/brain/memory/     (indeks: MEMORY.md)
-skill              : ~/.ai-station/brain/skills/     (indeks: SKILLS.md)
-state faktual      : PostgreSQL irsofka_ai_workstation
+Shared Workspace   : ~/Documents/ai-workstation/     (Active AGENTS.md lives here)
+Memory Store       : ~/.ai-station/brain/memory/     (Indexed by MEMORY.md)
+Skill Store        : ~/.ai-station/brain/skills/     (Indexed by SKILLS.md)
+Factual State      : PostgreSQL irsofka_ai_workstation
 ```
 
-Berkas konfigurasi tool tidak boleh menyimpan pengetahuan. `~/.qoder`, `~/.qodersec`,
-`~/.qmind`, dan `~/.gemini` di mesin ini hanya symlink/shim ke
-`~/.ai-station/engines/` — supaya tidak ada dua salinan yang bisa saling
-bertentangan.
+CLI configuration folders do not store knowledge. Paths `~/.qoder`, `~/.qodersec`, `~/.qmind`,
+and `~/.gemini` on this host are symlinks/shims targeting `~/.ai-station/engines/` to prevent
+conflicting copies.

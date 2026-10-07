@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html lang="id">
+<html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
@@ -461,13 +461,13 @@
             <div class="pill">
                 <span>RAM</span> <b id="ram-info">32 GB</b>
             </div>
-            <button class="refresh-btn" onclick="refreshUI()" title="Muat ulang tampilan">🔄 Refresh UI</button>
+            <button class="refresh-btn" onclick="refreshUI()" title="Reload interface">🔄 Refresh UI</button>
             <button class="refresh-btn" style="border-color: rgba(244, 63, 94, 0.4); color: var(--accent-rose);" onclick="restartServerDaemon()" title="Restart server service">⚡ Restart Daemon</button>
         </div>
     </header>
 
     <div class="workspace">
-        <!-- Left: Eksekusi, save-state, ruang kerja, memori sesi -->
+        <!-- Left: Execution, save-state, workspace, session memory -->
         <div class="sidebar-left">
             <div>
                 <div class="section-label">Permissions & Execution</div>
@@ -478,7 +478,7 @@
                     <div id="auto-approve-indicator" class="switch-indicator">ON</div>
                 </div>
                 <div style="font-size: 0.68rem; color: var(--text-dim); margin-top: -6px; margin-bottom: 12px; line-height: 1.4;">
-                    Saat ON: Tool & pembacaan file otomatis diizinkan tanpa jeda konfirmasi di terminal.
+                    When ON: Tools & file reads are automatically permitted without confirmation pauses in the terminal.
                 </div>
             </div>
 
@@ -489,12 +489,12 @@
                     <div>📁 <b>Skills:</b> <span id="skills-count">4</span> unlocked</div>
                     <div>📁 <b>Quests:</b> <span id="quests-count">0</span> logged</div>
                     <div>🛡️ <b>Guardrails:</b> <span id="rules-count">2</span> rules active</div>
-                    <div id="db-path-badge" style="margin-top: 4px; color: var(--accent-cyan); font-family: monospace; font-size: 0.68rem;">memeriksa basis data…</div>
+                    <div id="db-path-badge" style="margin-top: 4px; color: var(--accent-cyan); font-family: monospace; font-size: 0.68rem;">checking database…</div>
                 </div>
             </div>
 
             <div>
-                <div class="section-label">Ruang Kerja Aktif</div>
+                <div class="section-label">Active Workspace</div>
                 <div class="card-aux">
                     <h4>
                         <span>Active Workspace</span>
@@ -511,7 +511,7 @@
                         <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="refreshRecovery()">🔄</button>
                     </h4>
                     <div id="recovery-box" style="font-size: 0.68rem; color: var(--text-muted); line-height: 1.5;">
-                        Memuat riwayat aksi…
+                        Loading action history…
                     </div>
                 </div>
             </div>
@@ -558,7 +558,7 @@
                 <span class="eb-engine" id="eb-engine">Qoder CLI</span>
                 <label class="eb-field"><span>Model</span>
                     <select id="model-select" class="select-input" onchange="onModelChange()">
-                        <option value="">memuat…</option>
+                        <option value="">loading…</option>
                     </select>
                 </label>
                 <label class="eb-field" id="eb-effort-wrap"><span>Reasoning Effort</span>
@@ -568,36 +568,36 @@
                 </label>
                 <label class="eb-field" id="eb-context-wrap"><span>Context Window</span>
                     <select id="context-select" class="select-input" onchange="onModelChange()">
-                        <option value="1048576">1.048.576 (1M)</option>
+                        <option value="1048576">1,048,576 (1M)</option>
                     </select>
                 </label>
                 <button class="term-btn eb-ctx" id="eb-ctx" onclick="showAgContext()" style="display:none"
-                        title="Mengetik /context ke Antigravity: menampilkan rincian token. Tutup panelnya dengan Esc.">📊 /context</button>
+                        title="Types /context to Antigravity: displays token breakdown. Close panel with Esc.">📊 /context</button>
                 <button class="term-btn eb-apply" id="eb-apply" onclick="applyProfileNow()"
-                        title="Menyimpan profil DAN spawn ulang CLI tab ini agar model baru langsung terpakai">⚡ Terapkan</button>
-                <span class="eb-usage" id="eb-usage" title="pemakaian dibaca dari state lokal">—</span>
+                        title="Save profile AND respawn this tab's CLI to apply the new model immediately">⚡ Apply</button>
+                <span class="eb-usage" id="eb-usage" title="usage read from local state">—</span>
             </div>
 
             <!-- Bottom Prompt Dispatcher -->
             <div class="prompt-bar">
                 <div class="composer-wrap">
                     <textarea id="prompt-input" class="prompt-input" rows="1" spellcheck="false"
-                        placeholder="Ketik instruksi AI… Enter untuk baris baru, Ctrl+Enter untuk mengirim"
+                        placeholder="Type AI prompt… Enter for new line, Ctrl+Enter to send"
                         oninput="autoGrowPrompt(this)" onkeydown="handleKey(event)" maxlength="6000"></textarea>
                     <div class="key-hint">
-                        <span><kbd>Enter</kbd> baris baru</span>
-                        <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> kirim ke CLI</span>
-                        <span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> kirim baris demi baris</span>
+                        <span><kbd>Enter</kbd> new line</span>
+                        <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> send to CLI</span>
+                        <span><kbd>Ctrl</kbd>+<kbd>Shift</kbd>+<kbd>Enter</kbd> send line-by-line</span>
                         <span id="composer-state" style="color: var(--accent-cyan);"></span>
                     </div>
                 </div>
                 <button class="btn-send" onclick="sendPromptToCLI()">
-                    <span>🚀 Kirim</span>
+                    <span>🚀 Send</span>
                 </button>
             </div>
             <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 4px; padding: 0 2px;">
-                💡 Ketik bebas multi-baris di atas — Enter untuk baris baru, Ctrl+Enter untuk kirim, kotak membesar mengikuti teks, maksimal 6.000 karakter.
-                Untuk mengetik langsung di layar terminal, klik pane di atas lalu ketik seperti biasa.
+                💡 Multi-line prompt composer — Enter for new line, Ctrl+Enter to send, box expands to fit text, up to 6,000 characters.
+                To type directly in the terminal, click the pane above and type as usual.
             </div>
         </div>
 
@@ -606,34 +606,34 @@
             <div class="card-aux">
                 <h4>
                     <span>Visual Eye (Wayland)</span>
-                    <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="captureScreen()">📸 Ambil</button>
+                    <button style="background: transparent; border: none; color: var(--accent-cyan); cursor: pointer; font-size: 0.72rem;" onclick="captureScreen()">📸 Capture</button>
                 </h4>
                 <div class="screen-preview" id="screen-box">
-                    <span style="font-size: 0.72rem; color: var(--text-dim);">Klik 'Ambil' untuk intip layar</span>
+                    <span style="font-size: 0.72rem; color: var(--text-dim);">Click 'Capture' to view screen</span>
                 </div>
             </div>
 
             <div class="card-aux">
                 <h4>Self-Healing Tracker</h4>
                 <div style="font-size: 0.75rem; color: var(--accent-emerald);">
-                    ● 0 Repeat Crash (Stabil)
+                    ● 0 Repeat Crashes (Stable)
                 </div>
                 <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 4px;">
-                    5x repeat trigger auto-synthesizes new skill ke workstation.db
+                    5x repeat triggers auto-synthesis of new skills into workstation.db
                 </div>
             </div>
 
             <div class="card-aux">
-                <h4>Pemulihan Ingatan</h4>
+                <h4>Context Recovery</h4>
                 <div style="font-size:.62rem;color:var(--text-dim);margin:-2px 0 6px;line-height:1.45;">
-                    Mengetik perintahnya ke CLI aktif. Dipakai saat konteks baru saja
-                    terkompaksi — sebelum menjawab apa pun, muat dulu yang masih ada.
+                    Types recall commands to active CLI. Used when context was just
+                    compacted — before answering anything, reload persistent state.
                 </div>
-                <button class="quick-btn" onclick="recallAction('sql')">🧠 Muat memori SQL-ku</button>
-                <button class="quick-btn" onclick="recallAction('quests')">📜 Apa yang sedang dikerjakan</button>
-                <button class="quick-btn" onclick="recallAction('skills')">📚 Skill &amp; memori yang terdaftar</button>
-                <button class="quick-btn" onclick="recallAction('lastwork')">🔎 10 aksi terakhirku</button>
-                <button class="quick-btn" onclick="recallAction('full')">♻️ Pulihkan penuh (recovery)</button>
+                <button class="quick-btn" onclick="recallAction('sql')">🧠 Load My SQL Memory</button>
+                <button class="quick-btn" onclick="recallAction('quests')">📜 Active Quests</button>
+                <button class="quick-btn" onclick="recallAction('skills')">📚 Registered Skills &amp; Memory</button>
+                <button class="quick-btn" onclick="recallAction('lastwork')">🔎 My Last 10 Actions</button>
+                <button class="quick-btn" onclick="recallAction('full')">♻️ Full Recovery</button>
             </div>
         </div>
     </div>
@@ -781,14 +781,14 @@
                                            context_window: context, restart: false })
                 });
                 if (!res.ok) throw new Error('HTTP ' + res.status);
-                flagProfileSaved(`✓ profil ${tab} = ${model} — berlaku saat tab spawn ulang`, false);
+                flagProfileSaved(`✓ profile ${tab} = ${model} — takes effect on tab respawn`, false);
             } catch (e) {
-                flagProfileSaved(`✗ gagal menyimpan profil ${tab}`, true);
+                flagProfileSaved(`✗ failed to save profile ${tab}`, true);
             }
         }
 
-        // Enter = turun baris (perilaku default textarea).
-        // Ctrl/Cmd+Enter = kirim. Tambah Shift = kirim baris demi baris apa adanya (untuk shell).
+        // Enter = new line (default textarea behavior).
+        // Ctrl/Cmd+Enter = send. Shift = verbatim line-by-line (for shell).
         function handleKey(e) {
             if (e.key !== 'Enter') return;
             if (e.ctrlKey || e.metaKey) {
@@ -798,13 +798,9 @@
         }
 
         function autoGrowPrompt(el) {
-            // Dulu: set height='auto' lalu ukur scrollHeight. Di WebKitGTK (jendela native
-            // ini) pengukuran itu tidak selalu menghasilkan pertambahan tinggi, sehingga
-            // kotak berhenti di ~2 baris. Sekarang tingginya DHI TUNGGAL dihitung dari jumlah
-            // baris — tidak bergantung pada cara mesin layout mengukur konten.
             const baris = (el.value.match(/\n/g) || []).length + 1;
             const perBaris = 21;                 // 0.85rem × line-height 1.55
-            const padding = 22;                  // padding atas+bawah
+            const padding = 22;                  // top + bottom padding
             const cap = Math.round(window.innerHeight * 0.60);
             const tinggi = Math.min(cap, Math.max(46, baris * perBaris + padding));
             el.style.height = tinggi + 'px';
@@ -819,17 +815,14 @@
             if (!el.value.trim()) { st.innerText = ''; return; }
             const baris = (el.value.match(/\n/g) || []).length + 1;
             const n = el.value.length;
-            // Batas ditulis terang-terangan: lebih baik pemakai tahu angka maksimalnya
-            // daripada teksnya hilang tanpa kabar di suatu titik di tengah jalan.
-            st.innerText = `${baris} baris • ${n} / 6000 karakter`
-                + (n >= 6000 ? ' — penuh' : '');
+            st.innerText = `${baris} lines • ${n} / 6000 chars`
+                + (n >= 6000 ? ' — full' : '');
             st.style.color = n >= 6000 ? 'var(--accent-rose)' : '';
         }
 
-        // Batang konteks: angkanya DIPINJAM dari baris status CLI di pane (daemon membaca
-        // 'ctx ... 53%'). Kalau barisnya tidak ketemu, kita bilang begitu — tidak mengarang.
+        // Context progress bar
         function contextBar(pct) {
-            if (pct === null || pct === undefined) return 'context: tidak terbaca dari pane';
+            if (pct === null || pct === undefined) return 'context: unreadable from pane';
             const p = Math.max(0, Math.min(100, Number(pct)));
             const blok = Math.round(p / 10);
             const bar = '█'.repeat(blok) + '░'.repeat(10 - blok);
@@ -837,23 +830,20 @@
             return `Context <span style="color:${warna}">${bar}</span> ${p}%`;
         }
 
-        // Yang dibutuhkan AI setelah konteksnya diringkas bukan semangat, tapi DATA:
-        // baris dari PostgreSQL, handoff, dan indeks skill/memori. Tombol ini mengetik
-        // perintahnya ke CLI aktif supaya sesi baru tidak mulai dengan kepala kosong.
         const RECALL = {
-            sql: 'Jalankan `python3 ~/.ai-station/tools/db_state.py` lalu baca tabel world_memory '
-                 + '(20 baris terbaru) dan quest_tasks yang IN_PROGRESS. Ringkas apa yang ada di sana; '
-                 + 'jangan mulai pekerjaan baru sebelum selesai.',
-            quests: 'Jalankan `ai-station handoff`. Sebutkan quest yang masih IN_PROGRESS, apa yang '
-                  + 'sudah selesai, dan langkah berikutnya yang tertulis di sana.',
-            skills: 'Baca HANYA dua indeks: ~/.ai-station/brain/skills/SKILLS.md dan '
-                  + '~/.ai-station/brain/memory/MEMORY.md. Daftar isinya saja, jangan buka file skill/memori '
-                  + 'sebelum tugasnya jelas. Ini aturan selective loading.',
-            lastwork: 'Jalankan `ai-station recall 10` dan ceritakan apa yang baru saja dikerjakan pada '
-                    + 'sesi ini: perintah apa, hasilnya apa, apa yang belum selesai.',
-            full: 'Jalankan `ai-station recovery 40`, baca berkas handoff terbaru di '
-                + '~/.ai-station/brain/memory/projects/, lalu laporkan: (1) sedang mengerjakan apa, '
-                + '(2) apa yang sudah diverifikasi, (3) apa yang tersisa. Jangan mulai hal baru.'
+            sql: 'Run `python3 ~/.ai-station/tools/db_state.py` and inspect the world_memory table '
+                 + '(latest 20 rows) and IN_PROGRESS quest_tasks. Summarize what is there; '
+                 + 'do not start new tasks before current work is resolved.',
+            quests: 'Run `ai-station handoff`. List quests that are IN_PROGRESS, what '
+                  + 'has been completed, and the recorded next steps.',
+            skills: 'Read ONLY two indices: ~/.ai-station/brain/skills/SKILLS.md and '
+                  + '~/.ai-station/brain/memory/MEMORY.md. Read table of contents only; do not open individual files '
+                  + 'before tasks are clarified. This is the selective loading policy.',
+            lastwork: 'Run `ai-station recall 10` and describe recent actions in '
+                    + 'this session: commands run, outcomes, and remaining tasks.',
+            full: 'Run `ai-station recovery 40`, read the latest handoff file in '
+                + '~/.ai-station/brain/memory/projects/, and report: (1) current task, '
+                + '(2) verified items, (3) remaining work. Do not start new initiatives.'
         };
 
         async function recallAction(kind) {
@@ -866,7 +856,6 @@
         }
 
         function targetEngine() {
-            // Tab aktif adalah sumber kebenaran, bukan tebakan dari nama model.
             const byTab = tabEngine(activeTab);
             if (byTab !== 'shell') return byTab;
             const sel = document.getElementById('model-select');
@@ -874,21 +863,15 @@
             return (opt && opt.getAttribute('data-engine')) || 'qoder';
         }
 
-        // Menyimpan profil saja TIDAK mengubah CLI yang sedang jalan — dan restart daemon
-        // juga tidak, karena tab hidup di tmux. Satu-satunya cara menerapkan model baru
-        // adalah spawn ulang CLI di tab itu: supervisor `while true` menyalakannya kembali
-        // dengan profil terkini.
-        // Antigravity menyimpan rincian konteks di perintah /context (dibaca dari pane,
-        // bukan dihitung ulang di sini). Panelnya ditutup dengan Esc.
         async function showAgContext() {
             try {
                 await fetch('/api/cli/run', {
                     method: 'POST', headers: { 'Content-Type': 'application/json' },
                     body: JSON.stringify({ target_cli: 'antigravity', prompt: '/context' })
                 });
-                flagProfileSaved('✓ /context terkirim ke Antigravity — tutup panelnya dengan Esc', false);
+                flagProfileSaved('✓ /context sent to Antigravity — close panel with Esc', false);
                 setTimeout(fetchStats, 2500);
-            } catch (e) { flagProfileSaved('✗ gagal mengirim /context', true); }
+            } catch (e) { flagProfileSaved('✗ failed to send /context', true); }
         }
 
         async function applyProfileNow() {
@@ -896,10 +879,10 @@
             const tab = engine === 'agy' ? 'antigravity' : (engine === 'qoder' ? 'qoder' : activeTab);
             const sel = document.getElementById('model-select');
             const model = sel ? sel.value : '';
-            if (!model) { flagProfileSaved('✗ belum ada model terpilih', true); return; }
+            if (!model) { flagProfileSaved('✗ no model selected', true); return; }
             const peringatan = tab === 'qoder'
-                ? 'Spawn ulang Qoder CLI di tab ini?\n\nSesi yang sedang berjalan akan berhenti lalu menyambung kembali (--continue) dengan model baru. Riwayat tersimpan di tmux, disk, dan PostgreSQL.'
-                : 'Spawn ulang Antigravity CLI di tab ini?\n\nSesi berjalan berhenti lalu menyambung kembali (--continue) dengan model baru.';
+                ? 'Respawn Qoder CLI in this tab?\n\nActive session will stop and reconnect (--continue) with the new model. History is preserved in tmux, disk, and PostgreSQL.'
+                : 'Respawn Antigravity CLI in this tab?\n\nActive session will stop and reconnect (--continue) with the new model.';
             if (!confirm(peringatan)) return;
             const effort = engine === 'agy' ? '' : (document.getElementById('effort-select')?.value || '');
             const context = engine === 'agy' ? '' : (document.getElementById('context-select')?.value || '');
@@ -910,10 +893,10 @@
                 });
                 const d = await res.json();
                 if (!res.ok) throw new Error('HTTP ' + res.status);
-                flagProfileSaved(d.restarted ? `✓ ${tab} di-spawn ulang dengan ${model}`
-                                             : `✓ profil ${tab} = ${model} — tab belum jalan, akan terpakai saat mulai`, false);
+                flagProfileSaved(d.restarted ? `✓ ${tab} respawned with ${model}`
+                                             : `✓ profile ${tab} = ${model} — tab not running, will apply on start`, false);
             } catch (e) {
-                flagProfileSaved('✗ gagal menerapkan ' + model, true);
+                flagProfileSaved('✗ failed to apply ' + model, true);
             }
         }
 
@@ -965,7 +948,7 @@
         }
 
         async function resetActiveSession() {
-            if (!confirm(`Batalkan / Kirim interrupt ke sesi ${activeTab.toUpperCase()}?`)) return;
+            if (!confirm(`Cancel / Send interrupt to ${activeTab.toUpperCase()} session?`)) return;
             await fetch('/api/term/reset', {
                 method: 'POST',
                 headers: {'Content-Type': 'application/json'},
@@ -978,9 +961,6 @@
                 const res = await fetch('/api/stats');
                 const d = await res.json();
 
-                // Muat ulang halaman saat ada permintaan dari luar (tombol GUI, MCP, curl).
-                // Halaman yang meminta reload dirinya sendiri, jadi tidak ada dialog sistem.
-                // Nilai awal diambil tanpa membandingkan supaya tidak reload berulang.
                 if (typeof d.ui_reload_tick === 'number') {
                     if (window.__uiTick === undefined) {
                         window.__uiTick = d.ui_reload_tick;
@@ -1008,8 +988,6 @@
 
                 document.getElementById('skills-count').innerText = d.skills_count;
                 if (document.getElementById('quests-count')) document.getElementById('quests-count').innerText = d.total_quests || 0;
-                // Active workspace dirender dari /api/workspace (cwd live tiap tab),
-                // bukan dari field phantom yang tidak pernah dikirim backend.
 
                 if (d.db_engine) {
                     const hPill = document.getElementById('header-db-pill');
@@ -1056,12 +1034,12 @@
                     const t = tabs[key] || {};
                     const dot = t.alive
                         ? '<span style="color: var(--accent-emerald);">●</span>'
-                        : '<span style="color: var(--accent-rose);">○ mati</span>';
+                        : '<span style="color: var(--accent-rose);">○ stopped</span>';
                     const sess = t.session || {};
                     const sid = (sess.session_id || '').slice(0, 8);
                     const transcript = (sess.transcript || '').split('/').pop() || '';
                     const upd = sess.last_updated
-                        ? new Date(Number(sess.last_updated) * 1000).toLocaleTimeString('id-ID') : '';
+                        ? new Date(Number(sess.last_updated) * 1000).toLocaleTimeString('en-US') : '';
                     TABLIVE[key] = {
                         model: t.model_in_command || t.profile_model || '',
                         effort: t.effort_in_command || t.profile_effort || '',
@@ -1074,12 +1052,12 @@
                         <div style="font-family:monospace; font-size:0.68rem; color:var(--accent-cyan); word-break:break-all; margin-top:3px;">
                             ${esc(t.live_cwd || '—')}
                         </div>
-                        ${t.diverged ? `<div style="font-size:0.64rem; color:var(--accent-amber); margin-top:2px;">⚠ profil menyatakan: <code>${esc(t.declared_workspace)}</code></div>` : ''}
+                        ${t.diverged ? `<div style="font-size:0.64rem; color:var(--accent-amber); margin-top:2px;">⚠ profile states: <code>${esc(t.declared_workspace)}</code></div>` : ''}
                         <div style="font-size:0.63rem; color:var(--text-dim); margin-top:3px; word-break:break-all;">
-                            jalan: ${esc(t.model_in_command || t.profile_model || '—')}${t.effort_in_command || t.profile_effort ? ' · effort ' + esc(t.effort_in_command || t.profile_effort) : ''}${t.context_in_command ? ' · ctx ' + esc(t.context_in_command) : ''}
+                            running: ${esc(t.model_in_command || t.profile_model || '—')}${t.effort_in_command || t.profile_effort ? ' · effort ' + esc(t.effort_in_command || t.profile_effort) : ''}${t.context_in_command ? ' · ctx ' + esc(t.context_in_command) : ''}
                         </div>
                         ${sid ? `<div style="font-size:0.63rem; color:var(--text-dim); margin-top:2px; word-break:break-all;">
-                            sesi ${esc(sid)} · ${esc(transcript)}${upd ? ' · ' + esc(upd) : ''}</div>` : ''}
+                            session ${esc(sid)} · ${esc(transcript)}${upd ? ' · ' + esc(upd) : ''}</div>` : ''}
                     </div>`;
                 }
                 html += `<div style="font-size:0.62rem; color:var(--text-dim); word-break:break-all;">
@@ -1087,7 +1065,7 @@
                     spool ${esc((d.spool || {}).bytes)} B → ${esc((d.spool || {}).path)}</div>`;
                 box.innerHTML = html;
             } catch (e) {
-                box.innerHTML = '<div style="font-size:0.68rem; color:var(--accent-rose);">/api/workspace tidak menjawab</div>';
+                box.innerHTML = '<div style="font-size:0.68rem; color:var(--accent-rose);">/api/workspace not responding</div>';
             }
         }
 
@@ -1103,7 +1081,7 @@
                 let html = `<div>💾 DB: <b style="color:var(--accent-emerald)">${esc(d.db_engine)}</b> · ${esc(d.error || '')}</div>`;
                 html += quest
                     ? `<div style="margin-top:4px; color:var(--accent-amber);">▶ Quest: ${esc(quest.title)}</div>`
-                    : '<div style="margin-top:4px; color:var(--text-dim);">▶ tidak ada quest aktif</div>';
+                    : '<div style="margin-top:4px; color:var(--text-dim);">▶ no active quests</div>';
                 html += mem
                     ? `<div style="font-size:0.64rem; color:var(--text-dim); margin-top:2px;">handoff: ${esc(mem.key)}</div>`
                     : '';
@@ -1115,13 +1093,12 @@
                 html += '</div>';
                 box.innerHTML = html;
             } catch (e) {
-                box.innerHTML = '<div style="color:var(--accent-rose); font-size:0.68rem;">riwayat aksi tidak tersedia</div>';
+                box.innerHTML = '<div style="color:var(--accent-rose); font-size:0.68rem;">action history unavailable</div>';
             }
         }
 
         let MODELS = null;
         let USAGE = {};
-        // Keadaan yang SEDANG berjalan per tab, dipakai supaya dropdown tidak bohong.
         let TABLIVE = {};
 
         async function refreshModels() {
@@ -1130,13 +1107,9 @@
                 MODELS = await res.json();
                 try { USAGE = await (await fetch('/api/usage')).json(); } catch (_) { USAGE = {}; }
                 renderEngineBar();
-            } catch (e) { /* biarkan bar menampilkan daftar terakhir yang diketahui */ }
+            } catch (e) { }
         }
 
-        // Tab yang aktif menentukan engine; engine menentukan daftarnya.
-        // Sebelumnya daftar model mencampur Qoder dan Antigravity dalam satu dropdown,
-        // sehingga memilih Gemini saat tab Qoder yang aktif tetap "berhasil" — lalu
-        // dispatch mengirim model yang tidak dikenal ke CLI yang salah.
         function tabEngine(tab) {
             if (tab === 'antigravity') return 'agy';
             if (tab === 'qoder') return 'qoder';
@@ -1147,7 +1120,7 @@
             if (!el) return;
             el.innerHTML = values.length
                 ? values.map(v => `<option value="${esc(typeof v === 'string' ? v : v[0])}">${esc(fmt ? fmt(v) : (typeof v === 'string' ? v : v[1]))}</option>`).join('')
-                : '<option value="">(tidak ada pilihan)</option>';
+                : '<option value="">(no options)</option>';
             if (values.length && values.some(v => (typeof v === 'string' ? v : v[0]) === keep)) el.value = keep;
         }
 
@@ -1159,15 +1132,11 @@
             const name = document.getElementById('eb-engine');
             if (name) name.textContent = engine === 'agy' ? 'Antigravity CLI' : 'Qoder CLI';
 
-            // Slot usage: hanya hal yang benar-benar bisa dibaca lokal. Kredit/point TIDAK
-            // tersedia dari `qoder status` maupun state lokal, jadi tidak pernah ditulis angka.
             const usage = document.getElementById('eb-usage');
             if (usage) {
                 if (engine === 'agy') {
                     const c = (USAGE.antigravity || {}).conversation || {};
                     const rawModel = (USAGE.antigravity || {}).last_model || '';
-                    // CLI kadang menyimpan penanda internal, bukan nama model. Menampilkan
-                    // 'MODEL_PLACEHOLDER_M319' hanya membuat panel terlihat penuh data.
                     const m = /^MODEL_PLACEHOLDER/i.test(rawModel) ? '' : rawModel;
                     usage.innerHTML = contextBar(USAGE.antigravity && USAGE.antigravity.context_pct);
                 } else {
@@ -1184,22 +1153,18 @@
             fillSelect(document.getElementById('effort-select'), efforts,
                        document.getElementById('effort-select')?.value);
 
-            // Context window hanya berarti di Qoder; agy tidak menerima flag ini.
             const ctxWrap = document.getElementById('eb-context-wrap');
             if (ctxWrap) ctxWrap.style.display = engine === 'qoder' ? '' : 'none';
-            // Nama model agy sudah memuat effortnya (…-high / …-medium / …-low), dan CLI
-            // menolak --effort bersama sebagian nama itu. Tampilkan hanya untuk Qoder.
             const ctxBtn = document.getElementById('eb-ctx');
             if (ctxBtn) ctxBtn.style.display = engine === 'agy' ? '' : 'none';
             const effWrap = document.getElementById('eb-effort-wrap');
             if (effWrap) effWrap.style.display = engine === 'qoder' ? '' : 'none';
             if (engine === 'qoder') {
                 fillSelect(document.getElementById('context-select'),
-                           [['1048576', '1.048.576 (1M)'], ['200000', '200.000'], ['128000', '128.000']],
-                           live.context || document.getElementById('context-select')?.value);
+                            [['1048576', '1,048,576 (1M)'], ['200000', '200,000'], ['128000', '128,000']],
+                            live.context || document.getElementById('context-select')?.value);
             }
 
-            // Dropdown harus mencerminkan yang berjalan, bukan option pertama di daftar.
             const ms = document.getElementById('model-select'), es = document.getElementById('effort-select');
             if (live.model && ms && [...ms.options].some(o => o.value === live.model)) ms.value = live.model;
             if (live.effort && es && [...es.options].some(o => o.value === live.effort)) es.value = live.effort;
@@ -1210,10 +1175,10 @@
         }
 
         async function restartServerDaemon() {
-            if (!confirm('Apakah Anda yakin ingin me-restart server daemon?')) return;
+            if (!confirm('Are you sure you want to restart the server daemon?')) return;
             try {
                 await fetch('/api/restart-server', {method: 'POST'});
-                alert('Server sedang di-restart. Halaman akan dimuat ulang...');
+                alert('Server daemon is restarting. The page will reload...');
                 setTimeout(() => window.location.reload(), 2000);
             } catch(e) {
                 window.location.reload();

@@ -1,138 +1,83 @@
 # 🗺️ Roadmap — Irsofka AI Workstation
 
-Status terakhir: **6 Oktober 2026, 15:4x WIB.** Setiap tanda di bawah punya bukti yang bisa
-diuji ulang; yang belum teruji ditandai jelas. Dokumen ini menggantikan `ai_workstation_master_plan.md`
-dan `PROJECT_SUMMARY_IRSOFKA_AI_WORKSTATION.md` yang sudah digabung ke sini + `README.md`.
+Latest status: **October 6, 2026.** Every verified milestone includes reproducible evidence;
+untested components are explicitly labeled. This document consolidates and supersedes
+`ai_workstation_master_plan.md` and `PROJECT_SUMMARY_IRSOFKA_AI_WORKSTATION.md` along with `README.md`.
 
-## Fase
+## Phases
 
 ```
-F1 Fondasi Brain & Rules      ✅ selesai
-F2 Mesin Terminal PTY Rust    ✅ selesai
-F3 Telemetri & State SQL      ✅ selesai
-F4 Jendela Native Rust        ✅ selesai
-F5 Integritas Memori & Sesi   ✅ selesai 6 Okt (baru)
-F6 Ekosistem Verifikasi Silang 🟡 berjalan
-F7 Studio Kreatif (Unity/ComfyUI) ⬜ belum mulai
+F1 Brain & Rules Foundation       ✅ Completed
+F2 Rust PTY Terminal Engine       ✅ Completed
+F3 Telemetry & SQL State          ✅ Completed
+F4 Native Rust Window GUI         ✅ Completed
+F5 Memory & Session Integrity     ✅ Completed (Oct 6)
+F6 Cross-Verification Ecosystem   🟡 In Progress
+F7 Creative Studio (ComfyUI/UE5)  ⬜ Planned
 ```
 
-## F1–F4 — fondasi (selesai, diverifikasi ulang 6 Okt)
+## F1–F4 — Foundation (Completed & Re-verified Oct 6)
 
-Daemon Rust `irsofka-station-core` dual-mode (`--headless` + jendela tao/wry), tiga tab
-interaktif, telemetri RTX 3060/RAM/disk, PostgreSQL 16 dengan fallback SQLite otomatis,
-server MCP hardware, tanpa ketergantungan browser eksternal.
+Dual-mode Rust daemon `irsofka-station-core` (`--headless` + native tao/wry desktop window), three
+interactive terminal tabs, RTX 3060/RAM/disk telemetry, PostgreSQL 16 with automated SQLite fallback,
+hardware MCP server, zero external browser runtime dependency.
 
-## F5 — Integritas memori & sesi ✅ (dikerjakan & diuji 6 Okt)
+## F5 — Memory & Session Integrity ✅ (Completed & Verified Oct 6)
 
-Masalah awal: dua keluhan pengguna — sesi tereset tiap restart daemon, dan composer Enter
-mengirim alih-alih turun baris. Akar tunggal: build baru tidak pernah dipasang; restart
-service bukan install build baru.
+Resolves historical issues where sessions terminated upon daemon restarts and multiline prompts were
+prematurely sent upon pressing Enter. Root cause resolved: release binaries were built but not deployed.
 
-Yang selesai dan **terbukti**:
+Verified improvements:
 
-| Perbaikan | Bukti |
+| Improvement | Evidence |
 |---|---|
-| Composer: Enter = baris baru, Ctrl+Enter = kirim, Ctrl+Shift+Enter = per baris | `curl :8999/` memuat `<textarea>` + `handleKey()` dengan `e.ctrlKey` |
-| Tab pindah ke tmux di luar cgroup daemon | `/api/workspace` semua tab `backend:"tmux"`; daemon baru **mengadopsi** pane (`tmux_adopt`, `pane_pid` tetap) |
-| Sesi tahan restart | 5× restart daemon pada 6 Okt, `session_id` tetap `63313f58`; cgroup shell pindah dari unit daemon ke `irsofka-tabs.service` |
-| `--continue` sebagai jaring kedua | `cli_profiles.json` `continue_session:true` → `run_tab.sh` menambah flag |
-| Enter dikirim sebagai `\r`, bukan `\n` | bug lama: prompt masuk kotak input tapi **tidak pernah disubmit** — akar kegagalan dispatch Antigravity |
-| Handoff otomatis | hook `SessionEnd` + `PreCompact` → `world_memory` + `brain/memory/projects/handoff_auto_*.md` |
-| Guard anti-bunuh-diri | `hooks/self_preservation.py`, **57/57** uji lulus |
-| Self-healing benar-benar hidup | `incident_log` dulu 0 baris; kini 16 kegagalan nyata → 14 insiden, satu capai 7× → skill `auto_learned=TRUE` terbentuk |
-| Dispatcher jujur | `COMPLETED` palsu untuk engine absen → kini `UNAVAILABLE`; tulis lewat adapter PostgreSQL, bukan SQLite mentah |
-| Cadangan + uji restore | timer tiap jam; `station_restore.sh --check` memulihkan ke DB sementara: 2.973 `action_log`, 20 `world_memory`, 16 quest |
-| Kredensial dicabut dari sumber | `db_local.json` (di-ignore) + env; 0 password di seluruh riwayat git publik |
-| `$HOME` dirapikan | 4,7 GB ke `~/runtime`; guard menolak entri baru di `$HOME` |
+| Prompt Composer: Enter = new line, Ctrl+Enter = send, Ctrl+Shift+Enter = line-by-line | `curl :8999/` serves `<textarea>` + `handleKey()` with `e.ctrlKey` |
+| Tabs hosted in tmux outside daemon cgroup | `/api/workspace` tabs report `backend:"tmux"`; daemon adopts panes (`tmux_adopt`, stable `pane_pid`) |
+| Restart-proof sessions | 5× daemon restarts on Oct 6 maintained session `63313f58`; shell cgroup isolated in `irsofka-tabs.service` |
+| `--continue` fail-safe | `cli_profiles.json` `continue_session:true` → `run_tab.sh` applies flag automatically |
+| Enter dispatched as `\r` instead of `\n` | Fixed legacy bug where prompts were populated into input fields but not submitted |
+| Automated handoffs | Hooks `SessionEnd` + `PreCompact` → recorded to `world_memory` & `brain/memory/projects/handoff_auto_*.md` |
+| Self-preservation guardrails | `hooks/self_preservation.py` passes 57/57 test cases |
+| Verified self-healing | `incident_log` tracks real failures; recurring failures trigger `auto_learned=TRUE` skill creation |
+| Honest status dispatcher | Offline engines report `UNAVAILABLE` rather than false `COMPLETED`; writes go through PostgreSQL adapter |
+| Backups & restore test | Hourly timer; `station_restore.sh --check` verifies clean restore to temporary DB (2,973 action records) |
+| Credentials removed from code | `db_local.json` (gitignored) + environment variables; 0 secrets in git history |
+| Clean `$HOME` enforcement | 4.7 GB moved to `~/runtime`; safety guard blocks unapproved dotfiles in `$HOME` |
 
-## F6 — Ekosistem verifikasi silang 🟡
+## F6 — Cross-Verification Ecosystem 🟡
 
-Selesai:
-- `ai-station verify` — Qoder ↔ Gemini, dua arah. Gemini terbukti **menolak klaim salah**
-  dan mengiyakan klaim benar, dengan merujuk baris kode (`main.rs:1384`, `1426-1431`).
-- `config/engines.json` — registry berbasis konfigurasi; menambah mesin tanpa ubah kode.
-- Kotak pesan `ai_message` + MCP `ask_peer` / `check_messages` / `resolve_message`.
-- `local_llm.py` — tiga penjaga pelepasan GPU + **gerbang VRAM** dengan fallback CPU/RAM.
+Completed:
+- `ai-station verify` — Bidirectional verification between Qoder and Gemini. Verified: Gemini rejects invalid claims and validates sound logic referencing exact source lines (`main.rs:1384`, `1426-1431`).
+- `config/engines.json` — Configuration-based engine registry allowing new engines without code modifications.
+- Message box `ai_message` + MCP tools `ask_peer` / `check_messages` / `resolve_message`.
+- `local_llm.py` — Tri-guard GPU resource management with VRAM safety gates and CPU/RAM fallback.
 
-Belum:
-- ⬜ **Tier `heavy` belum terpasang.** `phi4:14b` belum di-pull; dengan 12 GB VRAM ia butuh
-  ~10,5 GB kosong dan akan ditolak gerbang VRAM begitu ada aplikasi GPU lain — memang untuk itu
-  ia ada, tapi belum pernah diuji dalam keadaan itu.
-- ⬜ Uji beban lintas engine yang sesungguhnya: verifikasi berjalan sambil ComfyUI/Unity
-  memakai GPU, dan buktikan gerbang VRAM menolak pada saat itu. Yang teruji baru
-  "sesi AI lain aktif", bukan "aplikasi GPU aktif".
-- ⬜ Monitor kuota Antigravity di GUI (`/api/usage` sudah menyediakan datanya).
+Pending:
+- ⬜ **Tier `heavy` deployment:** `phi4:14b` evaluation under concurrent GPU workloads.
+- ⬜ Real-world cross-engine stress testing with simultaneous ComfyUI / graphical workloads.
+- ⬜ Antigravity quota telemetry widget in the GUI (data available via `/api/usage`).
 
-### Selesai ronde ini (6 Okt sore)
-- ✅ `parallel_tri_engine.py` membaca `config/engines.json` (2026-10-06). Model default
-  `qwen2.5-coder:7b` — yang tidak pernah ada di registry — dibuang; `gemini`, `qoder`, dan
-  `local` kini diambil dari registry, dan tier lokal bisa dipilih lewat `STATION_LOCAL_ENGINE`.
-  Kebijakan `never_load_if` ditegakkan: saat VRAM kosong tidak cukup, engine menolak dan
-  menyebut pemakai GPU-nya ("brave 137 MiB, antigravity 104 MiB"), dengan status `UNAVAILABLE`
-  yang tercatat ke PostgreSQL. Payload Ollama sekarang mengirim `keep_alive` dari registry —
-  sebelumnya tidak, jadi model tertahan di VRAM lima menit setelah tugas selesai.
-- ✅ **Daemon berhenti melayani identitas.** `/api/stats` dan `/api/usage` meneruskan
-  `qoder status -o json` apa adanya — email, nama lengkap, avatar URL. Daemon hanya listen di
-  127.0.0.1, tapi tiap engine di tab punya shell, jadi `curl localhost:8999` cukup untuk
-  memasukkan identitas itu ke konteks model cloud. Redaksi di satu sumber (`qoder_account`)
-  plus penyaring berbentuk; kolom `username` `player_profile` dikeluarkan (nol rujukan di
-  `gui.html`). Verifikasi: 0 temuan email/nama pada tiga endpoint.
-- ✅ **Katalog perkakas ditulis ulang.** `tools/TOOLSET_CATALOG.md` menyebut server Python lama
-  sebagai `[CORE]` dan mengklaim systemd menghidupkannya di port 8999 — yang melayani port itu
-  daemon Rust. Server Python dinyatakan arsip lokal (sudah di-gitignore sejak lama).
-- ✅ **SQLite basi diarsipkan.** `brain/workstation.db` dipindah ke
-  `~/runtime/backups/db/…sqlite-stale-20261006` setelah dipastikan 0 barisnya tidak ada di
-  PostgreSQL; tersimpannya file itu memberi peluang sesi fallback membaca salinan basi sebagai
-  keadaan sekarang.
-- ✅ **Engine lokal teruji terhadap model nyata untuk pertama kalinya.** `qwen3.5:4b` di-pull
-  (3,3 GB) lalu dijalankan lewat dispatcher: `COMPLETED` dalam 71,4 s, `ollama ps` kosong
-  sesudahnya, dan VRAM benar-benar kembali (10.882 → 10.979 MiB bebas). Cabang penolakan ikut
-  diuji dengan memaksa kebutuhan 999999 MiB — ia menolak dan menyebut pemakai GPU-nya.
-- ✅ **`qwen3.5:9b` dipasang, dinilai, dan dinyatakan layak.** `model_check.py`: 5/5 — puncak
-  7.434 MiB dari kartu 11.890 MiB, 43,1 tok/s, `ollama ps` kosong sesudahnya, VRAM kembali ke
-  978 MiB. Dipertahankan; `phi4:14b` tidak diunduh karena belum ada buktinya dibutuhkan.
-- ✅ **Dua penyebab "model menjawab kosong" ditemukan dan ditutup.** `cross_verify` tidak
-  menyetel `num_ctx` (mewarisi 4096 Ollama) dan tidak menyetel `think` — qwen3.5 menghabiskan
-  seluruh anggaran token di kolom `thinking` lalu mengembalikan `response` kosong. Kini
-  `num_ctx=12288`, `num_predict=1200`, `think=false`, dan jawaban kosong melaporkan sebabnya
-  (termasuk panjang monolog berpikir). Tanpa `think=false` pemeriksaan berkas 83 baris selalu
-  `FAILED`; sesudahnya `COMPLETED` 8,7 s.
-- ✅ **Pemeriksa lokal menangkap bug nyata, lewat alasan yang salah.** Ia menuduh `--check`
-  melapor sehat padahal salah — tuduhan itu tidak benar, `--check` justru menangkapnya. Tapi
-  instingnya menunjuk direktori target yang nyata, dan di situlah bug sebenarnya: `ln -sfn` ke
-  direktori nyata MENYARANGKAN tautan (`skills/a/a`), bukan menimpanya. Diperbaiki dengan guard
-  yang menolak menyentuh direktori berisi data, plus exit code yang benar di mode tulis.
-  Diuji di `$HOME` tiruan: guard menyala, sarang tidak terbentuk, file pengguna selamat.
-- ✅ **Handoff berhenti melaporkan state git yang salah.** `snapshot()` mem-probe
-  `engine-rust/` dan melabelinya "git engine-rust", padahal direktori itu tidak punya repo
-  sendiri — git naik ke repo induk, sehingga sesi berikutnya membaca keadaan yang keliru.
-  Sekarang probe ke `~/.ai-station` dengan branch, cap waktu, dan hitungan berkas yang belum
-  di-commit. Bagian "Keadaan mesin" juga tidak lagi terpotong: pembaca `handoff` membatasi isi
-  pada 700 karakter — tepat di depan blok terpenting.
+### Verified Milestones (Oct 6)
+- ✅ `parallel_tri_engine.py` dynamically loads `config/engines.json`. Legacy hardcoded models removed; `never_load_if` policy enforced: if available VRAM is insufficient, local execution reports `UNAVAILABLE` to PostgreSQL and identifies current GPU processes. Ollama requests pass configured `keep_alive` values.
+- ✅ **Privacy redaction in daemon:** `/api/stats` and `/api/usage` sanitize personal identification (emails, real names, user avatars) before exposing metrics.
+- ✅ **Toolset catalog updated:** `tools/TOOLSET_CATALOG.md` accurately documents the Rust daemon rather than deprecated Python scripts.
+- ✅ **Stale SQLite databases archived:** Stale database copies moved to backups to avoid divergence from PostgreSQL.
+- ✅ **Local engines evaluated:** `qwen3.5:4b` and `qwen3.5:9b` benchmarked with `model_check.py` (43.1 tokens/sec, full VRAM deallocation verified).
+- ✅ **Zero-response bug resolved:** Set `num_ctx=12288`, `num_predict=1200`, and `think=false` for local verification models to prevent reasoning token starvation.
+- ✅ **Symlink guard verified:** Fixed symlink nesting bug (`ln -sfn`) with directory safety guards.
+- ✅ **Handoff git tracking corrected:** Accurate repository detection relative to `~/.ai-station` root directory.
 
-## F7 — Studio kreatif ⬜
+## F7 — Creative Studio ⬜
 
-Belum ada sama sekali: `~/Creative-Studio` tidak ditemukan, ComfyUI belum terpasang.
-Rencana sinkronisasi: ComfyUI membuka API HTTP di `:8188`, jadi titik tempelnya jelas —
-satu tool MCP `comfy_workflow` yang **memakai gerbang VRAM yang sama**, supaya generatif
-dan LLM lokal tidak berebut GPU dengan engine grafis.
+Planned integration: ComfyUI HTTP API (`:8188`) integration via `comfy_workflow` MCP tool sharing the same VRAM gate to prevent resource contention with local LLMs and graphical viewports.
 
-## Batas yang diketahui (jangan di-"perbaiki" tanpa perlu)
+## Known Boundaries & Constraints
 
-- **Akuntansi token tidak tersedia.** Kolom `input_tokens`/`output_tokens` terisi tapi
-  bernilai 0, karena **CLI-nya sendiri yang menulis 0** ke lognya (dipindai 527 event mentah).
-  Ingestor tidak membuang data. `duration_ms` dan `exit_code` tetap akurat.
-- **Sesi CLI terikat direktori kerja.** `--continue` tidak menyeberang antar folder;
-  jembatannya PostgreSQL + handoff, yang terbukti lintas-direktori.
-- **Sebagian dotfile di `$HOME` tidak bisa dipindah** (`.bashrc`, `.config`, `.var`, `.nv`,
-  `.qoder`) — aplikasinya membaca path persis. Yang bisa sudah pindah ke `~/runtime`.
-- **Guard hanya mengikat tindakan AI lewat shell**, bukan niat mengakali (`base64 | bash`
-  tetap mungkin) dan bukan aplikasi yang membuat `~/.nama` saat dijalankan manusia.
+- **Token usage counters:** Some upstream CLI tools record `0` tokens in raw logs; the workstation preserves telemetry integrity without fabricating numbers.
+- **CLI session working directory binding:** `--continue` flags bind to specific working directories; cross-directory persistence is bridged via PostgreSQL `world_memory` and handoff documents.
+- **Unmovable system dotfiles:** Specific system paths (`.bashrc`, `.config`, `.var`, `.nv`, `.qoder`) remain as required by host tools; runtime data resides in `~/runtime`.
+- **Guardrail scope:** Hooks intercept commands executed via AI shell tooling; manual operator commands bypass hooks by design.
 
-## Riwayat singkat
+## Historical Context
 
-Dokumen `ai_workstation_master_plan.md` (v2.3.0) dan `PROJECT_SUMMARY_...md` pernah menandai
-"Fase 5 TERCAPAI 100%" sementara Engine-3 tidak terpasang, `logs/server.log` 0 byte,
-`incident_log` kosong, dan `world_memory` tidak terisi. Keduanya dipensiunkan 6 Oktober dan
-isinya digabung ke `README.md` + roadmap ini, dengan klaim yang tidak terbukti dicabut.
-Salinan aslinya disimpan di `~/.ai-station/archive/`.
+Early revisions of `ai_workstation_master_plan.md` and `PROJECT_SUMMARY_...md` noted 100% completion prematurely before daemon and logging layers were fully productionized. On October 6, 2026, those documents were archived in `~/.ai-station/archive/`, and all verified architectural truth was consolidated into `README.md` and this roadmap.

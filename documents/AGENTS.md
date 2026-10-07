@@ -1,13 +1,13 @@
-# Kontrak Bersama Irsofka AI Workstation
+# Shared Contract: Irsofka AI Workstation
 
-Anda adalah bagian dari SATU ekosistem, bukan alat yang berdiri sendiri. Berkas ini dibaca
-oleh semua AI di mesin ini (Qoder, Antigravity/Gemini, dan model lokal nantinya). Isinya
-sedikit, dan tidak bisa ditawar.
+You are part of a SINGLE unified ecosystem, not a standalone tool. This contract is read
+by all AI engines operating on this workstation (Qoder, Antigravity/Gemini, and local models).
+Its terms are definitive and non-negotiable.
 
-## 1. Kamu tidak punya state sendiri — semuanya di workstation
+## 1. You Have No Standalone State — Everything Lives in the Workstation
 
-`~/.gemini` hanyalah shim berisi symlink. State-mu yang sebenarnya tinggal di dalam
-workstation:
+Directories like `~/.gemini` are compatibility shims made of symlinks. Your persistent state
+lives inside the workstation:
 
 ```
 ~/.gemini/antigravity      -> ~/.ai-station/engines/antigravity
@@ -15,28 +15,28 @@ workstation:
 ~/.gemini/config           -> ~/.ai-station/engines/gemini_config
 ```
 
-Jangan membuat berkas konfigurasi, cache, atau hasil kerja di luar itu. Kalau kamu butuh
-menulis sesuatu, tulis lewat jalur di atas atau ke `~/runtime`.
+Never create configuration files, caches, or build artifacts outside these designated locations.
+If you need to write files, use the paths above or write to `~/runtime`.
 
-## 2. $HOME bukan tempat sampah
+## 2. $HOME is Not a Dumping Ground
 
-Aturan keras pemilik mesin: **jangan melahirkan entri baru di `$HOME`**. Hasil install,
-cache, data, artefak unduhan — semuanya ke `~/runtime`. Variabelnya sudah dipasang
-(`XDG_*`, `PYTHONUSERBASE`, `CARGO_HOME`, `RUSTUP_HOME`, `HISTFILE`); jangan ditimpa.
+Strict workstation policy: **do not create new top-level entries in `$HOME`**. Build outputs,
+caches, data, and downloaded artifacts must go to `~/runtime`. Environment variables are
+pre-configured (`XDG_*`, `PYTHONUSERBASE`, `CARGO_HOME`, `RUSTUP_HOME`, `HISTFILE`); do not override them.
 
-## 3. Memori bersama: satu PostgreSQL
+## 3. Shared Long-Term Memory: Single PostgreSQL Database
 
-Basis data `irsofka_ai_workstation` adalah memori jangka panjang bersama. Tabel penting:
-`action_log` (jejak tiap aksi), `world_memory` (catatan & handoff), `quest_tasks`,
-`session_turns`, `incident_log`, `ai_message`.
+The database `irsofka_ai_workstation` serves as shared long-term memory across all engines.
+Primary tables: `action_log` (audit trail), `world_memory` (notes & handoffs), `quest_tasks`,
+`session_turns`, `incident_log`, and `ai_message`.
 
-Jangan menyimpulkan keadaan dari ingatan percakapan. Baca dari database, atau jalankan
-`ai-station recovery 40`. Riwayat yang tidak tercatat dianggap tidak pernah terjadi.
+Never infer system state purely from conversation memory. Query the database directly or execute
+`ai-station recovery 40`. Actions not recorded in the database are treated as never having occurred.
 
-## 4. Kalian saling memverifikasi, lewat kotak pesan
+## 4. Peer Cross-Verification via Messaging
 
-Server MCP `local-workstation` memberi tool yang sama ke semua CLI. Untuk bicara ke mesin
-lain secara persisten:
+The `local-workstation` MCP server provides identical tooling across all CLIs. To communicate
+persistently between engines:
 
 ```
 ask_peer(to="qoder", from_engine="antigravity", topic="...", body="...")
@@ -44,83 +44,82 @@ check_messages(for_engine="antigravity")
 resolve_message(message_id=N, status="ANSWERED" | "DISPUTED")
 ```
 
-Untuk melihat/menyuruh langsung: `read_terminal(tab=...)`, `send_to_terminal(tab=..., text=...)`.
+For real-time terminal interaction: `read_terminal(tab=...)`, `send_to_terminal(tab=..., text=...)`.
 
-Kebijakan verifikasi:
-- Kalau kamu **tidak yakin** soal kode, jangan mengarang — minta mesin lain memeriksa.
-- Jawaban yang tidak cukup bukti → tandai `DISPUTED`, jangan `ANSWERED`.
-- Yang diperiksa boleh menolak hasil verifikasi dengan alasan. Tidak ada hierarki kebenaran.
+Verification Policy:
+- If you are **uncertain** about code, do not speculate — request verification from peer engines.
+- Responses lacking sufficient evidence must be marked `DISPUTED`, not `ANSWERED`.
+- Reviewed engines may dispute verification conclusions with reasoned justification. Truth is evidence-based.
 
-## 5. Jujur soal status, itu alasan utama proyek ini ada
+## 5. Honest Status Reporting
 
-Laporkan apa adanya. Engine/mesin yang tidak tersedia = `UNAVAILABLE`, bukan `COMPLETED`.
-Pemeriksaan yang tidak kamu lakukan = **belum diverifikasi**, bukan "lolos".
-Klaim palsu lebih merusak daripada kegagalan, karena mesin lain membangun di atasnya.
+Report actual status without embellishment. An unavailable engine or model is `UNAVAILABLE`,
+never `COMPLETED`. An unperformed audit is **unverified**, not "passed".
+False status reports harm system reliability because subsequent engines build upon them.
 
-## 6. Jangan membunuh dirimu sendiri
+## 6. Self-Preservation Guardrails
 
-- **Jangan** `pkill -f "irsofka-station-core"` — ikut membunuh daemon, systemd restart,
-  dan sesi CLI di dalamnya mati bersamamu.
-- **Jangan** `tmux -L irsofka kill-server` — menghapus semua tab beserta sesi AI di dalamnya.
-- Muat ulang UI: `refresh_workstation_ui`. Restart daemon (boleh, tab aman di tmux):
-  `restart_workstation_daemon(reason="...")` — `reason` wajib dan tercatat.
+- **Do NOT** execute `pkill -f "irsofka-station-core"` — this terminates the production daemon,
+  triggering systemd respawn and destroying your active CLI sessions.
+- **Do NOT** execute `tmux -L irsofka kill-server` — this destroys all terminal tabs and running AI sessions.
+- Reload interface: `refresh_workstation_ui`.
+- Restart daemon (safe, tmux preserves tabs): `restart_workstation_daemon(reason="...")` — `reason` is required and logged.
 
-## 7. GPU adalah barang rebutan
+## 7. GPU Resource Discipline
 
-VRAM 12 GB dipakai bersama engine grafis dan UI generatif. Model lokal wajib:
-cek VRAM kosong dulu, pakai `keep_alive=0`, lalu `ollama stop`, dan pastikan `ollama ps`
-kosong setelah selesai. Kalau VRAM tidak cukup, jalan di CPU/RAM — jangan merebut GPU.
+The 12 GB VRAM is shared between desktop rendering, generative workflows, and local models.
+Local models must:
+Verify free VRAM first, specify `keep_alive=0`, invoke `ollama stop`, and confirm `ollama ps`
+is empty upon completion. If VRAM is constrained, run on CPU/RAM (`num_gpu=0`) — never seize GPU resources.
 
-## 8. Memulihkan diri
+## 8. Self-Recovery Protocol
 
-Sesi bisa mati kapan saja. Sebelum menjawab "tadi sedang apa", baca:
+Sessions may restart at any time. Before attempting to recall previous work, inspect:
 ```
-ai-station recovery 40        # riwayat aksi + handoff, dari direktori mana pun
-ai-station handoff            # serah-terima + quest aktif
+ai-station recovery 40        # action history and handoffs, runnable from any directory
+ai-station handoff            # handoffs and active quests
 ~/.ai-station/brain/memory/projects/handoff_*.md
 ```
-Dokumen resmi: `~/.ai-station/README.md`, `~/.ai-station/ROADMAP.md`, dan untuk konteks
-mesin/akun yang privat: `~/.ai-station/brain/DESIGN_NOTES.md`.
+Official documentation: `~/.ai-station/README.md`, `~/.ai-station/ROADMAP.md`, and for private
+machine contexts: `~/.ai-station/brain/DESIGN_NOTES.md`.
 
-## 9. Skill & memori: satu pintu masuk
+## 9. Skills & Memory: Single Entry Point
 
-Jangan menaruh skill atau memori di folder tool. Semua tulis ke `brain/`, dan jangan
-menyalinnya ke repo — repo ini publik dan yang diunggah hanya **aturan + templat**.
+Never place skills or memories inside tool-specific folders. All knowledge resides in `brain/`,
+and is not committed to public git — the public repository tracks **rules and templates only**.
 
-| Jenis | Lokasi tulis | Baca lewat |
+| Type | Write Target | Read Via |
 |---|---|---|
-| Memori jangka panjang mesin | `~/.ai-station/brain/memory/` | `brain/memory/MEMORY.md` (indeks, baca 1 file saja) |
-| Skill yang ditulis manusia | `~/.ai-station/brain/skills/<kategori>/` | `brain/skills/SKILLS.md` (indeks) |
-| Skill hasil belajar otomatis | `~/.ai-station/brain/skills/learned/` | dibuat sendiri oleh `incident_recorder.py` saat error terulang 5x |
-| Memori/skill dari mesin lama | `~/.ai-station/brain/memory/legacy/`, `brain/skills/legacy/` | **baca `memory/legacy/LEGACY_MAP.md` dulu** — path di dalamnya sudah mati |
-| State faktual (aksi, quest, turn, pesan) | PostgreSQL `irsofka_ai_workstation` | `ai-station recovery`, atau tool MCP |
+| Machine long-term memory | `~/.ai-station/brain/memory/` | `brain/memory/MEMORY.md` (index only) |
+| Human-authored skills | `~/.ai-station/brain/skills/<category>/` | `brain/skills/SKILLS.md` (index only) |
+| Autonomous learned skills | `~/.ai-station/brain/skills/learned/` | Generated by `incident_recorder.py` on 5x repeat errors |
+| Legacy memories & skills | `~/.ai-station/brain/memory/legacy/` | Read `memory/legacy/LEGACY_MAP.md` first — legacy paths are inactive |
+| Factual state (actions, quests, messages) | PostgreSQL `irsofka_ai_workstation` | `ai-station recovery` or MCP tools |
 
-State milik tool tetap milik tool, tapi badannya ada di dalam workstation:
+CLI state directories reside inside the workstation:
 
 ```
 ~/.qoder      -> ~/.ai-station/engines/qoder       settings.json, projects/, memory/, plugins/
-~/.qodersec   -> ~/.ai-station/engines/qodersec    hasil security scan per sesi
+~/.qodersec   -> ~/.ai-station/engines/qodersec    security scan outputs per session
 ~/.qmind      -> ~/.ai-station/engines/qmind       agent memory
-~/.agents     -> ~/.ai-station/engines/agents      pohon skill bersama (dibaca semua CLI)
-~/.gemini     -> shim ke engines/antigravity, antigravity-cli, gemini_config
+~/.agents     -> ~/.ai-station/engines/agents      shared skill tree read by all CLIs
+~/.gemini     -> shim to engines/antigravity, antigravity-cli, gemini_config
 ```
 
-Satu pohon skill, beberapa pintu masuk. Yang dibangun sekali dan ditautkan ke semua engine:
+Unified skill tree, shared entry points:
 
 ```
 ~/.ai-station/engines/agents/skills/<pack>/SKILL.md
    Qoder         : ~/.agents/skills
    Antigravity   : ~/.gemini/config/plugins/station-rules/skills
-   sumber        : symlink ke brain/skills/, tidak pernah salinan
+   Source        : symlinks to brain/skills/, never raw copies
 ```
 
-Bangun/periksa ulang dengan `~/.ai-station/bin/wire_skills.sh [--check]`. Kalau engine
-menemukan skill di tempat lain (folder project, cache miliknya sendiri), itu yang harus
-dipindah ke `brain/` — bukan sebaliknya.
+Rebuild/verify with `~/.ai-station/bin/wire_skills.sh [--check]`. If an engine encounters skills
+elsewhere (project directories, engine caches), relocate them to `brain/`.
 
-Folder `memory/` punyanya Qoder (`~/.qoder/memory/`) jangan dipakai untuk menyimpan
-pengetahuan — ia kosong dan bukan tempat yang dibaca manusia. Satu-satunya tempat yang
-boleh dituju adalah `brain/`.
+Qoder's internal `memory/` folder (`~/.qoder/memory/`) is not used for knowledge storage — the
+canonical knowledge base is `brain/`.
 
-Aturan memuat: **jangan baca seluruh indeks sekaligus.** Pilih satu baris yang relevan,
-buka satu file. Konteks adalah napas, dan napas efektif dibatasi plafon per model.
+Selective Loading Policy: **Do not read entire indices into context.** Select the single
+relevant entry and open only that file. Context is precious.

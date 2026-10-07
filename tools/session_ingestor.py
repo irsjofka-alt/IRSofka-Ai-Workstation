@@ -561,10 +561,17 @@ def snapshot(store: Store, session_id: str = "", limit: int = 25) -> str:
         f"SELECT id, title, status, substr(summary,1,300) FROM quest_tasks "
         f"WHERE status = {ph(1, store.engine)} ORDER BY id DESC LIMIT 8", ("IN_PROGRESS",))
 
+    if not (prompts or replies or commands or quests):
+        # Handoff kosong lebih berbahaya daripada tidak ada handoff sama sekali: ia tercatat
+        # sebagai "sesi terakhir" dan membaca isinya "tidak mengerjakan apa pun", padahal
+        # yang benar jejaknya belum sempat masuk SQL. Sesi berikutnya akan percaya itu.
+        return "handoff dilewati: tidak ada satu pun baris terekam untuk sesi ini"
+
     lines = [
         f"# Auto-Handoff — {stamp:%Y-%m-%d %H:%M:%S}",
         "",
-        f"Sesi: `{sid or 'tidak diketahui'}`  •  Ditulis otomatis oleh hook SessionEnd, "
+        f"Sesi: `{sid or 'tanpa id — baris di bawah adalah jejak terbaru apa pun sesinya'}`  •  "
+        "Ditulis otomatis oleh hook SessionEnd, "
         "bukan karangan AI. Isinya jejak perintah yang benar-benar tereksekusi.",
         "",
         "## Permintaan terakhir pengguna",

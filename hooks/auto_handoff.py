@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-auto_handoff.py — SessionEnd hook.
+auto_handoff.py — SessionEnd hook: writes a mechanical handoff before the session dies.
 
 Menulis handoff mekanis (berkas .md + baris world_memory) tepat sebelum sesi mati,
 lalu memastikan baris log terakhir sudah masuk SQL.
@@ -25,6 +25,14 @@ def main() -> int:
         payload = {}
 
     sid = payload.get("session_id") or os.environ.get("QODER_SESSION_ID") or ""
+    if not sid:
+        # SessionEnd dari luar Qoder tidak membawa session_id. Nama berkas transcript
+        # adalah id sesi itu sendiri (Qoder menulis <uuid>.jsonl per sesi), jadi masih
+        # bisa dipulihkan — tanpa ini handoff tercatat sebagai "sesi tidak diketahui"
+        # dan kehilangan taut kembali ke jejak aslinya.
+        transcript = payload.get("transcript_path") or ""
+        if str(transcript).endswith(".jsonl"):
+            sid = os.path.basename(transcript)[:-len(".jsonl")]
 
     from session_ingestor import Store, qoder_runtime_profile, run_once, snapshot
 

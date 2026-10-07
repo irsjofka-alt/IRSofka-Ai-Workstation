@@ -17,7 +17,7 @@ from pathlib import Path
 STATION = Path.home() / ".ai-station"
 sys.path.insert(0, str(STATION / "tools"))
 
-MAX_CHARS = 2800
+MAX_CHARS = 3200
 
 
 def db_lines():
@@ -36,7 +36,11 @@ def db_lines():
         quests = cur.fetchall()
         out.append("Active quests: " + ("; ".join(f"#{q[0]} {q[1]}" for q in quests) if quests else "tidak ada"))
 
-        cur.execute(f"SELECT key, substr(content,1,160) FROM world_memory ORDER BY updated_at DESC LIMIT 4")
+        # handoff_auto_* ditulis hook SessionEnd — sudah 62 baris dan isinya seragam.
+        # Dibiarkan masuk, empat slot memori ini hanya menampilkan salinan handoff yang
+        # sudah dibacakan utuh di bagian bawah briefing, dan memori sungguhan tersingkir.
+        cur.execute("SELECT key, substr(content,1,160) FROM world_memory "
+                    "WHERE key NOT LIKE 'handoff%' ORDER BY updated_at DESC LIMIT 4")
         for key, content in cur.fetchall():
             out.append(f"Memory `{key}`: {str(content).strip()[:150]}")
 
@@ -55,23 +59,32 @@ def handoff_lines():
         files = sorted(folder.glob("handoff_*.md"), key=lambda p: p.stat().st_mtime, reverse=True)
     except OSError:
         return []
-    if not files:
-        return []
-    newest = files[0]
-    try:
-        body = newest.read_text(encoding="utf-8", errors="ignore").splitlines()
-    except OSError:
+    newest, body = None, []
+    for cand in files[:6]:
+        try:
+            txt = cand.read_text(encoding="utf-8", errors="ignore")
+        except OSError:
+            continue
+        # Handoff tanpa satu baris pun tercatat (biasanya SessionEnd yang mendahului
+        # ingestor) bukan "sesi terakhir yang penting" — lewati, jangan tampilkan.
+        if "tidak ada prompt terekam" in txt and "tidak ada perintah terekam" in txt:
+            continue
+        newest, body = cand, txt.splitlines()
+        break
+    if newest is None:
         return []
     ambil, n = [], 0
     for line in body:
         t = line.strip()
         if not t or t.startswith("#"):
             continue
-        ambil.append(t[:180])
+        ambil.append(t[:120])
         n += 1
-        if n >= 12:
+        if n >= 5:
             break
-    return [f"Latest handoff ({newest.name}):"] + ["  " + a for a in ambil]
+    older = [p.name for p in files if p != newest]
+    tail = "  (%d older handoffs archived — `ai-station recovery 40` walks the chain)" % len(older) if len(older) > 2 else ""
+    return [f"Latest handoff ({newest.name}):"] + ["  " + a for a in ambil] + ([tail] if tail else [])
 
 
 def index_lines():
@@ -92,6 +105,8 @@ def build():
     parts = ["THIS SESSION'S CONTEXT WAS JUST COMPRESSED. This is the memory that survived — "
              "read it before acting, and cross-check the database instead of trusting recall.", ""]
     parts += db_lines() + [""] + handoff_lines() + [""] + index_lines()
+    parts += ["", "File map (generated): brain/memory/projects/ARCHITECTURE.md — folder -> file -> purpose. "
+              "Open the section that owns the behaviour, then grep only that directory."]
     parts += ["", "Full commands when you need to dig deeper: `ai-station recovery 40`, "
               "`ai-station handoff`, `ai-station recall 10`. Unrecorded history never happened."]
     text = "\n".join(p for p in parts if p is not None)

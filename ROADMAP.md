@@ -131,9 +131,15 @@ of a partial ledger displays wrong numbers confidently — and the operator trus
   workspace, checksum, created_at) written by the ingestor, not by the AI that made the file.
   *Acceptance:* generate an image through ComfyUI and a git commit; both appear in the Station
   within one ingest cycle, with the command that produced them linked.
-- ⬜ **F8.2 Treasury.** Daily cost and remaining quota per engine, read from `action_log` plus
+- ✅ **F8.2 Treasury.** Daily cost and remaining quota per engine, read from `action_log` plus
   CLI-reported usage. *Acceptance:* the numbers match what each CLI itself reports for the same
   day, or the row is marked `UNAVAILABLE` — never estimated.
+  Shipped: `engine_quota` + a probe loop in the ingestor (`agy -p /usage`, `agy -p /credits`,
+  and Qoder's `/usage` panel read from an isolated tmux socket), `/api/treasury`, and the
+  Treasury view on the Station page. Measured, not assumed: Antigravity has no daily cost
+  window at all (5h + weekly only) and Qoder exposes no per-turn credit field, so both are
+  reported as `UNAVAILABLE` with the reason the data itself gives. Local tiers are
+  `UNSUPPORTED`, which is a different statement and stays a different word.
 - ⬜ **F8.3 Master data face.** Editor for slots and engine registry: pick model per role, save.
   Writes go through schema validation, keep a timestamped backup, and refuse to save a registry
   that no engine can start from. *Acceptance:* change the verifier to another model, and the next

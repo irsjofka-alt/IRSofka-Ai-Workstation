@@ -16,7 +16,6 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use chrono::Local;
 use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySystem};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
@@ -25,15 +24,19 @@ mod engineinfo;
 mod paths;
 mod probe;
 mod procinfo;
+mod profile;
+mod spool;
 // hanya yang dipakai di main.rs; sisanya tetap privat untuk modul procinfo
 use procinfo::{descendants, proc_alive, proc_cmdline, proc_comm, proc_cwd, LiveProc};
+use profile::{default_profiles, ensure_config, read_profiles, TabProfile};
+use spool::{ingestor_json, spool_event};
 use engineinfo::{
     agy_efforts, agy_models, antigravity_last_model, antigravity_usage, cli_version, qoder_account,
     qoder_efforts, qoder_models, qoder_session_usage,
 };
 use probe::{cached_json, py_json, run_capture};
 use paths::{
-    assets_dir, config_dir, gui_path, home_dir, ingestor_path, profiles_path, runner_path,
+    assets_dir, config_dir, gui_path, home_dir, profiles_path, runner_path,
     spool_path, station_dir, station_port, tabs_log_dir, tmux_socket, tmux_session_name,
     FALLBACK_HOST,
 };
@@ -91,236 +94,6 @@ fn pg_conn_str() -> String {
         pick("password", "STATION_PG_PASSWORD", ""),
         pick("dbname", "STATION_PG_DB", "irsofka_ai_workstation"),
     )
-}
-
-// ---------------------------------------------------------------------------
-// Spool kejadian: daemon menulis baris JSON, service irsofka-action-log.service
-// yang memipanya ke PostgreSQL/SQLite. Daemon tidak perlu memegang dialek SQL,
-// dan log tetap tercatat walaupun database sedang mati.
-// ---------------------------------------------------------------------------
-
-static SPOOL_SEQ: AtomicU64 = AtomicU64::new(1);
-
-fn spool_event(kind: &str, tab: &str, summary: String, cwd: Option<String>, tool: Option<&str>) {
-    let record = json!({
-        "seq": SPOOL_SEQ.fetch_add(1, Ordering::Relaxed),
-        "ts": Local::now().to_rfc3339(),
-        "engine": "station",
-        "tab": tab,
-        "kind": kind,
-        "summary": summary.chars().take(400).collect::<String>(),
-        "cwd": cwd,
-        "tool": tool,
-        "pid": std::process::id(),
-    });
-    if let Ok(mut line) = serde_json::to_string(&record) {
-        line.push('\n');
-        if let Some(parent) = spool_path().parent() {
-            let _ = fs::create_dir_all(parent);
-        }
-        match fs::OpenOptions::new()
-            .create(true)
-            .append(true)
-            .open(spool_path())
-        {
-            Ok(mut fh) => {
-                let _ = fh.write_all(line.as_bytes());
-            }
-            Err(_) => {}
-        }
-    }
-}
-
-/// Jalan satu-satunya menuju SQL: panggil lapisan dialek milik ingestor.
-fn ingestor_json(mode: &str, limit: u32, engine: &str, kind: &str) -> Value {
-    let script = ingestor_path().display().to_string();
-    let mut cmd = Command::new("python3");
-    cmd.arg(&script).arg(mode).arg(limit.to_string());
-    if !engine.is_empty() {
-        cmd.arg("--engine").arg(engine);
-    }
-    if !kind.is_empty() {
-        cmd.arg("--kind").arg(kind);
-    }
-    let out = cmd.output().ok();
-    out.map(|o| {
-        String::from_utf8_lossy(&o.stdout)
-            .find('{')
-            .and_then(|i| serde_json::from_str::<Value>(&String::from_utf8_lossy(&o.stdout)[i..]).ok())
-            .unwrap_or_else(|| json!({"error": "ingestor tidak mengembalikan JSON valid"}))
-    })
-    .unwrap_or_else(|| json!({"error": format!("gagal menjalankan {}", script)}))
-}
-
-// ---------------------------------------------------------------------------
-// CLI profiles: single source of truth for how every tab spawns its CLI.
-// ---------------------------------------------------------------------------
-
-#[derive(Clone, Serialize, Deserialize, Default)]
-pub struct TabProfile {
-    #[serde(default)]
-    engine: String,
-    #[serde(default)]
-    model: String,
-    #[serde(default)]
-    effort: String,
-    #[serde(default)]
-    context_window: String,
-    #[serde(default)]
-    permission_mode: String,
-    #[serde(default)]
-    workspace: String,
-    #[serde(default)]
-    continue_session: bool,
-    #[serde(default)]
-    extra_args: Vec<String>,
-}
-
-fn default_profiles() -> HashMap<String, TabProfile> {
-    let home = home_dir().display().to_string();
-    // Profil ini hanya FALLBACK. Kalau config/cli_profiles.json terhapus, tab tidak boleh
-    // jatuh ke $HOME atau folder proyek acak — keduanya memutus kontrak bahwa semua AI
-    // membaca dokumen dan workspace yang sama.
-    let workspace = format!("{}/Documents/ai-workstation", home);
-    let mut m = HashMap::new();
-    m.insert(
-        "qoder".to_string(),
-        TabProfile {
-            engine: "qoder".to_string(),
-            model: "Qwen3.8-Flash".to_string(),
-            effort: "xhigh".to_string(),
-            context_window: "1000000".to_string(),
-            permission_mode: "bypass_permissions".to_string(),
-            workspace: workspace.clone(),
-            continue_session: true,
-            extra_args: vec![],
-        },
-    );
-    m.insert(
-        "antigravity".to_string(),
-        TabProfile {
-            engine: "agy".to_string(),
-            model: "gemini-3.8-flash-high".to_string(),
-            effort: String::new(),
-            context_window: String::new(),
-            permission_mode: "skip".to_string(),
-            workspace: workspace,
-            continue_session: true,
-            extra_args: vec![],
-        },
-    );
-    m.insert(
-        "shell".to_string(),
-        TabProfile {
-            engine: "shell".to_string(),
-            workspace: home,
-            ..Default::default()
-        },
-    );
-    m
-}
-
-const RUNNER_SCRIPT: &str = r#"#!/usr/bin/env bash
-# run_tab.sh <tab> — resolve a tab's CLI profile, launch it, relaunch it when it exits.
-# This is the supervisor loop inside one tmux pane. Written by the daemon on every
-# start (this constant is the only source); edit it in main.rs, not in config/.
-TAB="${1:-qoder}"
-PROF="$HOME/.ai-station/config/cli_profiles.json"
-
-SPEC="$(python3 - "$PROF" "$TAB" <<'PY'
-import json, shlex, sys
-
-path, tab = sys.argv[1], sys.argv[2]
-try:
-    p = json.load(open(path)).get(tab, {})
-except Exception as exc:
-    sys.stderr.write("run_tab: profil tidak terbaca: %s\n" % exc)
-    raise SystemExit(1)
-
-engine = p.get("engine") or "shell"
-perm = p.get("permission_mode") or ""
-cmd = []
-
-if engine == "qoder":
-    cmd = ["qoder"]
-    if p.get("model"):
-        cmd += ["-m", str(p["model"])]
-    if p.get("effort"):
-        cmd += ["--reasoning-effort", str(p["effort"])]
-    if p.get("context_window"):
-        cmd += ["--context-window", str(p["context_window"])]
-    cmd += ["--permission-mode", perm or "default"]
-    if p.get("continue_session"):
-        cmd.append("--continue")
-elif engine == "agy":
-    cmd = ["agy"]
-    if p.get("model"):
-        cmd += ["--model", str(p["model"])]
-    if p.get("effort"):
-        cmd += ["--effort", str(p["effort"])]
-    if perm == "skip":
-        cmd.append("--dangerously-skip-permissions")
-    elif perm in ("accept-edits", "plan"):
-        cmd += ["--mode", perm]
-    if p.get("continue_session"):
-        cmd.append("--continue")
-elif engine == "local":
-    cmd = ["ollama", "run", p.get("model") or "qwen2.5-coder:7b"]
-else:
-    cmd = ["bash", "-i"]
-
-for a in p.get("extra_args") or []:
-    cmd.append(str(a))
-
-print("WORKSPACE=" + shlex.quote(p.get("workspace") or ""))
-print("CMDLINE=(" + " ".join(shlex.quote(c) for c in cmd) + ")")
-PY
-)" || { echo "run_tab: gagal membaca profil $TAB"; exit 1; }
-
-# CMDLINE adalah array bash: tiap argumen utuh, termasuk yang berisi spasi.
-# Bentuk lama (`CMDLINE=bash -i`) membuat eval menetapkan CMDLINE=bash lalu
-# mencoba menjalankan "-i" sebagai perintah, sehingga SEMUA flag model/effort/
-# context/permission hilang dan CLI spawn tanpa argumen.
-eval "$SPEC"
-if [ -n "${WORKSPACE:-}" ] && [ -d "$WORKSPACE" ]; then
-    cd "$WORKSPACE" || cd "$HOME"
-fi
-if [ "${#CMDLINE[@]}" -eq 0 ]; then echo "run_tab: perintah kosong untuk $TAB"; exit 1; fi
-exec "${CMDLINE[@]}"
-"#;
-
-fn ensure_config() -> HashMap<String, TabProfile> {
-    let dir = config_dir();
-    let _ = fs::create_dir_all(&dir);
-    let profiles = match fs::read_to_string(profiles_path()) {
-        Ok(raw) => serde_json::from_str::<HashMap<String, TabProfile>>(&raw)
-            .unwrap_or_else(|_| default_profiles()),
-        Err(_) => default_profiles(),
-    };
-    let merged = {
-        let mut base = default_profiles();
-        for (k, v) in profiles {
-            base.insert(k, v);
-        }
-        base
-    };
-    if let Ok(raw) = serde_json::to_string_pretty(&merged) {
-        let _ = fs::write(profiles_path(), raw);
-    }
-    let _ = fs::write(runner_path(), RUNNER_SCRIPT);
-    #[cfg(unix)]
-    {
-        use std::os::unix::fs::PermissionsExt;
-        let _ = fs::set_permissions(runner_path(), fs::Permissions::from_mode(0o755));
-    }
-    merged
-}
-
-fn read_profiles() -> HashMap<String, TabProfile> {
-    fs::read_to_string(profiles_path())
-        .ok()
-        .and_then(|raw| serde_json::from_str(&raw).ok())
-        .unwrap_or_else(default_profiles)
 }
 
 // ---------------------------------------------------------------------------

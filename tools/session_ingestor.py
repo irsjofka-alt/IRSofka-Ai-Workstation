@@ -30,7 +30,9 @@ sys.path.insert(0, str(Path.home() / ".ai-station" / "tools"))
 from db_state import get_db_connection  # noqa: E402  adapter dual-engine resmi workstation
 
 HOME = Path.home()
-SUMMARY_LIMIT = 400
+# Batas penyimpanan jejak, bukan batas tampilan. 400 membuat jawaban panjang terpotong
+# sebelum sempat dibaca siapa pun — kolomnya `text`, jadi yang membatasi cuma angka ini.
+SUMMARY_LIMIT = 8000
 QODER_SEG_GLOB = str(HOME / ".ai-station/engines/qoder/logs/sessions/*/*/segments/*.jsonl")
 QODER_PROJ_GLOB = str(HOME / ".ai-station/engines/qoder/projects/*/*.jsonl")
 AGY_DB = HOME / ".gemini/antigravity/conversation_summaries.db"
@@ -965,7 +967,7 @@ def station(store: Store, limit: int = 30) -> None:
         # (caps di insert_event), jadi yang bisa ditampilkan jujur adalah potongan akhirnya —
         # teks utuhnya ada di transkrip yang ditunjuk raw_ref, bukan hasil karangan ulang.
         rows = store.query(
-            "SELECT p.post_id, a.kind, a.tool, left(a.summary,200), to_char(a.ts,'HH24:MI') "
+            "SELECT p.post_id, a.kind, a.tool, left(a.summary,1200), to_char(a.ts,'HH24:MI') "
             "FROM station_posts p JOIN action_log a "
             "  ON a.session_id = p.session_id AND a.ts >= p.opened_at "
             " AND a.ts <= COALESCE(p.closed_at, now()) "

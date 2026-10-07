@@ -124,7 +124,26 @@ A choice becomes the operator's only when the item crosses a **named threshold, 
 runs**: free disk, free VRAM, quota window fraction, an irreversible git or database operation, or real
 mouse and keyboard input with nobody at the desk. Thresholds are re-read, never remembered — the operator's
 own worked example (10 GB disk left against a 14B model download) did **not** apply on 2026-10-08, where
-`/` had 389 G free and 928 MiB of 12 288 MiB VRAM in use.
+`/` had 389 G free and 928 MiB of 12 288 MiB VRAM in use. The Station carries one tab for those:
+**Human Decide**. It is an exception queue, and an empty one is the normal state; a tab that fills up is
+reporting that the thresholds are wrong, not that the engines are diligent.
+
+**Routing is by weight, not only by exhaustion.** The operator named three tiers: the primary worker (the
+engine doing the task), a **heavy reviewer** for anything that would otherwise be a human decision, and a
+**light reviewer** for quick secondary checks. Those map onto registry tiers that already exist — `gemini`
+is registered `reviewer` and `local` (`qwen3.5:9b`) is registered `validator` — so the rule selects by the
+*shape of the question*, and never invents a second word for the same job:
+
+- A quick, low-compute check (does this diff contradict the file it touches, is this claim consistent with
+  the row it cites) goes to **`resolver-local`** first: no quota at all, and the §7 VRAM gate still has to
+  clear it before it runs.
+- A decision that would have woken the operator goes to **`resolver`** — `gemini`, Flash 3.8 High, the
+  operator's named proxy — because it has its own tools and can read the code it is judging.
+- If that meter reads exhausted or unreadable, **`resolver-alt`** takes it, from a pool the working
+  architect does not draw on.
+- Weight is not a licence to skip evidence: a light check gets a light *question*, not a hidden one. Both
+  tiers record the answering model id, and both are refused — not downgraded — when their meter cannot be
+  read.
 
 **Unattended ticks inherit every rule above.** Autopilot changes *who triggers* a tick, never *what a tick
 may do*: the deploy gates, the call-worker cut, the `DISPUTED`-over-silence rule and §6 all apply with no
@@ -160,6 +179,17 @@ for a bounded run; OFF means a human is at the desk and watching. Three rules ar
   clicking.
 - **ON expires by itself**, at a wall-clock boundary or an item count, and emits the morning digest. A
   toggle left ON because everyone forgot is a background process running with the operator's identity.
+- **A fast failure stops the run; it does not retry it.** An unattended loop that fails in under a second
+  has learned nothing and will spend the whole weekly window proving it. The breaker opens after
+  `NIGHT_MAX_FAILURES` rows in `FAILED`/`PARKED` inside the current ON window, or `NIGHT_MAX_ITEMS` items
+  attempted — both are read as numbers when the claim happens, never recited, and `claim` refuses with the
+  figure that tripped. A queue also never re-offers a row it already answered: `FAILED` and `UNAVAILABLE`
+  are conclusions, not invitations.
+- **A dirty working tree is not a clean one.** While the repo has uncommitted changes, no new item is
+  claimed. The correct response is to name the files and escalate; **not** to clean them. A resolver
+  proposed `git checkout -- .` on 2026-10-08 and it is refused here: it discards whatever another engine
+  was mid-way through writing, which invariant 3 puts beyond any tick's reach. Equally, a breaker that
+  cannot read git reports `UNKNOWN` and refuses — the same asymmetry that makes the call-worker cut safe.
 
 ## 7. GPU Resource Discipline
 

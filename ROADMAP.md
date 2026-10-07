@@ -209,7 +209,7 @@ of a partial ledger displays wrong numbers confidently — and the operator trus
   the daemon ever reorders the registry again. And a candidate that placed an engine key *beside*
   `engines` instead of inside it saved as `200 OK` while changing nothing at all, so the registry
   document now has a declared shape and anything outside it is refused.
-- ⬜ **F8.4 Work order.** Project entity with phases (intake → plan → build → debug → done),
+- 🟡 **F8.4 Work order.** Project entity with phases (intake → plan → build → debug → done),
   bound team and leader. *Open decision:* whether each phase requires the operator's approval
   before the next one runs. Recommendation on record: yes — with a thin wallet, an unattended
   pipeline is a meter running.
@@ -221,6 +221,24 @@ of a partial ledger displays wrong numbers confidently — and the operator trus
   and §12 forbids a second definition of `job`. This migration must add `phase`, `check_command`,
   `depends_on`, `claimed_by`, `lease_expires_at`, `evidence` — and `evidence` is what makes
   "COMPLETED" mean something other than "someone felt like it".
+  Shipped the same night, as one unit with F10.2: `tools/work_order.py` is the only module that
+  owns the words `job`, `claim`, `lease` and `evidence`, and it creates `quest_tasks` — which no
+  code did before, so the eight-column table had been produced by hand all along. `claim()` is a
+  conditional `UPDATE` with a read-back, not a `SELECT` then an `UPDATE`, and the lease is stored as
+  an integer epoch because SQLite writes UTC where PostgreSQL writes local time — a `TIMESTAMP`
+  there is a seven-hour silent drift. `COMPLETED` is refused without evidence, and legacy rows keep
+  the status they were written with: `IN_PROGRESS` reads as `CLAIMED` through one `ALIAS` map and is
+  never rewritten, because a report edited by hand stops being a report (§12).
+  Two of its own bugs came from the live backend, not the test: `psycopg2` returns tuples, so every
+  `dict(r)` in the module raised in production while the SQLite selftest stayed green — fixed in
+  `run()`, and permanently watched by `selftest --live`, which asserts the same things against the
+  backend actually in use and cleans up rows it made under its own marker.
+  Remaining, and named so it is not mistaken for done: the Station work-order *view* (this table is
+  written and read from the CLI only), and the open decision above about per-phase approval.
+  *Acceptance:* `ai-station work-order next` offers an item whose dependencies are complete; the same
+  `claim` from two CLIs admits exactly one; `complete` without evidence fails.
+  Measured (Oct 8, 01:00): `selftest` 30/30, `selftest --live` on `POSTGRESQL` 11/11, and `next`
+  returns item 27 — the seeded roadmap queue, not a legacy row.
 - ⬜ **F8.5 Daily digest.** `/api/day` grouping the day's transactions per session, summarised by
   the local model, raw rows always one click below the summary.
 
@@ -323,6 +341,44 @@ Measured before designing, so this section is not aspiration:
 6. **The off switch does not require the AI's cooperation.** If the only way to stop an unattended
    loop is to ask it politely, it is not a switch. See F10.8.
 
+### Build order — set by review, not by numbering (Oct 8)
+
+The modules keep their numbers, because the queue rows and `tools/work_order.py` already cite them.
+The order they are *built* in does not follow those numbers. The ordering question went to the
+`resolver` role (per §4: `gemini`, with every measurement above inside the prompt — a headless worker
+cannot go looking), and the answer was `PERLU_KOREKSI` on three points. All three are accepted:
+
+1. **F10.8 before F10.3.** A drainer with no switch is a loop with no off. Building F10.3 first would
+   have meant one night of testing the drainer by hand, which is exactly the night nothing goes wrong,
+   and then bolting the toggle on afterwards — invariant 6 says the switch is not an accessory.
+2. **F8.4 and F10.2 are one unit, not a dependency chain.** Split, they produce a schema someone
+   migrates and a lease someone else forgets. Merged, one module owns the row and the claim on it, so
+   `claimed_by` cannot exist in a table that `claim()` does not know about.
+3. **The circuit breaker was missing entirely.** The design had a resume budget (3 nudges) and nothing
+   for the faster failure: an item whose `check_command` exits 1 in 0.2 s is claimed, released, retried,
+   and retried — the loop looks extremely busy while it drains the weekly window, and a dirty working
+   tree from the crashed run then poisons the *next* item too. Shipped tonight in `work_order.py`:
+   `NIGHT_MAX_FAILURES = 3` and `NIGHT_MAX_ITEMS = 25` are counted over the current ON window,
+   `claim()` refuses with the figure that tripped, and a working tree that is dirty — or unreadable,
+   which is `UNKNOWN`, not clean — holds the queue until a person names the files.
+
+Two of its suggestions were **refused**, and the refusals are written down because a review that is
+only agreed with is not a review:
+
+- It proposed `git checkout -- .` to clear a dirty tree before the next item. Refused: that discards
+  whatever another engine was mid-way through writing, and invariant 3 puts uncommitted work of someone
+  else beyond any tick's reach. The correct behaviour is to refuse the claim and escalate the filenames.
+  (The same reasoning rejected keystroke injection on the first night the operator was asleep: F10.7's
+  `CONTINUE` is designed and deferred, not shipped, because a resume path that has never been watched
+  over a shoulder is the same class of mistake as an off switch that has not been built yet.)
+- It deferred F9.1 until F10 lands. Refused: F9.1 reads exit codes, process trees and pane deltas —
+  deterministic, read-only, no dependency on the queue — and F10.7 needs exactly those measurements to
+  exist. Parking it costs the one thing F10 is built on. F9.1 stays unblocked and parallel.
+
+Order as it will be built: **F8.4 + F10.2** (✅ 01:00) → **F10.8** → **F10.1** → **F10.7** →
+**F10.3** → F10.4 / F10.5 / F10.6. The seeded queue encodes this through `depends_on`, so an engine
+that skips the order cannot claim.
+
 ### Modules
 
 - ⬜ **F10.1 Decision broker.** When an engine would ask the operator "option 1 or 2", it writes a
@@ -374,17 +430,41 @@ Measured before designing, so this section is not aspiration:
   Verified as shipped (Oct 8): the three rungs parse under `active_team`, `master_data.py selftest`
   still passes 30/30, and `cross_verify --list` still resolves the registry — the rungs are role ids
   pointing at existing keys, so nothing was restated.
-- ⬜ **F10.2 Task lease — the actual sync primitive.** Two engines coordinating by chatting is two
+  The row half of this module is shipped with F8.4: a `decisions` table (question, options, weight,
+  rung used, engine key, **model id that answered**, state) plus `work_order.py decide|resolve`, and
+  `resolve` refuses `RESOLVED` without a model id — a decision attributed to nobody is the F8.2 failure
+  shape again. What is *not* shipped: the dispatch itself, i.e. the code that poses the question to a
+  rung and reads the answer back from the message table **and the pane**, not only the pipe. That last
+  clause is the defect this module exists to fix; it has now cost two measured lost answers
+  (`cross_verify` reporting `TIMEOUT` at 480 s while `read_terminal` showed a finished reply), which is
+  why invariant 5 is written the way it is.
+- ✅ **F10.2 Task lease — the actual sync primitive** *(built inside F8.4, one unit — see the build
+  order above)*. Two engines coordinating by chatting is two
   engines racing to read the same prose. Add `claimed_by` + `lease_expires_at` (F8.4 columns): one
   `UPDATE ... WHERE claimed_by IS NULL` claims the item, an expired lease is reclaimable, and the
   Station's team view shows who holds what. This is what "bekerja saling sinkron" has to mean, or it
   means duplicate work with nicer vocabulary. *Acceptance:* start the same item from both CLIs;
   exactly one proceeds, the other prints the holder's id and leaves no half-written file.
+  Shipped (Oct 8): the race is won by the write, not by reading first — `claim()` is a conditional
+  `UPDATE` followed by a read-back, so two CLIs claiming in the same instant cannot both pass a check
+  they performed before the other landed. Lease is 900 s without a heartbeat and an expired lease is
+  reclaimable by design. Measured against the live backend, not a fixture: `selftest --live` claims
+  `selftest-live-<epoch>-A` as `qoder`, then `antigravity`, and the second is refused with the holder
+  named in its own message. Remaining here: the Station's *team view* of who holds what — the lease is
+  readable from the CLI today and invisible on the page until F8's reporting rows are built.
 - ⬜ **F10.3 The drainer.** A systemd user timer runs a deterministic script — no LLM — which picks
   the next unclaimed `PENDING` item, runs its `check_command` before and after, and only then calls an
   engine to do the work. The gate stays the same one that blocks a human: `cargo test -q` and
   `call_workers.py --guard`. *Acceptance:* the timer's log for a whole night contains item ids, exit
   codes, and at least one item it refused to touch because its scope hit invariant 3.
+  Two things about its place in the queue, both from the resolver's review: it is built **after F10.8**,
+  because a timer that can start this loop needs a switch that can stop it first, and after **F10.7**,
+  because a drainer that cannot tell a stalled engine from a finished one re-claims held work. Its
+  circuit breaker is already written and green, though — counted per ON window, enforced inside
+  `claim()` rather than in the timer, so a human running the same commands tonight trips the same
+  number. The queue also refuses to re-offer a concluded row: `FAILED` and `UNAVAILABLE` are skipped by
+  `next_item()`, which was caught by `next` handing back legacy row 15 (`UNAVAILABLE`, an engine saying
+  it could not run the item) as if it were fresh work.
 - ⬜ **F10.4 Proposal queue — the safe form of "improve forever".** The loop may *author* new roadmap
   items, never *adopt* them: proposals land as `PROPOSED` rows carrying the observation, the proposed
   check command, and the files it would touch. Bro approves by editing one column in the Station.
@@ -415,6 +495,12 @@ Measured before designing, so this section is not aspiration:
   four nudges is not asleep — it is stuck, and nudging it again is noise that looks like progress.
   *Acceptance:* stop a session mid-item on purpose and the daemon resumes it once, visibly, with the
   item id in the log; then make the pane unreadable and prove it sends nothing at all.
+  Shipped as data only (Oct 8): `resume_count` and `due_epoch` columns, and `stalled()`, which lists
+  candidates and says in its own docstring that a list is not a decision to type. **No keystroke is
+  injected yet, deliberately, on the first night this design existed** — the resume path has never been
+  watched over an operator's shoulder, and F10.7 is the one module whose failure mode is a machine
+  typing into a person's terminal. Built after F10.8 for that reason: a thing that sends `CONTINUE` must
+  have a switch that stops it before it has users.
 - ⬜ **F10.8 Autopilot switch — ON means the machine is entrusted, not that it is unowned.** A toggle on
   the Workstation cockpit (`gui.html` is the control surface; the *state* of the toggle is recorded as
   a row so the Station can show who had the machine and when). The operator's framing is the spec:

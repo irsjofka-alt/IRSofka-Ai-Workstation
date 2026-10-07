@@ -3,6 +3,7 @@
   station.html — the human-facing record of the workstation: what was asked, what was done, what came out.
   Read-only by design. Every number here is derived by PostgreSQL from the action log, so nothing on this
   page was typed by an AI describing its own work. Data comes from /api/station; the console stays at /.
+  Layout borrows from a game wiki: grouped sidebar, tabbed feed, cards that open into evidence.
 -->
 <html lang="en">
 <head>
@@ -11,136 +12,199 @@
 <title>Irsofka AI Station</title>
 <style>
   :root {
-    --bg: #0b0f14;
-    --panel: #121923;
-    --panel-2: #172231;
-    --line: #22303f;
+    --bg: #0a0e13;
+    --rail: #0d131b;
+    --panel: #121a24;
+    --panel-2: #17212e;
+    --line: #202d3c;
     --ink: #e6edf3;
     --ink-dim: #8b9bb0;
-    --ink-faint: #5c6b80;
+    --ink-faint: #5b6a7f;
     --accent: #4fd1c5;
     --amber: #f0b429;
     --rose: #f2617a;
     --violet: #a78bfa;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+    --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
   }
   * { box-sizing: border-box; }
-  html, body { margin: 0; padding: 0; }
+  html, body { margin: 0; padding: 0; height: 100%; }
   body {
-    background: radial-gradient(1200px 600px at 15% -10%, #14202e 0%, var(--bg) 55%) fixed;
-    color: var(--ink);
+    background: var(--bg); color: var(--ink);
     font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
     -webkit-font-smoothing: antialiased;
-    padding: 0 24px 64px;
+    display: grid; grid-template-columns: 236px 1fr;
   }
-  header {
-    display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
-    gap: 20px; padding: 34px 0 18px; border-bottom: 1px solid var(--line);
+
+  /* ---------- sidebar ---------- */
+  aside {
+    background: linear-gradient(180deg, #101823 0%, var(--rail) 100%);
+    border-right: 1px solid var(--line);
+    padding: 22px 0 28px; position: sticky; top: 0; height: 100vh; overflow-y: auto;
   }
-  h1 { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: .2px; }
-  .sub { margin: 5px 0 0; color: var(--ink-dim); font-size: 13px; }
-  .sub b { color: var(--accent); font-weight: 600; }
-  .stats { display: flex; flex-wrap: wrap; gap: 8px; }
-  .stat {
-    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
-    padding: 8px 13px; min-width: 78px;
+  .brand { padding: 0 20px 18px; border-bottom: 1px solid var(--line); }
+  .brand h1 { margin: 0; font: 600 17px/1.2 var(--serif); letter-spacing: 2.4px; text-transform: uppercase; }
+  .brand p { margin: 6px 0 0; font-size: 10.5px; letter-spacing: 1.6px; text-transform: uppercase; color: var(--ink-faint); }
+  .group { padding: 20px 12px 0; }
+  .group > h2 {
+    margin: 0 8px 8px; font-size: 10px; font-weight: 700; letter-spacing: 1.5px;
+    text-transform: uppercase; color: var(--ink-faint);
   }
-  .stat span { display: block; font-size: 11px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .6px; }
-  .stat strong { display: block; font-size: 19px; font-weight: 600; font-family: var(--mono); }
+  .nav {
+    display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
+    background: none; border: 0; border-left: 2px solid transparent; border-radius: 0 8px 8px 0;
+    color: var(--ink-dim); padding: 8px 12px; font: inherit; font-size: 14px; cursor: pointer;
+  }
+  .nav:hover { color: var(--ink); background: #141d29; }
+  .nav.on { color: var(--ink); background: #16212e; border-left-color: var(--accent); }
+  .nav.soon { color: var(--ink-faint); cursor: default; }
+  .nav.soon:hover { background: none; color: var(--ink-faint); }
+  .nav i { font-style: normal; width: 18px; text-align: center; opacity: .85; }
+  .nav em {
+    margin-left: auto; font-style: normal; font-size: 9.5px; letter-spacing: .8px;
+    text-transform: uppercase; color: var(--ink-faint); border: 1px solid var(--line);
+    border-radius: 4px; padding: 1px 5px;
+  }
+
+  /* ---------- main ---------- */
+  main { padding: 0 30px 70px; min-width: 0; }
+  header { padding: 30px 0 16px; border-bottom: 1px solid var(--line); }
+  .crumb { font-size: 12px; color: var(--ink-faint); letter-spacing: .4px; }
+  .crumb b { color: var(--ink-dim); font-weight: 500; }
+  h2.title { margin: 12px 0 4px; font: 600 26px/1.15 var(--serif); letter-spacing: .3px; }
+  .sub { margin: 0; color: var(--ink-dim); font-size: 13px; }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px; }
+  .stat { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 7px 13px; min-width: 76px; }
+  .stat span { display: block; font-size: 10px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .7px; }
+  .stat strong { display: block; font-size: 18px; font-weight: 600; font-family: var(--mono); }
   .stat.bad strong { color: var(--rose); }
   .stat.good strong { color: var(--accent); }
-  nav {
-    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
-    padding: 16px 0 22px; position: sticky; top: 0; background: rgba(11,15,20,.92);
-    backdrop-filter: blur(8px); z-index: 5; border-bottom: 1px solid var(--line);
+
+  nav.tabs {
+    display: flex; flex-wrap: wrap; gap: 7px; align-items: center; padding: 16px 0 18px;
+    position: sticky; top: 0; z-index: 5;
+    background: rgba(10,14,19,.93); backdrop-filter: blur(8px);
   }
   .chip {
-    background: transparent; color: var(--ink-dim); border: 1px solid var(--line);
+    background: var(--panel); color: var(--ink-dim); border: 1px solid var(--line);
     border-radius: 999px; padding: 5px 13px; font-size: 13px; cursor: pointer;
   }
   .chip:hover { color: var(--ink); border-color: var(--ink-faint); }
   .chip.on { background: var(--accent); border-color: var(--accent); color: #06202a; font-weight: 600; }
   #q {
     margin-left: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
-    color: var(--ink); padding: 6px 11px; font-size: 13px; min-width: 220px;
+    color: var(--ink); padding: 6px 11px; font-size: 13px; min-width: 210px;
   }
   #q:focus { outline: none; border-color: var(--accent); }
-  #feed { display: flex; flex-direction: column; gap: 12px; padding-top: 22px; }
+
+  /* ---------- cards ---------- */
+  #feed { display: flex; flex-direction: column; gap: 11px; }
   article {
     background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
-    padding: 15px 17px; display: grid; grid-template-columns: 68px 1fr; gap: 16px;
+    padding: 14px 16px; display: grid; grid-template-columns: 74px 1fr; gap: 16px; cursor: pointer;
   }
   article:hover { border-color: #2e4054; background: var(--panel-2); }
   article.live { border-left: 2px solid var(--accent); }
   article.fail { border-left: 2px solid var(--rose); }
-  .when { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); padding-top: 2px; }
+  .when { font-family: var(--mono); font-size: 11.5px; color: var(--ink-faint); }
   .when em { display: block; font-style: normal; color: var(--ink-dim); margin-top: 3px; }
-  .ask { margin: 0 0 9px; font-size: 15px; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+  .ask { margin: 0 0 9px; font-size: 15px; white-space: pre-wrap; word-break: break-word; }
   .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
-  .tag {
-    font-family: var(--mono); font-size: 11px; color: var(--ink-dim);
-    background: #0e1520; border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px;
-  }
+  .tag { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); background: #0d141d;
+         border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px; }
   .tag.state { color: var(--accent); border-color: #1d4b48; }
   .tag.state.open { color: var(--amber); border-color: #4a3a13; }
   .tag.bad { color: var(--rose); border-color: #4d2230; }
   .tag.model { color: var(--violet); border-color: #322a4d; }
+  .hint { color: var(--ink-faint); font-size: 11px; margin-left: auto; }
   .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
-  .file {
-    font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim);
-    background: #0e1520; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px;
-    cursor: default;
-  }
+  .file { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); background: #0d141d;
+          border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; }
   .file.media { color: var(--amber); border-color: #4a3a13; }
   .file i { font-style: normal; color: var(--ink-faint); }
-  article { cursor: pointer; }
-  .detail { display: none; margin-top: 11px; padding-top: 11px; border-top: 1px dashed var(--line); }
+
+  .detail { display: none; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--line); }
+  article.open { background: var(--panel-2); }
   article.open .detail { display: block; }
-  .detail h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--ink-faint); font-weight: 600; }
-  .step { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); padding: 2px 0; white-space: pre-wrap; word-break: break-word; }
-  .step b { color: var(--ink-faint); font-weight: 400; margin-right: 8px; }
-  .answer { font-size: 14px; color: var(--ink); background: #0e1520; border-left: 2px solid var(--accent);
-            border-radius: 0 8px 8px 0; padding: 9px 12px; margin: 4px 0 12px; white-space: pre-wrap; }
-  .answer i { display: block; font-style: normal; color: var(--ink-faint); font-size: 11px; margin-top: 6px; }
-  .more { color: var(--ink-faint); font-size: 12px; }
-  .hint { color: var(--ink-faint); font-size: 11px; margin-left: auto; }
-  .empty { color: var(--ink-faint); text-align: center; padding: 60px 0; font-size: 14px; }
-  footer {
-    margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line);
-    color: var(--ink-faint); font-size: 12px; display: flex; justify-content: space-between; gap: 16px;
+  .detail h4 {
+    margin: 0 0 7px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 1.1px;
+    color: var(--ink-faint); font-weight: 700;
   }
-  a { color: var(--ink-dim); }
+  .answer { font-size: 14px; background: #0d141d; border-left: 2px solid var(--accent);
+            border-radius: 0 8px 8px 0; padding: 10px 13px; margin: 0 0 14px; white-space: pre-wrap; word-break: break-word; }
+  .answer i { display: block; font-style: normal; color: var(--ink-faint); font-size: 11px; margin-top: 7px; }
+  .step { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); padding: 2.5px 0;
+          white-space: pre-wrap; word-break: break-word; }
+  .step b { color: var(--ink-faint); font-weight: 400; margin-right: 9px; }
+  .more { color: var(--ink-faint); font-size: 12px; margin-top: 5px; }
+
+  /* ---------- artefacts view ---------- */
+  .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(268px, 1fr)); gap: 11px; }
+  .box { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px; }
+  .box h3 { margin: 0 0 3px; font: 500 14px/1.35 var(--mono); word-break: break-all; }
+  .box p { margin: 0; font-size: 12px; color: var(--ink-faint); }
+  .box .bar { height: 3px; border-radius: 3px; background: #1b2836; margin-top: 10px; overflow: hidden; }
+  .box .bar > i { display: block; height: 100%; background: var(--accent); }
+
+  .empty { color: var(--ink-faint); text-align: center; padding: 56px 0; font-size: 14px; }
+  footer { margin-top: 24px; padding-top: 13px; border-top: 1px solid var(--line);
+           color: var(--ink-faint); font-size: 12px; display: flex; justify-content: space-between; gap: 16px; }
 </style>
 </head>
 <body>
-<header>
-  <div>
-    <h1>Irsofka AI Station</h1>
-    <p class="sub" id="sub">Loading…</p>
+<aside>
+  <div class="brand">
+    <h1>Irsofka</h1>
+    <p>AI Station</p>
   </div>
-  <div class="stats" id="stats"></div>
-</header>
+  <div class="group">
+    <h2>Today</h2>
+    <button class="nav on" data-view="feed"><i>≡</i> Activity feed</button>
+    <button class="nav" data-view="files"><i>▤</i> Artefacts</button>
+    <button class="nav soon" data-soon="cost"><i>¤</i> Treasury<em>soon</em></button>
+  </div>
+  <div class="group">
+    <h2>Team</h2>
+    <button class="nav soon" data-soon="roles"><i>◎</i> Roles &amp; verifier<em>soon</em></button>
+    <button class="nav soon" data-soon="models"><i>◈</i> Models &amp; VRAM<em>soon</em></button>
+  </div>
+  <div class="group">
+    <h2>System</h2>
+    <button class="nav soon" data-soon="engines"><i>⚙</i> Engines<em>soon</em></button>
+    <button class="nav soon" data-soon="backup"><i>↺</i> Backups<em>soon</em></button>
+    <a class="nav" href="/" style="text-decoration:none"><i>▸</i> Open console</a>
+  </div>
+</aside>
 
-<nav>
-  <button class="chip on" data-f="all">All</button>
-  <button class="chip" data-f="work">Did work</button>
-  <button class="chip" data-f="talk">Talk only</button>
-  <button class="chip" data-f="fail">Had failures</button>
-  <button class="chip" data-f="open">In progress</button>
-  <input id="q" type="search" placeholder="search commands and files…">
-</nav>
+<main>
+  <header>
+    <div class="crumb">AI Station / <b id="crumb">Activity feed</b></div>
+    <h2 class="title" id="title">What happened</h2>
+    <p class="sub" id="sub">Loading…</p>
+    <div class="stats" id="stats"></div>
+  </header>
 
-<main id="feed"></main>
+  <nav class="tabs" id="tabs">
+    <button class="chip on" data-f="all">All</button>
+    <button class="chip" data-f="work">Did work</button>
+    <button class="chip" data-f="talk">Talk only</button>
+    <button class="chip" data-f="fail">Had failures</button>
+    <button class="chip" data-f="open">In progress</button>
+    <input id="q" type="search" placeholder="search commands and files…">
+  </nav>
 
-<footer>
-  <span id="note">Derived from PostgreSQL. No number on this page was typed by an AI.</span>
-  <span id="stamp"></span>
-</footer>
+  <div id="feed"></div>
+
+  <footer>
+    <span>Derived from PostgreSQL. No number on this page was typed by an AI.</span>
+    <span id="stamp"></span>
+  </footer>
+</main>
 
 <script>
 (function () {
   "use strict";
-  var filter = "all", query = "", data = { posts: [], totals: {} };
+  var filter = "all", query = "", view = "feed", data = { posts: [], totals: {} };
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -148,37 +212,28 @@
     if (text !== undefined && text !== null) n.textContent = String(text);
     return n;
   }
-
   function clock(iso) { return iso ? String(iso).slice(11, 16) : ""; }
+  var MONTHS = ["Jan","Feb","Mar","Apr","May","Jun","Jul","Aug","Sep","Oct","Nov","Dec"];
 
-  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
-
-  // Feed berisi 80 postingan terakhir, dan itu melewati batas hari. Menampilkan jam saja
-  // membuat postingan kemarin sore tampak seperti akan datang — tanggal harus ikut khiatika
-  // barisnya bukan dari hari ini.
+  // The feed holds the last 80 entries, which crosses days. Showing a bare clock made
+  // yesterday evening read like it had not happened yet.
   function when(iso) {
     var s = String(iso || "");
     if (!s) return "";
-    var today = new Date();
-    var ymd = s.slice(0, 10);
-    var now = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") +
-              "-" + String(today.getDate()).padStart(2, "0");
-    if (ymd === now) return clock(s);
+    var t = new Date();
+    var now = t.getFullYear() + "-" + String(t.getMonth() + 1).padStart(2, "0") +
+              "-" + String(t.getDate()).padStart(2, "0");
+    if (s.slice(0, 10) === now) return clock(s);
     var mon = MONTHS[(parseInt(s.slice(5, 7), 10) || 1) - 1];
     return (mon || s.slice(5, 7)) + " " + parseInt(s.slice(8, 10), 10) + " · " + clock(s);
   }
-
   function human(seconds) {
     var s = Number(seconds) || 0;
     if (s < 60) return s + "s";
     if (s < 3600) return Math.round(s / 60) + "m";
     return (s / 3600).toFixed(1) + "h";
   }
-
-  function base(path) {
-    var parts = String(path).split("/");
-    return parts[parts.length - 1] || path;
-  }
+  function base(path) { return String(path).split("/").pop() || path; }
 
   function passes(post) {
     var worked = post.commands > 0 || post.tool_calls > 0;
@@ -198,22 +253,17 @@
     var box = document.getElementById("stats");
     box.textContent = "";
     [["posts", t.posts, ""], ["commands", t.commands, ""], ["tool calls", t.tool_calls, ""],
-     ["files touched", t.artifacts, "good"], ["failed", t.failed, t.failed ? "bad" : ""],
-     ["time on task", human(t.work_seconds), ""]].forEach(function (row) {
-      var card = el("div", "stat " + row[2]);
-      card.appendChild(el("span", null, row[0]));
-      card.appendChild(el("strong", null, row[1] === undefined ? "—" : row[1]));
+     ["artefacts", t.artifacts, "good"], ["failed", t.failed, t.failed ? "bad" : ""],
+     ["time on task", human(t.work_seconds), ""]].forEach(function (r) {
+      var card = el("div", "stat " + r[2]);
+      card.appendChild(el("span", null, r[0]));
+      card.appendChild(el("strong", null, r[1] === undefined ? "—" : r[1]));
       box.appendChild(card);
     });
-    var open = (data.posts || []).filter(function (p) { return p.state === "IN_PROGRESS"; }).length;
-    document.getElementById("sub").textContent =
-      (t.posts || 0) + " entries today" + (open ? " · " + open + " running right now" : "") +
-      " · showing last " + (data.posts || []).length + " from the action log";
   }
 
   function renderPost(post) {
     var card = el("article", post.state === "IN_PROGRESS" ? "live" : (post.failed ? "fail" : ""));
-
     var stamp = el("div", "when", when(post.opened_at));
     stamp.appendChild(el("em", null, post.closed_at ? "→ " + when(post.closed_at) : "running"));
     stamp.appendChild(el("em", null, human(post.duration_s)));
@@ -225,35 +275,15 @@
     var row = el("div", "row");
     row.appendChild(el("span", "tag state " + (post.state === "IN_PROGRESS" ? "open" : ""),
                        post.state === "IN_PROGRESS" ? "in progress" : "done"));
-    row.appendChild(el("span", "tag", post.commands + " cmd"));
+    row.appendChild(el("span", "tag", (post.steps || []).length + " commands"));
     row.appendChild(el("span", "tag", post.tool_calls + " tool"));
     if (post.failed) row.appendChild(el("span", "tag bad", post.failed + " failed"));
     if (post.tab) row.appendChild(el("span", "tag", post.tab));
     if (post.model) row.appendChild(el("span", "tag model", post.model));
+    if ((post.steps || []).length || post.outcome) {
+      row.appendChild(el("span", "hint", "click to open the evidence"));
+    }
     body.appendChild(row);
-
-    var steps = post.steps || [];
-    if (steps.length || post.outcome) {
-      row.appendChild(el("span", "hint", "click for the " + steps.length + " commands run"));
-    }
-
-    var detail = el("div", "detail");
-    if (post.outcome && post.outcome.text) {
-      var ans = el("div", "answer", post.outcome.text);
-      ans.appendChild(el("i", null, "final answer, first 400 characters as recorded — the full text stays in the transcript"));
-      detail.appendChild(el("h4", null, "What the AI said when it finished"));
-      detail.appendChild(ans);
-    }
-    if (steps.length) {
-      detail.appendChild(el("h4", null, "Commands actually run"));
-      steps.slice(0, 12).forEach(function (s) {
-        var line = el("div", "step");
-        line.appendChild(el("b", null, s.at));
-        line.appendChild(document.createTextNode(s.cmd));
-        detail.appendChild(line);
-      });
-      if (steps.length > 12) detail.appendChild(el("div", "more", "… " + (steps.length - 12) + " more"));
-    }
 
     var files = post.artifacts || [];
     if (files.length) {
@@ -266,8 +296,29 @@
       });
       body.appendChild(box);
     }
+
+    var detail = el("div", "detail");
+    if (post.outcome && post.outcome.text) {
+      detail.appendChild(el("h4", null, "What the AI said when it finished"));
+      var ans = el("div", "answer", post.outcome.text);
+      ans.appendChild(el("i", null, "recorded answer — the transcript holds the rest"));
+      detail.appendChild(ans);
+    }
+    if ((post.steps || []).length) {
+      detail.appendChild(el("h4", null, "Commands actually run"));
+      post.steps.slice(0, 14).forEach(function (s) {
+        var line = el("div", "step");
+        line.appendChild(el("b", null, s.at));
+        line.appendChild(document.createTextNode(s.cmd));
+        detail.appendChild(line);
+      });
+      if (post.steps.length > 14) {
+        detail.appendChild(el("div", "more", "… " + (post.steps.length - 14) + " more in this entry"));
+      }
+    }
     body.appendChild(detail);
     card.appendChild(body);
+
     card.addEventListener("click", function (e) {
       if (e.target.closest("a")) return;
       card.classList.toggle("open");
@@ -275,15 +326,58 @@
     return card;
   }
 
-  function render() {
-    renderStats();
+  function renderFiles() {
+    var seen = {}, list = [];
+    (data.posts || []).forEach(function (p) {
+      (p.artifacts || []).forEach(function (a) {
+        if (!seen[a.path]) { seen[a.path] = { path: a.path, edits: 0, kind: a.kind, last: a.at }; list.push(seen[a.path]); }
+        seen[a.path].edits += a.edits || 1;
+        if (a.last > seen[a.path].last) seen[a.path].last = a.last;
+      });
+    });
+    list.sort(function (a, b) { return b.edits - a.edits; });
+    if (query) list = list.filter(function (f) { return f.path.toLowerCase().indexOf(query) !== -1; });
+
     var feed = document.getElementById("feed");
     feed.textContent = "";
-    var shown = (data.posts || []).filter(passes);
-    if (!shown.length) {
-      feed.appendChild(el("p", "empty", "Nothing matches this filter."));
-    } else {
-      shown.forEach(function (p) { feed.appendChild(renderPost(p)); });
+    if (!list.length) { feed.appendChild(el("p", "empty", "No file was touched in this window.")); return; }
+    var grid = el("div", "grid");
+    var top = list[0].edits || 1;
+    list.slice(0, 60).forEach(function (f) {
+      var box = el("div", "box");
+      box.appendChild(el("h3", null, base(f.path)));
+      box.appendChild(el("p", null, f.edits + (f.edits > 1 ? " edits" : " edit") + " · last " + f.last));
+      box.appendChild(el("p", null, f.path.replace(/^\/home\/[^/]+/, "~")));
+      var bar = el("div", "bar"), fill = el("i");
+      fill.style.width = Math.max(6, Math.round(f.edits / top * 100)) + "%";
+      if (f.kind === "media") fill.style.background = "var(--amber)";
+      bar.appendChild(fill);
+      box.appendChild(bar);
+      grid.appendChild(box);
+    });
+    feed.appendChild(grid);
+  }
+
+  function render() {
+    renderStats();
+    var titles = { feed: ["What happened", "Activity feed"], files: ["Artefacts", "Files touched"] };
+    document.getElementById("title").textContent = titles[view][0];
+    document.getElementById("crumb").textContent = titles[view][1];
+    document.getElementById("tabs").style.display = view === "feed" ? "" : "none";
+
+    var open = (data.posts || []).filter(function (p) { return p.state === "IN_PROGRESS"; }).length;
+    document.getElementById("sub").textContent =
+      (data.totals.posts || 0) + " entries today" +
+      (open ? " · " + open + " running right now" : "") +
+      " · showing the last " + (data.posts || []).length + " from the action log";
+
+    var feed = document.getElementById("feed");
+    feed.textContent = "";
+    if (view === "files") { renderFiles(); }
+    else {
+      var shown = (data.posts || []).filter(passes);
+      if (!shown.length) feed.appendChild(el("p", "empty", "Nothing matches this filter."));
+      else shown.forEach(function (p) { feed.appendChild(renderPost(p)); });
     }
     document.getElementById("stamp").textContent =
       "refreshed " + new Date().toLocaleTimeString() + " · source " + (data.generated_at || "—");
@@ -302,7 +396,8 @@
         render();
       })
       .catch(function () {
-        document.getElementById("sub").textContent = "daemon unreachable — is irsofka-ai-workstation running?";
+        document.getElementById("sub").textContent =
+          "daemon unreachable — is irsofka-ai-workstation running?";
       });
   }
 
@@ -312,6 +407,20 @@
       chip.classList.add("on");
       filter = chip.dataset.f;
       render();
+    });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".nav[data-view]"), function (item) {
+    item.addEventListener("click", function () {
+      document.querySelector(".nav.on").classList.remove("on");
+      item.classList.add("on");
+      view = item.dataset.view;
+      render();
+    });
+  });
+  Array.prototype.forEach.call(document.querySelectorAll(".nav.soon"), function (item) {
+    item.addEventListener("click", function () {
+      item.querySelector("em").textContent = "F8 pending";
+      setTimeout(function () { item.querySelector("em").textContent = "soon"; }, 1600);
     });
   });
   document.getElementById("q").addEventListener("input", function (e) {

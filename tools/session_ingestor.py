@@ -814,11 +814,84 @@ def api(store: Store, limit: int, engine: str = "", kind: str = ""):
     }, default=str))
 
 
+STATION_POSTS_VIEW = """
+CREATE OR REPLACE VIEW station_posts AS
+WITH pr AS (
+  SELECT id, ts, session_id, tab, model, cwd, summary
+  FROM action_log
+  WHERE kind = 'prompt'
+), bnd AS (
+  SELECT pr.id,
+         pr.ts AS opened_at,
+         pr.session_id, pr.tab, pr.model, pr.cwd, pr.summary,
+         (SELECT t.ts FROM action_log t
+           WHERE t.kind = 'turn' AND t.session_id = pr.session_id AND t.ts > pr.ts
+           ORDER BY t.ts LIMIT 1) AS closed_at,
+         (SELECT t.summary FROM action_log t
+           WHERE t.kind = 'turn' AND t.session_id = pr.session_id AND t.ts > pr.ts
+           ORDER BY t.ts LIMIT 1) AS turn_note
+  FROM pr
+)
+SELECT bnd.id AS post_id,
+       bnd.opened_at,
+       bnd.closed_at,
+       bnd.tab,
+       bnd.model,
+       bnd.cwd,
+       left(bnd.summary, 240) AS command,
+       EXTRACT(EPOCH FROM (COALESCE(bnd.closed_at, now()) - bnd.opened_at))::int AS duration_s,
+       (SELECT count(*) FROM action_log a WHERE a.kind='command'      AND a.session_id=bnd.session_id AND a.ts>=bnd.opened_at AND (bnd.closed_at IS NULL OR a.ts<=bnd.closed_at)) AS commands,
+       (SELECT count(*) FROM action_log a WHERE a.kind='tool_call'    AND a.session_id=bnd.session_id AND a.ts>=bnd.opened_at AND (bnd.closed_at IS NULL OR a.ts<=bnd.closed_at)) AS tool_calls,
+       (SELECT count(*) FROM action_log a WHERE a.kind='command_exit' AND a.exit_code <> 0 AND a.session_id=bnd.session_id AND a.ts>=bnd.opened_at AND (bnd.closed_at IS NULL OR a.ts<=bnd.closed_at)) AS failed,
+       CASE WHEN bnd.closed_at IS NULL THEN 'IN_PROGRESS' ELSE 'CLOSED' END AS state,
+       bnd.turn_note
+FROM bnd
+"""
+
+
+def ensure_station_view(store: Store) -> bool:
+    """Bangunkan view `station_posts` — satu baris = satu postingan.
+
+    Postingan TIDAK ditulis siapa pun. Ia diturunkan dari action_log setiap kali dibaca, jadi
+    tidak bisa basi, tidak bisa disunting, dan tidak memakan token satu byte pun: yang menutup
+    postingan adalah baris `turn` yang ditulis watcher, bukan laporan dari AI yang selesai kerja.
+
+    Hanya PostgreSQL. View SQLite fallback sengaja tidak dibuat: DDL-nya memakai EXTRACT(EPOCH)
+    dan cast `::int`, dan fallback itu ada supaya workstation tetap hidup saat Postgres mati —
+    bukan supaya ia punya fitur yang sama.
+    """
+    if not str(store.engine).upper().startswith("POSTG"):
+        return False
+    try:
+        with store.conn.cursor() as cur:
+            cur.execute(STATION_POSTS_VIEW)
+        store.conn.commit()
+        return True
+    except Exception as exc:  # noqa: BLE001
+        print(f"[ingestor] view station_posts gagal: {exc}", file=sys.stderr)
+        return False
+
+
+def posts(store: Store, limit: int = 20) -> int:
+    """Cetak postingan terakhir — bukti bahwa rekam jejak menutup dirinya sendiri."""
+    # `ts` bertipe timestamptz: to_char sudah memakai timezone koneksi. Konversi ganda
+    # ("at time zone 'UTC' at time zone ...") justru menggeser jam 7 ke belakang.
+    rows = store.query(
+        "SELECT to_char(opened_at,'MM-DD HH24:MI'),"
+        " state, duration_s, commands, tool_calls, failed, left(command,70)"
+        " FROM station_posts ORDER BY opened_at DESC LIMIT %s", (limit,))
+    rows = list(reversed(rows))
+    for t, state, dur, cmd, tool, fail, cmd_text in rows:
+        flag = "!" if fail else " "
+        print(f" {flag} {t}  {state:<11} {dur:>5}s  cmd={cmd:<3} tool={tool:<3} fail={fail:<2} {cmd_text}")
+    return len(rows)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Ingestor log sesi AI Workstation ke SQL")
     ap.add_argument("mode", nargs="?", default="once",
                     choices=["once", "watch", "recent", "handoff", "snapshot", "stats",
-                             "recovery", "api"])
+                             "recovery", "api", "posts"])
     ap.add_argument("limit", nargs="?", type=int, default=40)
     ap.add_argument("--engine", default="")
     ap.add_argument("--kind", default="")
@@ -827,6 +900,7 @@ def main():
     args = ap.parse_args()
 
     store = Store()
+    ensure_station_view(store)
     meta = qoder_runtime_profile()
 
     if args.mode == "watch":
@@ -837,6 +911,7 @@ def main():
                 print(f"[ingestor error] {exc}", file=sys.stderr)
                 try:
                     store = Store()
+                    ensure_station_view(store)
                 except Exception:  # noqa: BLE001
                     time.sleep(args.interval * 4)
             time.sleep(args.interval)
@@ -858,6 +933,11 @@ def main():
         run_once(store, meta)
         where = snapshot(store, args.session, min(args.limit, 40))
         print(f"[snapshot] tersimpan: {where}", file=sys.stderr)
+    elif args.mode == "posts":
+        if not ensure_station_view(store):
+            print("(view postingan hanya tersedia di PostgreSQL; fallback SQLite sedang aktif)")
+        elif not posts(store, args.limit):
+            print("(belum ada postingan)")
     elif args.mode == "recovery":
         run_once(store, meta)
         print("=== TERAKHIR DARI action_log ===")

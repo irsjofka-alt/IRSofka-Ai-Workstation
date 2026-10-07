@@ -41,6 +41,9 @@ case "$1" in
   logstats)
     python3 "$SCRIPT_DIR/tools/session_ingestor.py" stats
     ;;
+  posts)
+    python3 "$SCRIPT_DIR/tools/session_ingestor.py" posts "${2:-15}"
+    ;;
   help|*)
     echo "AI Workstation Hub - Pop!_OS COSMIC"
     echo "Usage: ai-station [command]"
@@ -58,6 +61,7 @@ case "$1" in
     echo "  snapshot [N]            Tulis handoff mekanis sekarang (dipanggil otomatis saat sesi mati)"
     echo "  recovery [N]            recall + handoff sekaligus, untuk memulihkan konteks sesi baru"
     echo "  logstats                Statistik isi action_log & save-state"
+    echo "  posts [N]               Riwayat postingan: 1 perintah = 1 baris, dirakit Postgres sendiri"
     echo "  help                    Tampilkan pesan bantuan ini"
     ;;
 esac

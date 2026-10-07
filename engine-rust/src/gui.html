@@ -468,6 +468,7 @@
             <div class="pill">
                 <span>RAM</span> <b id="ram-info">32 GB</b>
             </div>
+            <button class="refresh-btn" style="border-color: rgba(79, 209, 197, 0.45); color: var(--accent-teal, #4fd1c5);" onclick="openStation()" title="Open the record of what happened">📊 Station</button>
             <button class="refresh-btn" onclick="refreshUI()" title="Reload interface">🔄 Refresh UI</button>
             <button class="refresh-btn" style="border-color: rgba(244, 63, 94, 0.4); color: var(--accent-rose);" onclick="restartServerDaemon()" title="Restart server service">⚡ Restart Daemon</button>
         </div>
@@ -1179,6 +1180,14 @@
 
         function refreshUI() {
             window.location.reload();
+        }
+
+        async function openStation() {
+            // Lewat daemon, bukan window.open: di jendela wry tidak ada tab untuk dibuka,
+            // dan daftar aksinya tertutup — halaman ini tidak bisa menyuruh menjalankan apa pun.
+            try { await fetch('/api/action', {method:'POST', headers:{'Content-Type':'application/json'},
+                  body: JSON.stringify({action:'open_station'})}); }
+            catch(e) { window.open('/station', '_blank'); }
         }
 
         async function restartServerDaemon() {

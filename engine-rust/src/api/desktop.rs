@@ -10,7 +10,7 @@ use serde_json::{json, Value};
 use std::fs;
 use std::process::Command;
 
-use crate::paths::station_dir;
+use crate::paths::{station_dir, station_port};
 
 pub(crate) async fn handle_see() -> Json<Value> {
     let script = station_dir().join("tools").join("wayland_actor.py");
@@ -65,6 +65,12 @@ pub(crate) async fn handle_action(Json(payload): Json<ActionPayload>) -> Json<Va
             let _ = Command::new("pactl")
                 .args(["set-sink-mute", "@DEFAULT_SINK@", "toggle"])
                 .spawn();
+        }
+        Some("open_station") => {
+            // Alamatnya dibangun dari port yang sedang dipakai — tombol ini tetap benar
+            // setelah STATION_PORT diubah, dan tidak ada string dari body yang masuk ke shell.
+            let url = format!("http://127.0.0.1:{}/station", station_port());
+            let _ = Command::new("xdg-open").arg(url).spawn();
         }
         Some("notify_test") => {
             let _ = Command::new("notify-send")

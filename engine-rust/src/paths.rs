@@ -64,6 +64,11 @@ pub(crate) fn ingestor_path() -> PathBuf {
     station_dir().join("tools").join("session_ingestor.py")
 }
 
+/// Halaman Station: muka dari semua catatan, dibaca manusia — bukan tempat mengetik.
+pub(crate) fn station_path() -> PathBuf {
+    station_dir().join("engine-rust").join("src").join("station.html")
+}
+
 pub(crate) fn tabs_log_dir() -> PathBuf {
     station_dir().join("logs").join("tabs")
 }

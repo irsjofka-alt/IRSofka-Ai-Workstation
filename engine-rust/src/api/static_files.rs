@@ -9,7 +9,7 @@ use axum::http::{header, StatusCode};
 use axum::response::{IntoResponse, Response};
 use std::fs;
 
-use crate::paths::{assets_dir, gui_path};
+use crate::paths::{assets_dir, gui_path, station_path};
 
 pub(crate) async fn serve_gui() -> Response {
     let html = fs::read_to_string(gui_path())
@@ -20,6 +20,17 @@ pub(crate) async fn serve_gui() -> Response {
         .header(header::CACHE_CONTROL, "no-store, must-revalidate")
         .body(axum::body::Body::from(html))
         .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response())
+}
+
+pub(crate) async fn serve_station() -> Response {
+    match fs::read_to_string(station_path()) {
+        Ok(html) => Response::builder()
+            .header(header::CONTENT_TYPE, "text/html; charset=utf-8")
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(axum::body::Body::from(html))
+            .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response()),
+        Err(_) => (StatusCode::NOT_FOUND, "station.html belum terpasang").into_response(),
+    }
 }
 
 pub(crate) async fn serve_asset(Path(rel): Path<String>) -> Response {

@@ -173,6 +173,8 @@ async fn run_server(profiles: HashMap<String, TabProfile>) {
 
     let app = Router::new()
         .route("/", get(static_files::serve_gui))
+        .route("/station", get(static_files::serve_station))
+        .route("/api/station", get(api::workspace::get_station))
         .route("/assets/*path", get(static_files::serve_asset))
         .route("/api/stats", get(api::stats::get_stats))
         .route("/api/workspace", get(api::workspace::get_workspace))

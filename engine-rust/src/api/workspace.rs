@@ -162,3 +162,12 @@ pub(crate) async fn get_log(Query(q): Query<LogQuery>) -> Json<Value> {
 pub(crate) async fn get_recovery(Query(q): Query<LogQuery>) -> Json<Value> {
     query_history("api", q).await
 }
+
+/// /api/station — seluruh isi halaman Station dalam satu panggilan.
+///
+/// Angkanya tidak dihitung di sini dan tidak dihitung oleh AI mana pun: handler ini cuma
+/// meneruskan permintaan ke ingestor, yang bertanya langsung ke view `station_posts` dan
+/// `station_artifacts` di PostgreSQL.
+pub(crate) async fn get_station(Query(q): Query<LogQuery>) -> Json<Value> {
+    query_history("station", q).await
+}

@@ -1,0 +1,289 @@
+<!DOCTYPE html>
+<!--
+  station.html — the human-facing record of the workstation: what was asked, what was done, what came out.
+  Read-only by design. Every number here is derived by PostgreSQL from the action log, so nothing on this
+  page was typed by an AI describing its own work. Data comes from /api/station; the console stays at /.
+-->
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Irsofka AI Station</title>
+<style>
+  :root {
+    --bg: #0b0f14;
+    --panel: #121923;
+    --panel-2: #172231;
+    --line: #22303f;
+    --ink: #e6edf3;
+    --ink-dim: #8b9bb0;
+    --ink-faint: #5c6b80;
+    --accent: #4fd1c5;
+    --amber: #f0b429;
+    --rose: #f2617a;
+    --violet: #a78bfa;
+    --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; padding: 0; }
+  body {
+    background: radial-gradient(1200px 600px at 15% -10%, #14202e 0%, var(--bg) 55%) fixed;
+    color: var(--ink);
+    font: 15px/1.55 -apple-system, "Segoe UI", Roboto, Ubuntu, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    padding: 0 24px 64px;
+  }
+  header {
+    display: flex; flex-wrap: wrap; align-items: flex-end; justify-content: space-between;
+    gap: 20px; padding: 34px 0 18px; border-bottom: 1px solid var(--line);
+  }
+  h1 { margin: 0; font-size: 21px; font-weight: 600; letter-spacing: .2px; }
+  .sub { margin: 5px 0 0; color: var(--ink-dim); font-size: 13px; }
+  .sub b { color: var(--accent); font-weight: 600; }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px; }
+  .stat {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 10px;
+    padding: 8px 13px; min-width: 78px;
+  }
+  .stat span { display: block; font-size: 11px; color: var(--ink-faint); text-transform: uppercase; letter-spacing: .6px; }
+  .stat strong { display: block; font-size: 19px; font-weight: 600; font-family: var(--mono); }
+  .stat.bad strong { color: var(--rose); }
+  .stat.good strong { color: var(--accent); }
+  nav {
+    display: flex; flex-wrap: wrap; gap: 8px; align-items: center;
+    padding: 16px 0 22px; position: sticky; top: 0; background: rgba(11,15,20,.92);
+    backdrop-filter: blur(8px); z-index: 5; border-bottom: 1px solid var(--line);
+  }
+  .chip {
+    background: transparent; color: var(--ink-dim); border: 1px solid var(--line);
+    border-radius: 999px; padding: 5px 13px; font-size: 13px; cursor: pointer;
+  }
+  .chip:hover { color: var(--ink); border-color: var(--ink-faint); }
+  .chip.on { background: var(--accent); border-color: var(--accent); color: #06202a; font-weight: 600; }
+  #q {
+    margin-left: auto; background: var(--panel); border: 1px solid var(--line); border-radius: 8px;
+    color: var(--ink); padding: 6px 11px; font-size: 13px; min-width: 220px;
+  }
+  #q:focus { outline: none; border-color: var(--accent); }
+  #feed { display: flex; flex-direction: column; gap: 12px; padding-top: 22px; }
+  article {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 15px 17px; display: grid; grid-template-columns: 68px 1fr; gap: 16px;
+  }
+  article:hover { border-color: #2e4054; background: var(--panel-2); }
+  article.live { border-left: 2px solid var(--accent); }
+  article.fail { border-left: 2px solid var(--rose); }
+  .when { font-family: var(--mono); font-size: 12px; color: var(--ink-faint); padding-top: 2px; }
+  .when em { display: block; font-style: normal; color: var(--ink-dim); margin-top: 3px; }
+  .ask { margin: 0 0 9px; font-size: 15px; color: var(--ink); white-space: pre-wrap; word-break: break-word; }
+  .row { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+  .tag {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-dim);
+    background: #0e1520; border: 1px solid var(--line); border-radius: 6px; padding: 2px 7px;
+  }
+  .tag.state { color: var(--accent); border-color: #1d4b48; }
+  .tag.state.open { color: var(--amber); border-color: #4a3a13; }
+  .tag.bad { color: var(--rose); border-color: #4d2230; }
+  .tag.model { color: var(--violet); border-color: #322a4d; }
+  .files { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 9px; }
+  .file {
+    font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim);
+    background: #0e1520; border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px;
+    cursor: default;
+  }
+  .file.media { color: var(--amber); border-color: #4a3a13; }
+  .file i { font-style: normal; color: var(--ink-faint); }
+  .empty { color: var(--ink-faint); text-align: center; padding: 60px 0; font-size: 14px; }
+  footer {
+    margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line);
+    color: var(--ink-faint); font-size: 12px; display: flex; justify-content: space-between; gap: 16px;
+  }
+  a { color: var(--ink-dim); }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Irsofka AI Station</h1>
+    <p class="sub" id="sub">Loading…</p>
+  </div>
+  <div class="stats" id="stats"></div>
+</header>
+
+<nav>
+  <button class="chip on" data-f="all">All</button>
+  <button class="chip" data-f="work">Did work</button>
+  <button class="chip" data-f="talk">Talk only</button>
+  <button class="chip" data-f="fail">Had failures</button>
+  <button class="chip" data-f="open">In progress</button>
+  <input id="q" type="search" placeholder="search commands and files…">
+</nav>
+
+<main id="feed"></main>
+
+<footer>
+  <span id="note">Derived from PostgreSQL. No number on this page was typed by an AI.</span>
+  <span id="stamp"></span>
+</footer>
+
+<script>
+(function () {
+  "use strict";
+  var filter = "all", query = "", data = { posts: [], totals: {} };
+
+  function el(tag, cls, text) {
+    var n = document.createElement(tag);
+    if (cls) n.className = cls;
+    if (text !== undefined && text !== null) n.textContent = String(text);
+    return n;
+  }
+
+  function clock(iso) { return iso ? String(iso).slice(11, 16) : ""; }
+
+  var MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+  // Feed berisi 80 postingan terakhir, dan itu melewati batas hari. Menampilkan jam saja
+  // membuat postingan kemarin sore tampak seperti akan datang — tanggal harus ikut khiatika
+  // barisnya bukan dari hari ini.
+  function when(iso) {
+    var s = String(iso || "");
+    if (!s) return "";
+    var today = new Date();
+    var ymd = s.slice(0, 10);
+    var now = today.getFullYear() + "-" + String(today.getMonth() + 1).padStart(2, "0") +
+              "-" + String(today.getDate()).padStart(2, "0");
+    if (ymd === now) return clock(s);
+    var mon = MONTHS[(parseInt(s.slice(5, 7), 10) || 1) - 1];
+    return (mon || s.slice(5, 7)) + " " + parseInt(s.slice(8, 10), 10) + " · " + clock(s);
+  }
+
+  function human(seconds) {
+    var s = Number(seconds) || 0;
+    if (s < 60) return s + "s";
+    if (s < 3600) return Math.round(s / 60) + "m";
+    return (s / 3600).toFixed(1) + "h";
+  }
+
+  function base(path) {
+    var parts = String(path).split("/");
+    return parts[parts.length - 1] || path;
+  }
+
+  function passes(post) {
+    var worked = post.commands > 0 || post.tool_calls > 0;
+    if (filter === "work" && !worked) return false;
+    if (filter === "talk" && worked) return false;
+    if (filter === "fail" && !post.failed) return false;
+    if (filter === "open" && post.state !== "IN_PROGRESS") return false;
+    if (query) {
+      var hay = post.command + " " + (post.artifacts || []).map(function (a) { return a.path; }).join(" ");
+      if (hay.toLowerCase().indexOf(query) === -1) return false;
+    }
+    return true;
+  }
+
+  function renderStats() {
+    var t = data.totals || {};
+    var box = document.getElementById("stats");
+    box.textContent = "";
+    [["posts", t.posts, ""], ["commands", t.commands, ""], ["tool calls", t.tool_calls, ""],
+     ["files touched", t.artifacts, "good"], ["failed", t.failed, t.failed ? "bad" : ""],
+     ["time on task", human(t.work_seconds), ""]].forEach(function (row) {
+      var card = el("div", "stat " + row[2]);
+      card.appendChild(el("span", null, row[0]));
+      card.appendChild(el("strong", null, row[1] === undefined ? "—" : row[1]));
+      box.appendChild(card);
+    });
+    var open = (data.posts || []).filter(function (p) { return p.state === "IN_PROGRESS"; }).length;
+    document.getElementById("sub").textContent =
+      (t.posts || 0) + " entries today" + (open ? " · " + open + " running right now" : "") +
+      " · showing last " + (data.posts || []).length + " from the action log";
+  }
+
+  function renderPost(post) {
+    var card = el("article", post.state === "IN_PROGRESS" ? "live" : (post.failed ? "fail" : ""));
+
+    var stamp = el("div", "when", when(post.opened_at));
+    stamp.appendChild(el("em", null, post.closed_at ? "→ " + when(post.closed_at) : "running"));
+    stamp.appendChild(el("em", null, human(post.duration_s)));
+    card.appendChild(stamp);
+
+    var body = el("div");
+    body.appendChild(el("p", "ask", post.command || "(no text recorded)"));
+
+    var row = el("div", "row");
+    row.appendChild(el("span", "tag state " + (post.state === "IN_PROGRESS" ? "open" : ""),
+                       post.state === "IN_PROGRESS" ? "in progress" : "done"));
+    row.appendChild(el("span", "tag", post.commands + " cmd"));
+    row.appendChild(el("span", "tag", post.tool_calls + " tool"));
+    if (post.failed) row.appendChild(el("span", "tag bad", post.failed + " failed"));
+    if (post.tab) row.appendChild(el("span", "tag", post.tab));
+    if (post.model) row.appendChild(el("span", "tag model", post.model));
+    body.appendChild(row);
+
+    var files = post.artifacts || [];
+    if (files.length) {
+      var box = el("div", "files");
+      files.forEach(function (f) {
+        var node = el("span", "file " + (f.kind === "media" ? "media" : ""), base(f.path));
+        node.title = f.path + "  (" + f.at + (f.edits > 1 ? "…" + f.last + ", " + f.edits + " edits" : "") + ")";
+        if (f.edits > 1) node.appendChild(el("i", null, " ×" + f.edits));
+        box.appendChild(node);
+      });
+      body.appendChild(box);
+    }
+    card.appendChild(body);
+    return card;
+  }
+
+  function render() {
+    renderStats();
+    var feed = document.getElementById("feed");
+    feed.textContent = "";
+    var shown = (data.posts || []).filter(passes);
+    if (!shown.length) {
+      feed.appendChild(el("p", "empty", "Nothing matches this filter."));
+    } else {
+      shown.forEach(function (p) { feed.appendChild(renderPost(p)); });
+    }
+    document.getElementById("stamp").textContent =
+      "refreshed " + new Date().toLocaleTimeString() + " · source " + (data.generated_at || "—");
+  }
+
+  function load() {
+    fetch("/api/station?limit=80", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        if (json.error) {
+          document.getElementById("feed").textContent = "";
+          document.getElementById("feed").appendChild(el("p", "empty", json.error));
+          return;
+        }
+        data = json;
+        render();
+      })
+      .catch(function () {
+        document.getElementById("sub").textContent = "daemon unreachable — is irsofka-ai-workstation running?";
+      });
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll(".chip"), function (chip) {
+    chip.addEventListener("click", function () {
+      document.querySelector(".chip.on").classList.remove("on");
+      chip.classList.add("on");
+      filter = chip.dataset.f;
+      render();
+    });
+  });
+  document.getElementById("q").addEventListener("input", function (e) {
+    query = e.target.value.toLowerCase();
+    render();
+  });
+
+  setInterval(function () { if (!document.hidden) load(); }, 10000);
+  document.addEventListener("visibilitychange", function () { if (!document.hidden) load(); });
+  load();
+})();
+</script>
+</body>
+</html>

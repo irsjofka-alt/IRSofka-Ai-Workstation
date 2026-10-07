@@ -1,5 +1,5 @@
 {
-  "_comment": "Registry mesin AI workstation. Menambah perangkat cukup di sini — cross_verify.py dan local_llm.py membacanya, tidak perlu ubah kode. Nilai 'kind': pane (CLI hidup di tab tmux), cli (spawn proses baru), ollama (model lokal).",
+  "_comment": "Registry mesin AI workstation. Menambah perangkat cukup di sini — cross_verify.py dan local_llm.py membacanya, tidak perlu ubah kode. Nilai 'kind': pane (CLI hidup di tab tmux), cli (spawn proses baru), ollama (model lokal). Blok 'usage' (F8.2 Treasury) adalah satu-satunya tempat meter sebuah mesin dinyatakan: 'engine' = nama di kosakata action_log, 'probe' = argv yang dijalankan (list, atau string yang dipecah shlex), 'parser' = nama pembaca hasilnya. 'extra' = daftar meter tambahan pada mesin yang sama, tiap entry punya probe/parser sendiri. 'probe' null atau parser 'none' berarti mesin itu tidak punya meter dan Treasury menulis UNSUPPORTED, bukan nol.",
   "engines": {
     "gemini": {
       "kind": "pane",
@@ -7,7 +7,34 @@
       "role": "reviewer",
       "model": "gemini-3.8-flash-high",
       "breath": "sedang — akun PRO, kuota terbatas, hemat untuk pemeriksaan penting",
-      "note": "Punya tool sendiri: bisa grep/read kode Anda sebelum memberi verdict."
+      "note": "Punya tool sendiri: bisa grep/read kode Anda sebelum memberi verdict.",
+      "usage": {
+        "engine": "antigravity",
+        "probe": [
+          "agy",
+          "-p",
+          "/usage",
+          "--output-format",
+          "json"
+        ],
+        "parser": "agy_usage_json",
+        "timeout_s": 90,
+        "note": "Laporan kuota bawaan CLI: jendela weekly + 5h per kelompok model, lengkap dengan reset_time. Bentuknya JSON terstruktur, jadi tidak ada layar yang perlu dibaca dan tidak ada model yang ikut bekerja (num_turns 0).",
+        "extra": [
+          {
+            "probe": [
+              "agy",
+              "-p",
+              "/credits",
+              "--output-format",
+              "json"
+            ],
+            "parser": "agy_credits_json",
+            "timeout_s": 90,
+            "note": "Saldo kredit akun. CLI tidak mengenal biaya harian maupun jendela daily — hanya 5h dan weekly — jadi ini satu-satunya angka 'berapa yang tersisa' yang bisa dipertanggungjawabkan dari sisi Antigravity."
+          }
+        ]
+      }
     },
     "qoder": {
       "kind": "pane",
@@ -15,7 +42,18 @@
       "role": "builder",
       "model": "Qwen3.8-Flash",
       "breath": "panjang — promo 0 poin, konteks 1M, ini yang jadi napas utama workstation",
-      "note": "Kalau Qoder kembali berbayar, pindahkan role builder ke local tier 'execute'."
+      "note": "Kalau Qoder kembali berbayar, pindahkan role builder ke local tier 'execute'.",
+      "usage": {
+        "engine": "qoder",
+        "probe": [
+          "qoder"
+        ],
+        "parser": "qoder_usage_panel",
+        "panel_command": "/usage",
+        "timeout_s": 180,
+        "note": "Meter kredit Qoder hanya ada di TUI: 'qoder status -o json' tidak punya field kredit dan 'qoder -p /usage' mengembalikan kosong. Dibaca lewat sesi tmux di socket 'treasury' dengan MCP dan tools dimatikan (lihat mcp_config). Probe menolak mengetik sebelum konteks sesi terlihat 0%.",
+        "mcp_config": "config/treasury-mcp.json"
+      }
     },
     "local": {
       "kind": "ollama",
@@ -25,7 +63,12 @@
       "min_free_mib": 6500,
       "keep_alive": 0,
       "breath": "tidak terbatas (offline) tapi dibatasi VRAM 12 GB",
-      "note": "Wajib lepas GPU: keep_alive=0 + 'ollama stop' + verifikasi VRAM kembali."
+      "note": "Wajib lepas GPU: keep_alive=0 + 'ollama stop' + verifikasi VRAM kembali.",
+      "usage": {
+        "probe": null,
+        "parser": "none",
+        "note": "Model lokal tidak punya kuota berlangganan: tidak ada meter yang bisa dibaca."
+      }
     },
     "local-heavy": {
       "kind": "ollama",
@@ -35,7 +78,11 @@
       "min_free_mib": 10500,
       "keep_alive": 0,
       "breath": "hanya saat Unity/ComfyUI tidak berjalan",
-      "note": "Penalaran berat. Gerbang VRAM akan menolaknya bila ada aplikasi GPU lain."
+      "note": "Penalaran berat. Gerbang VRAM akan menolaknya bila ada aplikasi GPU lain.",
+      "usage": {
+        "probe": null,
+        "parser": "none"
+      }
     },
     "local-fallback": {
       "kind": "ollama",
@@ -45,7 +92,11 @@
       "min_free_mib": 3000,
       "keep_alive": 0,
       "breath": "muat kapan saja, ~2,5 GB",
-      "note": "Dipakai hanya saat Qoder dan Antigravity sama-sama tidak tersedia."
+      "note": "Dipakai hanya saat Qoder dan Antigravity sama-sama tidak tersedia.",
+      "usage": {
+        "probe": null,
+        "parser": "none"
+      }
     }
   },
   "local_tiers": {

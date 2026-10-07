@@ -1,0 +1,4 @@
+{
+  "_comment": "Konfigurasi MCP kosong untuk probe Treasury F8.2. Dipakai bersama --strict-mcp-config supaya sesi probe tidak pernah memegang tool workstation: sebuah probe yang salah baca layar pernah mengetik perintah ke tab shell operator, dan meter kuota tidak butuh tangan apa pun untuk dibaca.",
+  "mcpServers": {}
+}

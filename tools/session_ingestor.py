@@ -19,9 +19,11 @@ import glob
 import json
 import os
 import re
+import shlex
 import sqlite3
 import subprocess
 import sys
+import threading
 import time
 from datetime import datetime
 from pathlib import Path
@@ -37,6 +39,7 @@ QODER_SEG_GLOB = str(HOME / ".ai-station/engines/qoder/logs/sessions/*/*/segment
 QODER_PROJ_GLOB = str(HOME / ".ai-station/engines/qoder/projects/*/*.jsonl")
 AGY_DB = HOME / ".gemini/antigravity/conversation_summaries.db"
 PROFILES = HOME / ".ai-station/config/cli_profiles.json"
+ENGINES_JSON = HOME / ".ai-station/config/engines.json"
 
 SECRET_RE = re.compile(
     r"(?i)\b(password|passwd|secret|token|api[_-]?key|access[_-]?key|authorization|bearer|cookie)\b"
@@ -104,7 +107,28 @@ CREATE TABLE IF NOT EXISTS action_log (
     input_tokens INT,
     output_tokens INT,
     cache_read_tokens INT,
+    credits NUMERIC(12,4),
     raw_ref TEXT
+);
+CREATE TABLE IF NOT EXISTS engine_quota (
+    id BIGSERIAL PRIMARY KEY,
+    ts TIMESTAMPTZ NOT NULL DEFAULT now(),
+    engine TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    limit_window TEXT NOT NULL,
+    state TEXT NOT NULL,
+    used NUMERIC,
+    total NUMERIC,
+    remaining_fraction NUMERIC,
+    -- Kosakata satu (§12). remaining_fraction = pecahan 0..1 yang dilaporkan meter, dan
+    -- itu SISA, bukan terpakai. remaining = jumlah absolut dalam satuan meter itu sendiri
+    -- (kredit G1, dolar, apa pun). Keduanya NULL berarti meter tidak melaporkannya — nol
+    -- punya makna sendiri, jadi tidak boleh dipakai sebagai pengganti "tidak ada angka".
+    remaining NUMERIC(12,4),
+    reset_at TIMESTAMPTZ,
+    source TEXT NOT NULL,
+    detail TEXT,
+    raw TEXT
 );
 CREATE TABLE IF NOT EXISTS sync_cursor (
     source TEXT NOT NULL,
@@ -135,7 +159,25 @@ CREATE TABLE IF NOT EXISTS action_log (
     input_tokens INTEGER,
     output_tokens INTEGER,
     cache_read_tokens INTEGER,
+    credits REAL,
     raw_ref TEXT
+);
+CREATE TABLE IF NOT EXISTS engine_quota (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    ts TIMESTAMP NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    engine TEXT NOT NULL,
+    scope TEXT NOT NULL,
+    limit_window TEXT NOT NULL,
+    state TEXT NOT NULL,
+    used REAL,
+    total REAL,
+    remaining_fraction REAL,
+    -- sama artinya seperti di DDL_PG di atas; satu kosakata untuk dua backend
+    remaining REAL,
+    reset_at TIMESTAMP,
+    source TEXT NOT NULL,
+    detail TEXT,
+    raw TEXT
 );
 CREATE TABLE IF NOT EXISTS sync_cursor (
     source TEXT NOT NULL,
@@ -151,7 +193,22 @@ DDL_INDEX = [
     "CREATE INDEX IF NOT EXISTS idx_action_log_ts ON action_log (ts DESC)",
     "CREATE INDEX IF NOT EXISTS idx_action_log_session ON action_log (engine, session_id)",
     "CREATE INDEX IF NOT EXISTS idx_action_log_kind ON action_log (kind)",
+    # Treasury: kolom credit jarang terisi (hanya engine yang melaporkannya), jadi indeksnya
+    # parsial — memindai seluruh action_log untuk menjumlahkan kredit adalah cara termudah
+    # membuat laporan biaya melambat tepat saat table itu terbesar.
+    "CREATE INDEX IF NOT EXISTS idx_action_log_credits ON action_log (engine, ts DESC) "
+    "WHERE credits IS NOT NULL",
+    "CREATE INDEX IF NOT EXISTS idx_engine_quota_engine_ts ON engine_quota (engine, ts DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_engine_quota_state ON engine_quota (state)",
 ]
+
+# Kolom baru ada di kedua jalur: bagian CREATE TABLE untuk instalasi baru, ALTER untuk
+# instalasi lama. IF NOT EXISTS membuat keduanya sama-sama aman.
+DDL_MIGRATE_PG = [
+    "ALTER TABLE action_log ADD COLUMN IF NOT EXISTS credits NUMERIC(12,4)",
+    "ALTER TABLE engine_quota ADD COLUMN IF NOT EXISTS remaining NUMERIC(12,4)",
+]
+
 
 
 class Store:
@@ -159,11 +216,29 @@ class Store:
         self.conn, self.engine = get_db_connection()
         cur = self.conn.cursor()
         ddl = DDL_PG if is_pg(self.engine) else DDL_SQLITE
-        for stmt in filter(None, (s.strip() for s in ddl.split(";"))):
+        # Komentar dibuang SEBELUM pemecahan pada ";": komentar penjelasan yang kebetulan
+        # memakai titik-koma akan memotong CREATE TABLE di tengah dan gagal sebagai
+        # "[ddl skip]" yang tidak dibaca siapa pun.
+        for stmt in filter(None, (s.strip() for s in
+                                  re.sub(r"--[^\n]*", "", ddl).split(";"))):
             try:
                 cur.execute(stmt)
             except Exception as exc:  # noqa: BLE001
                 print(f"[ddl skip] {exc}", file=sys.stderr)
+        # Kolom baru harus ada SEBELUM indeksnya: CREATE INDEX … WHERE credits IS NOT NULL
+        # gagal diam-diam di basis data lama kalau migrasinya dijalankan belakangan, dan
+        # indeks yang hilang tidak dilaporkan siapa pun sampai laporan biaya melambat.
+        if is_pg(self.engine):
+            for stmt in DDL_MIGRATE_PG:
+                try:
+                    cur.execute(stmt)
+                except Exception as exc:  # noqa: BLE001
+                    print(f"[migrate skip] {exc}", file=sys.stderr)
+        else:
+            try:
+                self.migrate_sqlite_credits(cur)
+            except Exception as exc:  # noqa: BLE001
+                print(f"[migrate skip] {exc}", file=sys.stderr)
         for stmt in DDL_INDEX:
             try:
                 cur.execute(stmt)
@@ -171,6 +246,14 @@ class Store:
                 pass
         self.conn.commit()
         cur.close()
+
+    def migrate_sqlite_credits(self, cur):
+        """SQLite tidak mengenal ADD COLUMN IF NOT EXISTS: tanya dulu ke pragma."""
+        for table, column, sqltype in (("action_log", "credits", "REAL"),
+                                       ("engine_quota", "remaining", "REAL")):
+            cols = [r[1].lower() for r in cur.execute(f"PRAGMA table_info({table})")]
+            if cols and column not in cols:
+                cur.execute(f"ALTER TABLE {table} ADD COLUMN {column} {sqltype}")
 
     def execute(self, sql: str, params=()):
         cur = self.conn.cursor()
@@ -198,7 +281,7 @@ class Store:
     def insert_event(self, ev: dict):
         cols = ["ts", "engine", "session_id", "turn_id", "tab", "kind", "model", "effort",
                 "cwd", "tool", "summary", "exit_code", "duration_ms", "input_tokens",
-                "output_tokens", "cache_read_tokens", "raw_ref"]
+                "output_tokens", "cache_read_tokens", "credits", "raw_ref"]
         vals = [ev.get(c) for c in cols]
         self.execute(
             f"INSERT INTO action_log ({', '.join(cols)}) VALUES ({ph(len(cols), self.engine)})",
@@ -764,6 +847,703 @@ def sweep_failures(store: Store) -> int:
     return len(rows)
 
 
+# ─────────────────────────── Treasury (F8.2): membaca meter tiap mesin ───────────────────────────
+#
+# Dua hal berbeda dan keduanya ada di sini, karena mencampur keduanya adalah cara
+# paling cepat membuat laporan yang terlihat benar:
+#   KUOTA  = sisa jatah akun. Hanya CLI yang tahu angka ini, jadi ia dibaca dari meternya
+#            dan disimpan sebagai pembacaan (baris engine_quota). Tidak pernah dikurangi
+#            dengan asumsi.
+#   BIAYA  = yang habis dipakai hari ini. Sumbernya transaksi (action_log). Kalau kolom
+#            kredit/token tidak terisi, laporannya UNAVAILABLE dengan alasan faktual —
+#            bukan nol, bukan taksiran.
+#
+# Instalasi lain (mis. orang yang meng-clone repo ini tanpa Qoder/Antigravity) tidak perlu
+# mengubah kode: blok "usage" di engines.json yang berubah. probe null / parser "none"
+# berarti mesin itu memang tidak punya meter, dan Treasury menuliskan UNSUPPORTED.
+
+TREASURY_SOCKET = "treasury"        # socket tmux KHUSUS meter — operator memakai "irsofka"
+TREASURY_TAB = "usage"
+TREASURY_DIR = HOME / "runtime/treasury-probe"
+TREASURY_EVERY_S = int(os.environ.get("STATION_TREASURY_EVERY", "900"))
+TREASURY_DETAIL_MAX = 400
+
+# Hanya kunci meter yang boleh keluar dari layar panel. Yang lain adalah data akun
+# (nama, login, session id, working directory) — panel /usage menampilkannya bersebelahan,
+# jadi menyipan seluruh layar ke kolom raw akan membocorkan identitas ke basis data.
+QODER_PANEL_METERS = {
+    "Plan Credits Used": "plan-credits",
+    "Add-on Credits Used": "add-on-credits",
+    "Org Resource Package": "org-resource-package",
+}
+QODER_PANEL_WINDOW_KEY = "Plan Expires At"
+# Kunci yang bukan meter, tapi bukti bahwa sesi probe tidak sedang mengerjakan apa pun.
+QODER_PANEL_PROOF = ("Total Duration (API)", "Total Code Changes")
+PANEL_BOOT_S = 12         # detik minimum sebelum probe boleh mengetik apa pun
+PANEL_SETTLE_TICKS = 3    # layar harus identik 3 capture berturut-turut (1 detik tiap capture)
+PANEL_TRIES = 2           # lebih dari sekali mengetik ke TUI yang tidak merespons = risiko turn
+# Yang membuktikan sesi ini benar-benar kosong dan benar-benar milik probe.
+PANEL_FLAGS = ["--tools=", "--strict-mcp-config"]
+PANEL_ENV_UNSET = ("QODER_PID", "QODER_CLI", "__QODER_BASH_PATH_PREFIX",
+                   "QODER_SECURITY_SCAN_SETTINGS_JSON")
+# Tanda di layar bahwa perintah garis miring diperlakukan sebagai prompt dan model sudah
+# mulai bekerja. Keduanya terukur saat insiden, bukan tebakan.
+PANEL_TURN_MARKS = ("esc to cancel", "Thinking", "Writing")
+
+
+def _panel_ready(screen: str) -> bool:
+    """Kolom input terlihat, baris status bawah tergambar, dan konteks masih 0%.
+
+    Syarat ketiga bukan seremonial. Ketika probe sempat membawa percakapan sesi aktif,
+    baris statusnya menunjukkan ctx 2%/14% — dan perintah /usage yang diketik ke sesi itu
+    berubah menjadi turn model sungguhan: kredit terpakai dan tab shell operator ikut
+    diketiki. Konteks nol + footer siap adalah satu-satunya cara melihat dari luar bahwa
+    TUI sudah hidup DAN sesi ini benar-benar kosong.
+    """
+    return (_panel_prompt(screen)
+            and ("skills" in screen or "MCP servers" in screen)
+            and " 0%" in screen)
+
+
+def _panel_echo(screen: str, panel: str) -> bool:
+    """Apakah teks perintah benar-benar masuk ke kolom input (baris "> ...")."""
+    for line in screen.splitlines():
+        stripped = line.strip()
+        if stripped.startswith(">") and panel in stripped:
+            return True
+    return False
+
+
+def _turn_started(screen: str) -> bool:
+    return any(mark in screen for mark in PANEL_TURN_MARKS)
+
+
+def _proof_worked(proof: dict) -> bool:
+    """Apakah panel membuktikan sesi probe sempat BEKERJA (bukan hanya membaca meternya).
+
+    Panel /usage menghitung sesi yang berjalan, jadi "0.0s API" dan "0 lines" adalah bukti
+    bahwa pembacaan meter tidak memakan kuota. Salah satu Probe di workstation ini pernah
+    menjalankan satu turn model sungguhan; angka dari sesi semacam itu bukan angka kuota.
+    """
+    return any(float(n or 0) > 0
+               for value in proof.values()
+               for n in re.findall(r"\d+(?:\.\d+)?", str(value)))
+
+
+def _panel_prompt(screen: str) -> bool:
+    """Apakah kolom input Qoder sudah kelihatan di layar."""
+    return "Type your message" in screen or "? for shortcuts" in screen
+
+
+def registry_usage() -> dict:
+    """Blok 'usage' per mesin dari engines.json: satu-satunya tempat meter dinyatakan."""
+    try:
+        reg = json.loads(ENGINES_JSON.read_text()).get("engines") or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    return {name: spec["usage"] for name, spec in reg.items()
+            if isinstance(spec, dict) and spec.get("usage")}
+
+
+def _probe_argv(probe) -> list:
+    """Argv meter dari registry, dalam dua bentuk yang wajar ditulis orang.
+
+    List adalah bentuk di engines.json workstation ini. String adalah bentuk yang
+    akan ditulis orang lain yang mengedit konfigurasi dari git — dan tanpa normalizer
+    ini string di-iter per KARAKTER, sehingga "agy -p /usage" menjadi argv ['a','g','y',...]
+    dan kegagalan yang dilaporkan menyebut perintah 'a'. Bentuknya salah, angkanya hilang.
+    """
+    if isinstance(probe, (list, tuple)):
+        return [str(x) for x in probe]
+    return shlex.split(str(probe))
+
+
+def _run(cmd: list, timeout: int = 30) -> tuple[int, str]:
+    """Jalankan perintah meter. rc != 0 tetap mengembalikan teksnya: alasannya perlu dilaporkan."""
+    try:
+        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                             text=True, timeout=timeout)
+        return res.returncode, (res.stdout or "").strip()
+    except FileNotFoundError:
+        return 127, f"(perintah {cmd[0]!r} tidak terpasang di mesin ini)"
+    except subprocess.TimeoutExpired:
+        return 124, f"(waktu {timeout}s habis sebelum meter selesai menjawab)"
+    except Exception as exc:  # noqa: BLE001
+        return 1, f"(gagal: {type(exc).__name__}: {exc})"
+
+
+def _tmux(*args: str) -> tuple[int, str]:
+    """Semua tmux Treasury lewat socket sendiri.
+
+    Penjaga di bawah ini bukan hiasan: konfigurasi yang salah socket membuat daemon
+    mengetik "/usage" ke pane tempat operator sedang bekerja.
+    """
+    if TREASURY_SOCKET == "irsofka":
+        return 1, "(probe ditolak: socket meter tidak boleh sama dengan socket operator)"
+    return _run(["tmux", "-L", TREASURY_SOCKET, *[str(a) for a in args]], 15)
+
+
+def _first_json(text: str):
+    start = text.find("{")
+    if start < 0:
+        return None
+    for candidate in (text[start:], text[start:text.rfind("}") + 1]):
+        try:
+            return json.loads(candidate)
+        except Exception:  # noqa: BLE001
+            continue
+    return None
+
+
+def _frac(v):
+    """Pecahan hanya kalau CLI memang melaporkannya sebagai pecahan."""
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return None
+    return f if 0.0 <= f <= 1.0 else None
+
+
+def parse_agy_usage_json(text: str) -> tuple[list[dict], str]:
+    """`agy -p /usage --output-format json` → satu baris kuota per kelompok model × jendela.
+
+    Struktur `{command.data.groups[].buckets[]}` adalah bentuk resmi CLI-nya, jadi tidak ada
+    layar yang perlu dibaca. Bentuk lama/berbeda masih bisa dipakai lewat teks `response`
+    (TSV: kelompok, nama jendela, persen, waktu reset) — kalau keduanya tidak dikenali,
+    yang dilaporkan adalah UNAVAILABLE, bukan nol.
+    """
+    payload = _first_json(text)
+    if payload is None:
+        return [], "output bukan JSON"
+    groups = (((payload.get("command") or {}).get("data") or {}).get("groups")) or []
+    rows = []
+    for g in groups:
+        scope = str(g.get("name") or "model group")
+        for b in g.get("buckets") or []:
+            frac = _frac(b.get("remaining_fraction"))
+            rows.append({
+                "scope": scope,
+                "limit_window": str(b.get("window") or b.get("name") or ""),
+                "state": "REPORTED" if frac is not None else "UNAVAILABLE",
+                "used": None,
+                "total": None,
+                "remaining_fraction": frac,
+                "reset_at": ts_for_tstz(b.get("reset_time")),
+                "detail": str(b.get("description") or b.get("name") or ""),
+                "raw": json.dumps({k: v for k, v in b.items()
+                                   if k in ("id", "name", "window", "remaining_fraction",
+                                            "reset_time")}, ensure_ascii=False),
+            })
+    if rows:
+        return rows, ""
+
+    for line in str(payload.get("response") or "").splitlines():
+        parts = [p.strip() for p in line.split("\t")]
+        if len(parts) < 4 or "Limit" not in parts[1]:
+            continue
+        try:
+            frac = float(parts[2].rstrip("%")) / 100.0
+        except ValueError:
+            continue
+        rows.append({
+            "scope": parts[0], "limit_window": parts[1],
+            "state": "REPORTED", "used": None, "total": None,
+            "remaining_fraction": _frac(frac), "reset_at": ts_for_tstz(parts[3]),
+            "detail": "dibaca dari teks response (bentuk terstruktur tidak ada)",
+            "raw": json.dumps({"line": line}, ensure_ascii=False),
+        })
+    if rows:
+        return rows, ""
+    return [], "tidak ada kelompok kuota di output CLI (bentuknya berubah?)"
+
+
+def parse_agy_credits_json(text: str) -> tuple[list[dict], str]:
+    """`agy -p /credits --output-format json` → satu baris SALDO kredit akun.
+
+    Antigravity tidak mengenal biaya harian maupun jendela harian — hanya 5h dan weekly,
+    dan itu sudah dibaca meter `usage`. Yang tersisa dari CLI ini adalah saldo absolut, jadi
+    kolomnya `remaining`, bukan `remaining_fraction`: CLI tidak pernah menyebut penyebutnya,
+    dan mengarang penyebut (mis. 100) adalah cara tercepat membuat laporan yang salah.
+    Saldo 0 adalah angka sungguhan — Free plan memang nol — jadi state-nya REPORTED.
+    """
+    payload = _first_json(text)
+    if payload is None:
+        return [], "output bukan JSON"
+    data = (payload.get("command") or {}).get("data") or {}
+    value = data.get("remaining_credits")
+    if value is None:
+        for line in str(payload.get("response") or "").splitlines():
+            parts = [p.strip() for p in line.split("\t")]
+            if len(parts) >= 2 and parts[0].lower().startswith("remaining credit"):
+                value = parts[1]
+                break
+    try:
+        amount = float(value)
+    except (TypeError, ValueError):
+        return [], "saldo kredit tidak terbaca sebagai angka dari output CLI"
+    return [{
+        "scope": "credits",
+        "limit_window": "balance",
+        "state": "REPORTED",
+        "used": None,
+        "total": None,
+        "remaining_fraction": None,
+        "remaining": amount,
+        "reset_at": None,
+        "detail": "saldo kredit akun (absolute), bukan konsumsi harian",
+        "raw": json.dumps({"remaining_credits": value,
+                           "upgrade_uri": data.get("upgrade_uri")}, ensure_ascii=False),
+    }], ""
+
+
+def parse_qoder_usage_panel(screen: str) -> tuple[list[dict], str]:
+    """Panel /usage Qoder (teks layar tmux) → baris kredit akun `used/total`.
+
+    `used` di sini kumulatif se-akun, bukan per sesi: CLI tidak memisahkan konsumsi per
+    jendela. Itu sebabnya biaya harian mesin ini dilaporkan sebagai selisih pembacaan
+    meter, dan bukan sebagai angka harian yang CLI cetak.
+    """
+    pairs, proof, expires = {}, {}, None
+    for raw_line in screen.splitlines():
+        line = " ".join(raw_line.split())
+        if " : " not in line:
+            continue
+        label, value = [p.strip() for p in line.split(" : ", 1)]
+        if label in QODER_PANEL_METERS:
+            pairs[label] = value
+        elif label in QODER_PANEL_PROOF:
+            proof[label] = value
+        elif label == QODER_PANEL_WINDOW_KEY and value not in ("", "N/A"):
+            expires = ts_for_tstz(value)
+    rows = []
+    for label, value in pairs.items():
+        used = total = None
+        if "/" in value:
+            left, right = value.split("/", 1)
+            try:
+                used, total = float(left.strip()), float(right.strip())
+            except ValueError:
+                pass
+        reported = used is not None and total not in (None, 0)
+        if reported and _proof_worked(proof):
+            reported = False
+        note = ""
+        if not reported:
+            note = (" — probe sempat menjalankan turn model, pembacaan ditolak"
+                    if used is not None and _proof_worked(proof)
+                    else " — tidak ada alokasi/jatah")
+        rows.append({
+            "scope": "account",
+            "limit_window": QODER_PANEL_METERS[label],
+            "state": "REPORTED" if reported else "UNAVAILABLE",
+            "used": used if reported else None,
+            "total": total if reported else None,
+            # Qoder tidak melaporkan pecahan, jadi kolomnya tetap kosong — fraksi akan
+            # jadi karangan kalau dihitung di sini.
+            "remaining_fraction": None,
+            "reset_at": expires if label == "Plan Credits Used" else None,
+            "detail": f"{label}: {value}{note}",
+            "raw": json.dumps({"meter": {label: value}, "probe_session": proof},
+                              ensure_ascii=False),
+        })
+    if rows:
+        return rows, ""
+    return [], "panel /usage tidak memuat kunci meter yang dikenal (versi CLI berubah?)"
+
+
+PARSERS = {
+    "agy_usage_json": parse_agy_usage_json,
+    "agy_credits_json": parse_agy_credits_json,
+    "qoder_usage_panel": parse_qoder_usage_panel,
+}
+
+
+def read_qoder_panel(cfg: dict) -> tuple[str, str]:
+    """Ketikan /usage ke qoder milik sendiri di socket tmux terpisah, lalu baca layarnya.
+
+    Meter kredit Qoder hanya hidup di TUI. Yang sudah diukur (bukan diasumsikan):
+    `qoder status -o json` tidak punya field kredit, dan `qoder -p "/usage"` mengembalikan
+    hasil kosong (num_turns 0, total_credits 0). Jadi satu-satunya sumber adalah sesi yang
+    benar-benar berjalan — dan sesi itu tidak boleh menjadi pane operator.
+
+    Bahayanya nyata dan sudah terjadi sekali di workstation ini: mengetik "/usage" sebelum
+    TUI selesai bangun membuat teksnya diperlakukan sebagai PROMPT, bukan perintah garis
+    miring. Sesi probe lalu menjalankan turn model sungguhan — dan selama MCP workstation
+    termuat, turn itu sempat mengetik perintah ke tab shell operator. Karena itu probe ini
+    (1) hidup di socket + cwd sendiri, (2) mematikan MCP dan tools, (3) menolak mengetik
+    sebelum layar benar-benar siap, (4) membatalkan apa pun yang berubah menjadi turn, dan
+    (5) menolak pembacaan yang terjadi saat sebuah turn berjalan. Angka yang datang dari
+    sesi yang sedang bekerja bukan angka kuota, jadi lebih baik UNAVAILABLE.
+    """
+    cmd = _probe_argv(cfg.get("probe") or ["qoder"]) + list(PANEL_FLAGS)
+    # Variabel identitas sesi dibuang lewat `env -u`, bukan lewat env proses kita: tmux
+    # mewariskan env SERVER, dan server itu bisa saja duluan dibangun oleh proses yang
+    # env-nya penuh. Yang dibuang justru QODER_PID/QODER_CLI — penanda "ini anak dari sesi
+    # X", dan probe tidak boleh jadi anak siapa pun.
+    cmd = ["env", *(f"-u{k}" for k in PANEL_ENV_UNSET), *cmd]
+    mcp_file = cfg.get("mcp_config") or ""
+    if mcp_file:
+        # Path relatif di engines.json dihitung dari akar workstation, bukan dari cwd
+        # proses — daemon, systemd dan `ai-station treasury` punya cwd yang berbeda-beda.
+        target = Path(mcp_file)
+        if not target.is_absolute():
+            target = HOME / ".ai-station" / target
+        cmd += ["--mcp-config", str(target)]
+    panel = str(cfg.get("panel_command") or "/usage")
+    timeout = int(cfg.get("timeout_s", 180))
+    try:
+        TREASURY_DIR.mkdir(parents=True, exist_ok=True)
+    except Exception as exc:  # noqa: BLE001
+        return "", f"folder probe tidak bisa dibuat: {exc}"
+    _tmux("kill-session", "-t", TREASURY_TAB)
+    rc, out = _tmux("new-session", "-d", "-s", TREASURY_TAB, "-x", "220", "-y", "50",
+                    "-c", str(TREASURY_DIR), *cmd)
+    if rc != 0:
+        return "", f"probe gagal dimulai: {out[:TREASURY_DETAIL_MAX]}"
+
+    screen = ""
+    previous = None
+    steady = 0
+    typed = False
+    tries = 0
+    settle_at = time.time() + PANEL_BOOT_S
+    deadline = time.time() + timeout
+    try:
+        while time.time() < deadline:
+            time.sleep(1.0)
+            rc, screen = _tmux("capture-pane", "-t", TREASURY_TAB, "-p")
+            if rc != 0:
+                return "", f"capture-pane gagal: {screen[:TREASURY_DETAIL_MAX]}"
+
+            if _turn_started(screen):
+                _tmux("send-keys", "-t", TREASURY_TAB, "Escape")
+                return "", ("perintah probe berubah menjadi turn model dan dibatalkan; "
+                            "TUI belum siap saat diketik — pembacaan ditolak")
+
+            if any(lbl in screen for lbl in QODER_PANEL_METERS):
+                return screen, ""
+
+            if "trust the files in this folder" in screen.lower():
+                # Enter hanya untuk folder probe buatan kita sendiri. Folder lain berarti
+                # cwd salah dan probe harus berhenti, bukan setuju-setuju.
+                if str(TREASURY_DIR) not in screen:
+                    return "", "jendela trust menyebut folder lain; probe dihentikan"
+                typed, steady, previous = False, 0, None
+                settle_at = time.time() + PANEL_BOOT_S
+                _tmux("send-keys", "-t", TREASURY_TAB, "Enter")
+                continue
+
+            steady = steady + 1 if screen == previous else 0
+            previous = screen
+            if typed or time.time() < settle_at or tries >= PANEL_TRIES:
+                continue
+            if steady < PANEL_SETTLE_TICKS or not _panel_ready(screen):
+                continue
+            _tmux("send-keys", "-t", TREASURY_TAB, "-l", panel)
+            time.sleep(0.8)
+            _, typed_screen = _tmux("capture-pane", "-t", TREASURY_TAB, "-p")
+            tries += 1
+            if _panel_echo(typed_screen, panel):
+                _tmux("send-keys", "-t", TREASURY_TAB, "Enter")
+                typed = True
+                steady, previous = 0, None
+            else:
+                # Echo tidak muncul = teks tidak masuk ke kolom input. Enter tidak dikirim;
+                # mengirim Enter buta adalah cara probe mengubah keadaan pane tidak keruan.
+                steady, previous = 0, None
+    finally:
+        _tmux("send-keys", "-t", TREASURY_TAB, "Escape")
+        _tmux("kill-session", "-t", TREASURY_TAB)
+    return "", (f"panel {panel} tidak muncul dalam {timeout}s "
+                f"(perintah dicoba {tries} kali, masuk ke input: {int(typed)})")
+
+
+def read_meter(reg_key: str, cfg: dict) -> tuple[list[dict], str, str]:
+    """Satu siklus baca SEMUA meter satu mesin: yang utama plus `extra` bila ada.
+
+    Satu slot registry boleh punya lebih dari satu meter karena satu CLI boleh memisahkan
+    laporan: antigravity mis. menulis kuota jendela di `/usage` dan saldo kredit di
+    `/credits`. Tanpa `extra`, orang yang menambahkan meter kedua harus mengedit kode
+    ingestor — dan konfigurasi yang tidak bisa dibaca tanpa membaca kode bukan konfigurasi.
+    Kegagalan sebagian tetap dilaporkan apa adanya: baris yang berhasil masuk, sisanya
+    membawa pesan CLI-nya sendiri.
+    """
+    meters = [cfg] + list(cfg.get("extra") or [])
+    rows, sources, errs = [], [], []
+    for meter in meters:
+        r, source, err = _read_one_meter(reg_key, meter)
+        # Baris membawa sumbernya sendiri. Tanpa ini, satu kolom 'source' untuk semua baris
+        # hasil beberapa meter akan mengklaim bahwa baris kuota_window berasal dari perintah
+        # /credits — dan audit angka tidak bisa lagi ditelusuri ke perintah yang mencetaknya.
+        for item in r:
+            item["_source"] = source
+        rows.extend(r)
+        if source:
+            sources.append(source)
+        if err:
+            errs.append(err)
+    return rows, " + ".join(sources), "; ".join(errs)
+
+
+def _read_one_meter(reg_key: str, cfg: dict) -> tuple[list[dict], str, str]:
+    """Satu siklus baca satu meter. Kembalikan (baris, nama sumber, pesan gagal).
+
+    err == "UNSUPPORTED" adalah sentinel, bukan kalimat: mesin tanpa meter di registry
+    tidak sedang gagal diukur, memang tidak ada yang bisa diukur.
+    """
+    name = str(cfg.get("parser") or "none")
+    probe = cfg.get("probe")
+    if name in ("none", "") or not probe:
+        return [], "", "UNSUPPORTED"
+    parser = PARSERS.get(name)
+    if parser is None:
+        return [], "", f"parser {name!r} tidak dikenal oleh ingestor"
+    if name == "qoder_usage_panel":
+        text, err = read_qoder_panel(cfg)
+        source = "qoder /usage panel"
+    else:
+        argv = _probe_argv(probe)
+        rc, text = _run(argv, int(cfg.get("timeout_s", 60)))
+        err = "" if rc == 0 else text[:TREASURY_DETAIL_MAX]
+        source = " ".join(argv)
+    if err:
+        return [], source, err
+    rows, perr = parser(text)
+    return rows, source, perr
+
+
+def record_quota(store: Store, rows: list[dict], source: str, engine: str):
+    cols = ["ts", "engine", "scope", "limit_window", "state", "used", "total",
+            "remaining_fraction", "remaining", "reset_at", "source", "detail", "raw"]
+    now_iso = datetime.now().astimezone().isoformat(timespec="seconds")
+    for r in rows:
+        vals = [now_iso, engine, r.get("scope") or "-", r.get("limit_window") or "-",
+                r.get("state") or "UNAVAILABLE", r.get("used"), r.get("total"),
+                r.get("remaining_fraction"), r.get("remaining"), r.get("reset_at"),
+                redact(str(r.get("_source") or source))[:120],
+                redact(str(r.get("detail") or ""))[:TREASURY_DETAIL_MAX],
+                redact(str(r.get("raw") or ""))[:SUMMARY_LIMIT]]
+        store.execute(
+            f"INSERT INTO engine_quota ({', '.join(cols)}) VALUES ({ph(len(cols), store.engine)})",
+            vals)
+
+
+def probe_treasury(store: Store, only: tuple = (), force: bool = False) -> dict:
+    """Baca meter setiap mesin yang terdaftar dan simpan pembacaannya sebagai fakta."""
+    usage = registry_usage()
+    if not usage:
+        return {"engines": [], "readings": 0,
+                "note": "engines.json tidak punya blok 'usage': tidak ada meter yang bisa dibaca"}
+    report, readings = [], 0
+    for key, cfg in usage.items():
+        if only and key not in only:
+            continue
+        engine = str(cfg.get("engine") or key)
+        if not force and store_treasury_age(store, key) < TREASURY_EVERY_S:
+            continue
+        rows, source, err = read_meter(key, cfg)
+        if not rows:
+            # Kunci "probe/probe" menandai baris ini sebagai hasil percobaan baca, bukan
+            # jendela kuota yang benar-benar dimiliki mesin itu.
+            rows = [{"scope": "probe", "limit_window": "probe",
+                     "state": "UNSUPPORTED" if err == "UNSUPPORTED" else "UNAVAILABLE",
+                     "detail": err or "meter tidak menghasilkan baris apa pun"}]
+        record_quota(store, rows, source or str(cfg.get("parser") or "-"), engine)
+        store.cursor_set("treasury", f"meter/{key}", int(time.time()), redact(err or source)[:200])
+        readings += len(rows)
+        report.append({"key": key, "engine": engine, "rows": len(rows),
+                       "state": rows[0]["state"] if len(rows) == 1 else "MIXED",
+                       "reason": err})
+    return {"engines": report, "readings": readings, "interval_s": TREASURY_EVERY_S}
+
+
+def store_treasury_age(store: Store, reg_key: str) -> float:
+    off, _, _ = get_cursor_state(store, f"meter/{reg_key}", "treasury")
+    return time.time() - int(off or 0) if off else float("inf")
+
+
+TREASURY_LOCK = threading.Lock()
+
+
+def treasury_watch(store: Store):
+    """Siklus Treasury di dalam watch loop, tanpa memblokir ingest.
+
+    Membaca meter bisa makan menit (probe TUI Qoder menunggu CLI bangun dulu). Kalau ini
+    berjalan sinkron di loop 3 detik, jejak transaksi berhenti selama itu — jadi pekerjaannya
+    dilempar ke thread dengan koneksi DB sendiri, dan siklus berikutnya hanya memicu
+    pekerjaannya kalau siklus sebelumnya sudah selesai.
+    """
+    if not TREASURY_LOCK.acquire(blocking=False):
+        return False
+    due = [k for k in registry_usage() if store_treasury_age(store, k) >= TREASURY_EVERY_S]
+    if not due:
+        TREASURY_LOCK.release()
+        return False
+
+    def worker():
+        try:
+            probe_treasury(Store(), only=tuple(due), force=True)
+        except Exception as exc:  # noqa: BLE001
+            print(f"[treasury] {type(exc).__name__}: {exc}", file=sys.stderr)
+        finally:
+            TREASURY_LOCK.release()
+
+    # Daemon thread: kalau service mati di tengah probe, thread ikut mati dan sesi tmux
+    # probe tertinggal. Tidak berbahaya (bukan socket operator) dan dibersihkan oleh
+    # kill-session di awal probe berikutnya.
+    threading.Thread(target=worker, daemon=True).start()
+    return True
+
+
+def _opt_num(v):
+    """Sama seperti _num, tapi NULL tetap NULL.
+
+    Di Treasury bedanya bukan kosmetik: 0 berarti "meter melaporkan nol", None berarti
+    "mesin itu tidak melaporkan angka ini sama sekali". Memakai _num() pada kolom kuota
+    akan mengubah 'tidak ada' menjadi 'nol' — laporan yang terlihat bersih dan salah.
+    """
+    if v is None:
+        return None
+    try:
+        f = float(v)
+    except (TypeError, ValueError):
+        return v
+    return int(f) if f.is_integer() else round(f, 6)
+
+
+def _day_bounds() -> tuple[str, str]:
+    now = datetime.now().astimezone()
+    return now.replace(hour=0, minute=0, second=0, microsecond=0).isoformat(
+        timespec="seconds"), now.isoformat(timespec="seconds")
+
+
+def latest_quota(store: Store) -> list[dict]:
+    """Pembacaan TERAKHIR per (mesin, scope, jendela). Query join, bukan DISTINCT ON, supaya
+    berjalan sama di PostgreSQL maupun SQLite."""
+    cols = ["engine", "scope", "limit_window", "state", "used", "total",
+            "remaining_fraction", "remaining", "reset_at", "source", "detail", "ts"]
+    rows = store.query(
+        f"SELECT DISTINCT q.{', q.'.join(cols)} FROM engine_quota q "
+        f"JOIN (SELECT engine, scope, limit_window, MAX(ts) AS mts FROM engine_quota "
+        f"      GROUP BY engine, scope, limit_window) t "
+        f"  ON t.engine = q.engine AND t.scope = q.scope "
+        f" AND t.limit_window = q.limit_window AND t.mts = q.ts "
+        f"ORDER BY q.engine, q.scope, q.limit_window")
+    out = []
+    for r in rows:
+        d = dict(zip(cols, r))
+        d["ts"] = str(d["ts"])
+        d["reset_at"] = str(d["reset_at"]) if d["reset_at"] else None
+        for k in ("used", "total", "remaining_fraction", "remaining"):
+            d[k] = _opt_num(d[k])
+        # Laporan boleh menurunkan angka, bukan menggantikannya: kalau meter sendiri
+        # melaporkan sisa, itu yang shown; total−used hanya dipakai untuk meter yang
+        # hanya memberi tahu terpakai/batas (mis. kredit Qoder 451/1500).
+        if d["remaining"] is None and d["used"] is not None and d["total"] is not None:
+            d["remaining"] = d["total"] - d["used"]
+        out.append(d)
+    return out
+
+
+def meter_deltas(store: Store) -> list[dict]:
+    """Konsumsi hari ini dari selisih dua pembacaan meter — bukan angka taksiran.
+
+    Yang dipakai adalah pembacaan PERTAMA dan TERAKHIR hari ini, bukan min/max. Bedanya
+    penting saat kuota me-reset di tengah hari: min/max akan menyebut seluruh jatah lama
+    sebagai "terpakai hari ini", padahal yang terjadi adalah meter yang mulai dari awal.
+    """
+    start, _end = _day_bounds()
+    rows = store.query(
+        "SELECT engine, scope, limit_window, ts, used, remaining_fraction, source "
+        " FROM engine_quota WHERE ts >= "
+        f"{ph(1, store.engine)} AND state = 'REPORTED' "
+        " ORDER BY engine, scope, limit_window, ts", (start,))
+    buckets: dict = {}
+    for eng, scope, window, ts, used, frac, source in rows:
+        buckets.setdefault((eng, scope, window), []).append(
+            (str(ts), _opt_num(used), _opt_num(frac), source))
+
+    out = []
+    for (eng, scope, window), readings in buckets.items():
+        first, last = readings[0], readings[-1]
+        entry = {"engine": eng, "scope": scope, "limit_window": window,
+                 "readings": len(readings), "from": first[0], "to": last[0], "source": last[3]}
+        if len(readings) < 2:
+            # Satu pembacaan hanya menjelaskan POSISI hari ini, bukan berapa yang terpakai.
+            # Menyimpulkan "terpakai 0" dari satu pembacaan adalah tebakan.
+            entry.update({"state": "UNAVAILABLE", "consumed": None, "unit": None,
+                          "detail": f"baru 1 pembacaan sejak tengah malam; konsumsi harian "
+                                    f"butuh pembacaan pertama dan terakhir"})
+        elif first[1] is not None and last[1] is not None:
+            entry.update({"state": "REPORTED", "consumed": last[1] - first[1],
+                          "unit": "kredit akun (kumulatif; CLI tidak memisah per sesi)",
+                          "detail": f"meter naik {first[1]} → {last[1]}"})
+        elif first[2] is not None and last[2] is not None:
+            entry.update({"state": "REPORTED", "consumed": first[2] - last[2],
+                          # Sisa kuota TURUN saat dipakai, jadi yang terpakai = awal - akhir.
+                          "unit": "pecahan dari jatah jendela ini",
+                          "detail": f"sisa turun {first[2]:.4f} → {last[2]:.4f}"})
+        else:
+            entry.update({"state": "UNAVAILABLE", "consumed": None, "unit": None,
+                          "detail": "pembacaan pertama/terakhir tidak memuat used maupun "
+                                    "remaining_fraction yang bisa dibandingkan"})
+        out.append(entry)
+    return out
+
+
+def ledger_cost(store: Store) -> list[dict]:
+    """Biaya harian dari transaksi. Kalau kolomnya kosong, itu yang dilaporkan — bukan nol."""
+    start, _end = _day_bounds()
+    rows = store.query(
+        "SELECT engine, COUNT(*), COUNT(credits), COALESCE(SUM(credits),0), "
+        " COUNT(input_tokens), COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0), "
+        " COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(duration_ms),0) "
+        f" FROM action_log WHERE ts >= {ph(1, store.engine)} GROUP BY engine ORDER BY engine",
+        (start,))
+    out = []
+    for (eng, rows_n, cred_n, cred_sum, tok_n, in_sum, out_sum, cache_sum, dur) in rows:
+        tokens = _num(in_sum) + _num(out_sum)
+        # Alasan dilaporkan sebagai hasil hitungan, bukan kalimat tetap per mesin: instalasi
+        # lain punya mesin berbeda dan angkanya harus menjelaskan dirinya sendiri.
+        detail = (f"{_num(rows_n)} baris transaksi hari ini: {_num(cred_n)} membawa kredit, "
+                  f"{_num(tok_n)} membawa token (total masuk {_num(in_sum)}, keluar {_num(out_sum)})")
+        if _num(cred_n):
+            state, reason = "REPORTED", detail
+        elif tokens:
+            state, reason = "TOKENS_ONLY", detail + " — kredit per transaksi tidak ada di log"
+        else:
+            state, reason = "UNAVAILABLE", detail + " — sumber log tidak menuliskan angka nyata"
+        out.append({"engine": eng, "state": state, "reason": reason,
+                    "transactions": _num(rows_n),
+                    "credits": _num(cred_sum) if _num(cred_n) else None,
+                    "credit_rows": _num(cred_n), "token_rows": _num(tok_n),
+                    "input_tokens": _num(in_sum), "output_tokens": _num(out_sum),
+                    "cache_read_tokens": _num(cache_sum), "duration_ms": _num(dur)})
+    return out
+
+
+def treasury_report(store: Store) -> dict:
+    return {
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "day": _day_bounds()[0][:10],
+        "interval_s": TREASURY_EVERY_S,
+        "quota": latest_quota(store),
+        "consumption": meter_deltas(store),
+        "ledger_cost": ledger_cost(store),
+        "registry": {k: {"engine": v.get("engine") or k, "parser": v.get("parser"),
+                         "has_meter": bool(v.get("probe"))}
+                     for k, v in registry_usage().items()},
+        "invariant": "Semua angka di sini hasil pembacaan CLI atau query transaksi; tidak ada satu pun yang ditulis tangan.",
+    }
+
+
+def treasury(store: Store, probe: bool = False, only: tuple = ()) -> None:
+    if probe:
+        print(json.dumps(probe_treasury(store, only=only, force=True),
+                         ensure_ascii=False, default=str), file=sys.stderr)
+    print(json.dumps(treasury_report(store), ensure_ascii=False, default=str))
+
+
 def run_once(store: Store, meta: dict) -> int:
     n = ingest_qoder_segments(store, meta)
     n += ingest_qoder_transcripts(store, meta)
@@ -1021,12 +1801,16 @@ def main():
     ap = argparse.ArgumentParser(description="Ingestor log sesi AI Workstation ke SQL")
     ap.add_argument("mode", nargs="?", default="once",
                     choices=["once", "watch", "recent", "handoff", "snapshot", "stats",
-                             "recovery", "api", "posts", "station"])
+                             "recovery", "api", "posts", "station", "treasury"])
     ap.add_argument("limit", nargs="?", type=int, default=40)
     ap.add_argument("--engine", default="")
     ap.add_argument("--kind", default="")
     ap.add_argument("--session", default="", help="batasi snapshot ke satu session_id")
     ap.add_argument("--interval", type=int, default=3)
+    ap.add_argument("--probe", action="store_true",
+                    help="treasury: baca meter CLI sekarang juga (bisa memakan menit)")
+    ap.add_argument("--only", default="",
+                    help="treasury: batasi probe ke kunci registry, mis. --only qoder,gemini")
     args = ap.parse_args()
 
     store = Store()
@@ -1036,7 +1820,12 @@ def main():
     if args.mode == "watch":
         while True:
             try:
-                run_once(store, meta)
+                # Profil dibaca ULANG tiap siklus. Operator mengganti model/effort/context
+                # dari GUI kapan saja; menempel nilai saat service start ke seluruh hari itu
+                # membuat baris biaya menyebut model yang tidak benar-benar dipakai, dan itu
+                # langsung membatalkan acceptance F8.2 (angka = yang CLI laporkan).
+                run_once(store, qoder_runtime_profile())
+                treasury_watch(store)
             except Exception as exc:  # noqa: BLE001
                 print(f"[ingestor error] {exc}", file=sys.stderr)
                 try:
@@ -1074,6 +1863,9 @@ def main():
             print("(view postingan hanya tersedia di PostgreSQL; fallback SQLite sedang aktif)")
         elif not posts(store, args.limit):
             print("(belum ada postingan)")
+    elif args.mode == "treasury":
+        treasury(store, probe=args.probe,
+                 only=tuple(x.strip() for x in args.only.split(",") if x.strip()))
     elif args.mode == "recovery":
         run_once(store, meta)
         print("=== TERAKHIR DARI action_log ===")

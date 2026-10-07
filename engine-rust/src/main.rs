@@ -642,6 +642,35 @@ fn capture_screen(tab: &str) -> Option<String> {
     ])
 }
 
+/// Baris status CLI memuat pemakaian konteks, contoh:
+///   "Qwen3.8-Flash Model · Extra High · 1M context · ctx ▓▒░ 53% · ~ +6904 -834"
+/// Angka ini DIPINJAM dari yang CLI sendiri tampilkan — bukan hitungan kami, dan kami
+/// tidak pernah menggantinya dengan perkiraan kalau barisnya tidak ketemu.
+fn pane_context_pct(tab: &str) -> Option<u8> {
+    let raw = capture_screen(tab)?;
+    let plain: String = raw.chars().filter(|c| !c.is_control() || *c == '\n').collect();
+    for line in plain.lines().rev().take(60) {
+        if !line.contains("ctx") && !line.contains("context") { continue; }
+        let bytes = line.as_bytes();
+        let mut i = 0usize;
+        while i < bytes.len() {
+            if bytes[i].is_ascii_digit() {
+                let mut j = i;
+                while j < bytes.len() && bytes[j].is_ascii_digit() { j += 1; }
+                let mut k = j;
+                while k < bytes.len() && bytes[k] == b' ' { k += 1; }
+                if k < bytes.len() && bytes[k] == b'%' {
+                    if let Ok(v) = line[i..j].parse::<u32>() {
+                        if v <= 100 { return Some(v as u8); }
+                    }
+                }
+                i = j;
+            } else { i += 1; }
+        }
+    }
+    None
+}
+
 async fn term_screen(Query(query): Query<ReadQuery>, State(state): State<AppState>) -> Response {
     let tab = query.tab.unwrap_or_else(|| "qoder".to_string());
     if let Some(screen) = capture_screen(&tab) {
@@ -1668,7 +1697,15 @@ async fn cli_run(
         // stdin dalam raw mode dan hanya mengenali \\r sebagai tombol Enter; dengan \\n teksnya
         // masuk ke kotak input tapi tidak pernah disubmit — kegagalan dispatch yang tampak
         // seperti "CLI tidak menjawab" padahal promptnya cuma menggantung tanpa dikirim.
-        session.send_bytes(format!("{}\r", prompt).as_bytes());
+        // TUI membaca keyboard, bukan stream teks: `\n` di tengah prompt sering DITELAN
+        // sehingga semua baris menyambung, atau malah dianggap Enter. Bracketed paste
+        // adalah cara standar menyampaikan teks multi-baris utuh ke input TUI.
+        let body = if prompt.contains('\n') {
+            format!("\x1b[200~{}\x1b[201~\r", prompt)
+        } else {
+            format!("{}\r", prompt)
+        };
+        session.send_bytes(body.as_bytes());
     }
     let cwd = live_tab_cwd(&state.sessions, &target_cli);
     spool_event(
@@ -1948,11 +1985,13 @@ async fn get_usage() -> Json<Value> {
         "qoder": {
             "account": account,
             "session": sess,
-            "workspace": qws
+            "workspace": qws,
+            "context_pct": pane_context_pct("qoder")
         },
         "antigravity": {
             "conversation": agy,
-            "last_model": antigravity_last_model()
+            "last_model": antigravity_last_model(),
+            "context_pct": pane_context_pct("antigravity")
         }
     }))
 }

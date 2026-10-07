@@ -575,7 +575,7 @@
                 <div class="composer-wrap">
                     <textarea id="prompt-input" class="prompt-input" rows="1" spellcheck="false"
                         placeholder="Ketik instruksi AI… Enter untuk baris baru, Ctrl+Enter untuk mengirim"
-                        oninput="autoGrowPrompt(this)" onkeydown="handleKey(event)"></textarea>
+                        oninput="autoGrowPrompt(this)" onkeydown="handleKey(event)" maxlength="6000"></textarea>
                     <div class="key-hint">
                         <span><kbd>Enter</kbd> baris baru</span>
                         <span><kbd>Ctrl</kbd>+<kbd>Enter</kbd> kirim ke CLI</span>
@@ -588,7 +588,7 @@
                 </button>
             </div>
             <div style="font-size: 0.7rem; color: var(--text-dim); margin-top: 4px; padding: 0 2px;">
-                💡 Ketik bebas multi-baris di atas — kotak membesar mengikuti teks, tidak ada batas jumlah karakter.
+                💡 Ketik bebas multi-baris di atas — Enter untuk baris baru, Ctrl+Enter untuk kirim, kotak membesar mengikuti teks, maksimal 6.000 karakter.
                 Untuk mengetik langsung di layar terminal, klik pane di atas lalu ketik seperti biasa.
             </div>
         </div>
@@ -797,9 +797,25 @@
             const el = document.getElementById('prompt-input');
             const st = document.getElementById('composer-state');
             if (!el || !st) return;
-            st.innerText = el.value.trim()
-                ? `${(el.value.match(/\n/g) || []).length + 1} baris • ${el.value.length} karakter`
-                : '';
+            if (!el.value.trim()) { st.innerText = ''; return; }
+            const baris = (el.value.match(/\n/g) || []).length + 1;
+            const n = el.value.length;
+            // Batas ditulis terang-terangan: lebih baik pemakai tahu angka maksimalnya
+            // daripada teksnya hilang tanpa kabar di suatu titik di tengah jalan.
+            st.innerText = `${baris} baris • ${n} / 6000 karakter`
+                + (n >= 6000 ? ' — penuh' : '');
+            st.style.color = n >= 6000 ? 'var(--accent-rose)' : '';
+        }
+
+        // Batang konteks: angkanya DIPINJAM dari baris status CLI di pane (daemon membaca
+        // 'ctx ... 53%'). Kalau barisnya tidak ketemu, kita bilang begitu — tidak mengarang.
+        function contextBar(pct) {
+            if (pct === null || pct === undefined) return 'context: tidak terbaca dari pane';
+            const p = Math.max(0, Math.min(100, Number(pct)));
+            const blok = Math.round(p / 10);
+            const bar = '█'.repeat(blok) + '░'.repeat(10 - blok);
+            const warna = p >= 90 ? 'var(--accent-rose)' : (p >= 70 ? 'var(--accent-amber)' : 'var(--accent-cyan)');
+            return `Context <span style="color:${warna}">${bar}</span> ${p}%`;
         }
 
         function targetEngine() {
@@ -1093,15 +1109,9 @@
                     // CLI kadang menyimpan penanda internal, bukan nama model. Menampilkan
                     // 'MODEL_PLACEHOLDER_M319' hanya membuat panel terlihat penuh data.
                     const m = /^MODEL_PLACEHOLDER/i.test(rawModel) ? '' : rawModel;
-                    usage.textContent = [m, c.status ? `status ${c.status}` : '', c.steps ? `${c.steps} langkah` : '']
-                        .filter(Boolean).join(' · ') || 'usage Antigravity tidak terbaca';
+                    usage.innerHTML = contextBar(USAGE.antigravity && USAGE.antigravity.context_pct);
                 } else {
-                    const a = (USAGE.qoder || {}).account || {};
-                    const s = (USAGE.qoder || {}).session || {};
-                    usage.textContent = [a.account_type ? `tipe ${a.account_type}` : '',
-                                         a.user_type || '',
-                                         s.turns ? `${s.turns} giliran sesi ini` : '']
-                        .filter(Boolean).join(' · ') || 'state akun tidak terbaca';
+                    usage.innerHTML = contextBar(USAGE.qoder && USAGE.qoder.context_pct);
                 }
             }
 

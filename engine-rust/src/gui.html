@@ -296,9 +296,17 @@
             font-size: 0.68rem; font-weight: 700; letter-spacing: .06em; text-transform: uppercase;
             color: var(--accent-cyan); padding-bottom: 6px; white-space: nowrap;
         }
-        .eb-field { display: flex; flex-direction: column; gap: 2px; min-width: 150px; flex: 1 1 150px; }
+        .eb-field { display: flex; flex-direction: column; gap: 2px; min-width: 132px; flex: 1 1 132px; max-width: 240px; }
         .eb-field > span { font-size: 0.6rem; color: var(--text-dim); letter-spacing: .08em; text-transform: uppercase; }
-        .eb-field select { width: 100%; }
+        .eb-field select {
+            width: 100%; background: #0c0e15; color: var(--text-main);
+            border: 1px solid var(--border); border-radius: 6px;
+            font-size: 0.72rem; padding: 4px 6px; height: 26px;
+        }
+        .eb-field select:focus { outline: 1px solid var(--accent-cyan); }
+        .eb-field select option { background: #0c0e15; color: var(--text-main); }
+        .eb-apply { align-self: flex-end; height: 26px; font-size: 0.72rem; white-space: nowrap; }
+        .engine-bar .select-input { color-scheme: dark; }
         .eb-usage {
             margin-left: auto; font-size: 0.66rem; color: var(--text-muted);
             font-family: monospace; padding-bottom: 6px; text-align: right; max-width: 42%;
@@ -529,7 +537,23 @@
                 </div>
             </div>
 
-            <!-- Bar mesin: ikut tab yang aktif, daftarnya dari /api/models (bukan hardcode) -->
+
+            <!-- The Live xterm.js Terminal Viewport (Independent Persistent Panes) -->
+            <div class="terminal-container" id="terminal-box">
+                <div id="term-qoder" class="term-pane" style="width: 100%; height: 100%;"></div>
+                <div id="term-antigravity" class="term-pane" style="width: 100%; height: 100%; display: none;"></div>
+                <div id="term-shell" class="term-pane" style="width: 100%; height: 100%; display: none;"></div>
+            </div>
+
+            <!-- Action Chips for 1-Click Execution -->
+            <div class="action-chips">
+                <div class="chip" onclick="quickRun('baca ~/.ai-station/README.md dan ~/.ai-station/ROADMAP.md (plus ~/.ai-station/brain/DESIGN_NOTES.md untuk konteks privat mesin), lalu laporkan status terkini workstation dan apa yang tersisa di Fase 6')">📄 Baca README & Roadmap Terkini</div>
+                <div class="chip" style="border-color: rgba(245, 158, 11, 0.4); color: var(--accent-amber);" onclick="startReplSession('qoder')">💬 Mulai Chat Interaktif Qoder (REPL)</div>
+                <div class="chip" style="border-color: rgba(56, 189, 248, 0.4); color: var(--accent-cyan);" onclick="startReplSession('antigravity')">💬 Mulai Chat Interaktif Antigravity (REPL)</div>
+                <div class="chip" onclick="execAction('see_screen')">📸 Ambil Screenshot Desktop</div>
+            </div>
+
+            <!-- Bar mesin: ikut tab aktif, daftarnya dari /api/models (bukan hardcode) -->
             <div class="engine-bar" id="engine-bar">
                 <span class="eb-engine" id="eb-engine">Qoder CLI</span>
                 <label class="eb-field"><span>Model</span>
@@ -547,22 +571,9 @@
                         <option value="1048576">1.048.576 (1M)</option>
                     </select>
                 </label>
-                <span class="eb-usage" id="eb-usage" title=" kredit & pemakaian dibaca dari state lokal, bukan angka tetap">—</span>
-            </div>
-
-            <!-- The Live xterm.js Terminal Viewport (Independent Persistent Panes) -->
-            <div class="terminal-container" id="terminal-box">
-                <div id="term-qoder" class="term-pane" style="width: 100%; height: 100%;"></div>
-                <div id="term-antigravity" class="term-pane" style="width: 100%; height: 100%; display: none;"></div>
-                <div id="term-shell" class="term-pane" style="width: 100%; height: 100%; display: none;"></div>
-            </div>
-
-            <!-- Action Chips for 1-Click Execution -->
-            <div class="action-chips">
-                <div class="chip" onclick="quickRun('baca ~/.ai-station/README.md dan ~/.ai-station/ROADMAP.md (plus ~/.ai-station/brain/DESIGN_NOTES.md untuk konteks privat mesin), lalu laporkan status terkini workstation dan apa yang tersisa di Fase 6')">📄 Baca README & Roadmap Terkini</div>
-                <div class="chip" style="border-color: rgba(245, 158, 11, 0.4); color: var(--accent-amber);" onclick="startReplSession('qoder')">💬 Mulai Chat Interaktif Qoder (REPL)</div>
-                <div class="chip" style="border-color: rgba(56, 189, 248, 0.4); color: var(--accent-cyan);" onclick="startReplSession('antigravity')">💬 Mulai Chat Interaktif Antigravity (REPL)</div>
-                <div class="chip" onclick="execAction('see_screen')">📸 Ambil Screenshot Desktop</div>
+                <button class="term-btn eb-apply" id="eb-apply" onclick="applyProfileNow()"
+                        title="Menyimpan profil DAN spawn ulang CLI tab ini agar model baru langsung terpakai">⚡ Terapkan</button>
+                <span class="eb-usage" id="eb-usage" title="pemakaian dibaca dari state lokal">—</span>
             </div>
 
             <!-- Bottom Prompt Dispatcher -->
@@ -806,6 +817,36 @@
             const sel = document.getElementById('model-select');
             const opt = sel && sel.selectedOptions ? sel.selectedOptions[0] : null;
             return (opt && opt.getAttribute('data-engine')) || 'qoder';
+        }
+
+        // Menyimpan profil saja TIDAK mengubah CLI yang sedang jalan — dan restart daemon
+        // juga tidak, karena tab hidup di tmux. Satu-satunya cara menerapkan model baru
+        // adalah spawn ulang CLI di tab itu: supervisor `while true` menyalakannya kembali
+        // dengan profil terkini.
+        async function applyProfileNow() {
+            const engine = targetEngine();
+            const tab = engine === 'agy' ? 'antigravity' : (engine === 'qoder' ? 'qoder' : activeTab);
+            const sel = document.getElementById('model-select');
+            const model = sel ? sel.value : '';
+            if (!model) { flagProfileSaved('✗ belum ada model terpilih', true); return; }
+            const peringatan = tab === 'qoder'
+                ? 'Spawn ulang Qoder CLI di tab ini?\n\nSesi yang sedang berjalan akan berhenti lalu menyambung kembali (--continue) dengan model baru. Riwayat tersimpan di tmux, disk, dan PostgreSQL.'
+                : 'Spawn ulang Antigravity CLI di tab ini?\n\nSesi berjalan berhenti lalu menyambung kembali (--continue) dengan model baru.';
+            if (!confirm(peringatan)) return;
+            const effort = engine === 'agy' ? '' : (document.getElementById('effort-select')?.value || '');
+            const context = engine === 'agy' ? '' : (document.getElementById('context-select')?.value || '');
+            try {
+                const res = await fetch('/api/cli/config', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ tab, model, effort, context_window: context, restart: true })
+                });
+                const d = await res.json();
+                if (!res.ok) throw new Error('HTTP ' + res.status);
+                flagProfileSaved(d.restarted ? `✓ ${tab} di-spawn ulang dengan ${model}`
+                                             : `✓ profil ${tab} = ${model} — tab belum jalan, akan terpakai saat mulai`, false);
+            } catch (e) {
+                flagProfileSaved('✗ gagal menerapkan ' + model, true);
+            }
         }
 
         function quickRun(text) {
@@ -1074,8 +1115,7 @@
                     usage.textContent = [a.account_type ? `tipe ${a.account_type}` : '',
                                          a.user_type || '',
                                          s.turns ? `${s.turns} giliran sesi ini` : '']
-                        .filter(Boolean).join(' · ')
-                        + ' · kredit tidak tersedia dari CLI';
+                        .filter(Boolean).join(' · ') || 'state akun tidak terbaca';
                 }
             }
 
@@ -1091,6 +1131,10 @@
             // Context window hanya berarti di Qoder; agy tidak menerima flag ini.
             const ctxWrap = document.getElementById('eb-context-wrap');
             if (ctxWrap) ctxWrap.style.display = engine === 'qoder' ? '' : 'none';
+            // Nama model agy sudah memuat effortnya (…-high / …-medium / …-low), dan CLI
+            // menolak --effort bersama sebagian nama itu. Tampilkan hanya untuk Qoder.
+            const effWrap = document.getElementById('eb-effort-wrap');
+            if (effWrap) effWrap.style.display = engine === 'qoder' ? '' : 'none';
             if (engine === 'qoder') {
                 fillSelect(document.getElementById('context-select'),
                            [['1048576', '1.048.576 (1M)'], ['200000', '200.000'], ['128000', '128.000']],

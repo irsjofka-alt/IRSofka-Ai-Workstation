@@ -128,9 +128,10 @@ relevant entry and open only that file. Context is precious.
 
 **Documentation and UI are written in English.** This covers: `README.md`, `INSTALL.md`,
 `ROADMAP.md`, everything under `documents/`, `brain/**/*.md` notes and skill files, all GUI
-labels and messages in `engine-rust/src/gui.html`, and any string an engine prints into the
-terminal for a human or another engine to read — including hook denial messages and
-context-recovery briefings.
+labels and messages in `engine-rust/src/gui.html`, and anything shown globally to the
+operator. Internal strings — hook denial reasons, context-recovery briefings, database
+notes consumed by engines — may stay in Indonesian; they are conversation with the machine,
+not with a person.
 
 **Code comments may stay in Indonesian.** `//`, `/* */`, `#`, `--`, `<!-- -->` and docstrings
 that only a maintainer reads are exempt: the reasoning that made a line exist is easier to

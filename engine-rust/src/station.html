@@ -93,6 +93,17 @@
   }
   .file.media { color: var(--amber); border-color: #4a3a13; }
   .file i { font-style: normal; color: var(--ink-faint); }
+  article { cursor: pointer; }
+  .detail { display: none; margin-top: 11px; padding-top: 11px; border-top: 1px dashed var(--line); }
+  article.open .detail { display: block; }
+  .detail h4 { margin: 0 0 6px; font-size: 11px; text-transform: uppercase; letter-spacing: .7px; color: var(--ink-faint); font-weight: 600; }
+  .step { font-family: var(--mono); font-size: 12px; color: var(--ink-dim); padding: 2px 0; white-space: pre-wrap; word-break: break-word; }
+  .step b { color: var(--ink-faint); font-weight: 400; margin-right: 8px; }
+  .answer { font-size: 14px; color: var(--ink); background: #0e1520; border-left: 2px solid var(--accent);
+            border-radius: 0 8px 8px 0; padding: 9px 12px; margin: 4px 0 12px; white-space: pre-wrap; }
+  .answer i { display: block; font-style: normal; color: var(--ink-faint); font-size: 11px; margin-top: 6px; }
+  .more { color: var(--ink-faint); font-size: 12px; }
+  .hint { color: var(--ink-faint); font-size: 11px; margin-left: auto; }
   .empty { color: var(--ink-faint); text-align: center; padding: 60px 0; font-size: 14px; }
   footer {
     margin-top: 26px; padding-top: 14px; border-top: 1px solid var(--line);
@@ -221,6 +232,29 @@
     if (post.model) row.appendChild(el("span", "tag model", post.model));
     body.appendChild(row);
 
+    var steps = post.steps || [];
+    if (steps.length || post.outcome) {
+      row.appendChild(el("span", "hint", "click for the " + steps.length + " commands run"));
+    }
+
+    var detail = el("div", "detail");
+    if (post.outcome && post.outcome.text) {
+      var ans = el("div", "answer", post.outcome.text);
+      ans.appendChild(el("i", null, "final answer, first 400 characters as recorded — the full text stays in the transcript"));
+      detail.appendChild(el("h4", null, "What the AI said when it finished"));
+      detail.appendChild(ans);
+    }
+    if (steps.length) {
+      detail.appendChild(el("h4", null, "Commands actually run"));
+      steps.slice(0, 12).forEach(function (s) {
+        var line = el("div", "step");
+        line.appendChild(el("b", null, s.at));
+        line.appendChild(document.createTextNode(s.cmd));
+        detail.appendChild(line);
+      });
+      if (steps.length > 12) detail.appendChild(el("div", "more", "… " + (steps.length - 12) + " more"));
+    }
+
     var files = post.artifacts || [];
     if (files.length) {
       var box = el("div", "files");
@@ -232,7 +266,12 @@
       });
       body.appendChild(box);
     }
+    body.appendChild(detail);
     card.appendChild(body);
+    card.addEventListener("click", function (e) {
+      if (e.target.closest("a")) return;
+      card.classList.toggle("open");
+    });
     return card;
   }
 

@@ -838,6 +838,7 @@ WITH pr AS (
   FROM pr
 )
 SELECT bnd.id AS post_id,
+       bnd.session_id,
        bnd.opened_at,
        bnd.closed_at,
        bnd.tab,
@@ -887,13 +888,18 @@ def ensure_station_view(store: Store) -> bool:
     if not str(store.engine).upper().startswith("POSTG"):
         return False
     ok = True
-    for ddl in (STATION_POSTS_VIEW, STATION_ARTIFACTS_VIEW):
+    for name, ddl in (("station_posts", STATION_POSTS_VIEW), ("station_artifacts", STATION_ARTIFACTS_VIEW)):
         try:
             with store.conn.cursor() as cur:
+                # CREATE OR REPLACE VIEW menolak kalau daftar kolomnya berubah nama atau
+                # urutannya — Postgres memandangnya view berbeda, bukan view yang sama.
+                # View ini diturunkan penuh dari action_log, jadi menjatuhkannya dan
+                # membangun ulang lebih benar daripada memelihara dua definisi.
+                cur.execute("DROP VIEW IF EXISTS %s" % name)
                 cur.execute(ddl)
             store.conn.commit()
         except Exception as exc:  # noqa: BLE001
-            print(f"[ingestor] view station gagal: {exc}", file=sys.stderr)
+            print(f"[ingestor] view {name} gagal: {exc}", file=sys.stderr)
             ok = False
     return ok
 
@@ -951,6 +957,27 @@ def station(store: Store, limit: int = 30) -> None:
         else:
             bucket[path] = {"path": path, "kind": kind, "at": hhmm, "last": hhmm, "edits": 1}
 
+    ids = [p[0] for p in posts_rows]
+    steps: dict = {}
+    outcomes: dict = {}
+    if ids:
+        # Satu query untuk semua postingan. `response` hanya menyimpan 400 karakter pertama
+        # (caps di insert_event), jadi yang bisa ditampilkan jujur adalah potongan akhirnya —
+        # teks utuhnya ada di transkrip yang ditunjuk raw_ref, bukan hasil karangan ulang.
+        rows = store.query(
+            "SELECT p.post_id, a.kind, a.tool, left(a.summary,200), to_char(a.ts,'HH24:MI') "
+            "FROM station_posts p JOIN action_log a "
+            "  ON a.session_id = p.session_id AND a.ts >= p.opened_at "
+            " AND a.ts <= COALESCE(p.closed_at, now()) "
+            "WHERE a.kind IN ('command','response') AND p.post_id = ANY(%s) ORDER BY a.ts",
+            (ids,))
+        for pid, kind, tool, text, hhmm in rows:
+            pid = int(pid)
+            if kind == "response":
+                outcomes[pid] = {"at": hhmm, "text": text}
+            else:
+                steps.setdefault(pid, []).append({"at": hhmm, "cmd": text})
+
     out = []
     for (pid, opened, closed, state, dur, cmd, tool, fail, tab, model, cwd, command) in posts_rows:
         out.append({
@@ -958,6 +985,7 @@ def station(store: Store, limit: int = 30) -> None:
             "duration_s": _num(dur), "commands": _num(cmd), "tool_calls": _num(tool),
             "failed": _num(fail), "tab": tab, "model": model, "cwd": cwd,
             "command": command, "artifacts": list(per_post.get(pid, {}).values()),
+            "outcome": outcomes.get(pid), "steps": steps.get(pid, [])[:24],
         })
 
     today = store.query(

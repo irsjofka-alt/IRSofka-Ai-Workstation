@@ -649,22 +649,34 @@ fn capture_screen(tab: &str) -> Option<String> {
 fn pane_context_pct(tab: &str) -> Option<u8> {
     let raw = capture_screen(tab)?;
     let plain: String = raw.chars().filter(|c| !c.is_control() || *c == '\n').collect();
-    for line in plain.lines().rev().take(60) {
-        if !line.contains("ctx") && !line.contains("context") { continue; }
+    for line in plain.lines().rev().take(90) {
+        let low = line.to_lowercase();
+        // Qoder menulis "ctx ... 57%" (PEMAKAIAN). Antigravity menulis panel /context yang
+        // justru menyebut "Free space: 938.4k (89.5%)" (SISA) — dan baris itu tidak memuat
+        // kata ctx sama sekali. Keduanya harus dibaca berbeda, tidak bisa satu pola.
+        let is_free = low.contains("free space");
+        let is_total = low.contains("total") && low.contains('%');
+        if !is_free && !is_total && !low.contains("ctx") && !low.contains("context") { continue; }
         let bytes = line.as_bytes();
         let mut i = 0usize;
         while i < bytes.len() {
             if bytes[i].is_ascii_digit() {
+                // Sertakan desimal: `/context` Antigravity menulis "10.5%", dan angka
+                // bulat-saja akan membaca "5" dari "10.5%" — salah tanpa kelihatan.
                 let mut j = i;
-                while j < bytes.len() && bytes[j].is_ascii_digit() { j += 1; }
+                while j < bytes.len() && (bytes[j].is_ascii_digit() || bytes[j] == b'.') { j += 1; }
+                let token = line[i..j].trim_end_matches('.').to_string();
                 let mut k = j;
                 while k < bytes.len() && bytes[k] == b' ' { k += 1; }
                 if k < bytes.len() && bytes[k] == b'%' {
-                    if let Ok(v) = line[i..j].parse::<u32>() {
-                        if v <= 100 { return Some(v as u8); }
+                    if let Ok(v) = token.parse::<f32>() {
+                        let used = if is_free { 100.0 - v } else { v };
+                        if (0.0..=100.0).contains(&used) {
+                            return Some(used.round().clamp(0.0, 100.0) as u8);
+                        }
                     }
                 }
-                i = j;
+                i = j.max(i + 1);
             } else { i += 1; }
         }
     }

@@ -256,7 +256,9 @@
 
         /* The Live Terminal Viewport */
         .terminal-container {
-            flex: 1;
+            /* Yang mengalah saat komposer membesar adalah terminal, bukan komposer. */
+            flex: 1 1 auto;
+            min-height: 140px;
             width: 100%;
             padding: 8px;
             background: #05070c;
@@ -305,7 +307,7 @@
         }
         .eb-field select:focus { outline: 1px solid var(--accent-cyan); }
         .eb-field select option { background: #0c0e15; color: var(--text-main); }
-        .eb-apply { align-self: flex-end; height: 26px; font-size: 0.72rem; white-space: nowrap; }
+        .eb-apply, .eb-ctx { align-self: flex-end; height: 26px; font-size: 0.72rem; white-space: nowrap; }
         .engine-bar .select-input { color-scheme: dark; }
         .eb-usage {
             margin-left: auto; font-size: 0.66rem; color: var(--text-muted);
@@ -314,6 +316,10 @@
 
         /* Bottom Prompt Bar */
         .prompt-bar {
+            /* Tanpa ini komposer adalah flex item yang BOLEH menyusut: tingginya
+               di-clamp ke ~46px berapa pun yang kita hitung, dan teks baris ke-3
+               ke bawah terpotong oleh overflow induknya. */
+            flex: 0 0 auto;
             background: var(--bg-surface);
             border-top: 1px solid var(--border-subtle);
             display: flex;
@@ -565,6 +571,8 @@
                         <option value="1048576">1.048.576 (1M)</option>
                     </select>
                 </label>
+                <button class="term-btn eb-ctx" id="eb-ctx" onclick="showAgContext()" style="display:none"
+                        title="Mengetik /context ke Antigravity: menampilkan rincian token. Tutup panelnya dengan Esc.">📊 /context</button>
                 <button class="term-btn eb-apply" id="eb-apply" onclick="applyProfileNow()"
                         title="Menyimpan profil DAN spawn ulang CLI tab ini agar model baru langsung terpakai">⚡ Terapkan</button>
                 <span class="eb-usage" id="eb-usage" title="pemakaian dibaca dari state lokal">—</span>
@@ -870,6 +878,19 @@
         // juga tidak, karena tab hidup di tmux. Satu-satunya cara menerapkan model baru
         // adalah spawn ulang CLI di tab itu: supervisor `while true` menyalakannya kembali
         // dengan profil terkini.
+        // Antigravity menyimpan rincian konteks di perintah /context (dibaca dari pane,
+        // bukan dihitung ulang di sini). Panelnya ditutup dengan Esc.
+        async function showAgContext() {
+            try {
+                await fetch('/api/cli/run', {
+                    method: 'POST', headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ target_cli: 'antigravity', prompt: '/context' })
+                });
+                flagProfileSaved('✓ /context terkirim ke Antigravity — tutup panelnya dengan Esc', false);
+                setTimeout(fetchStats, 2500);
+            } catch (e) { flagProfileSaved('✗ gagal mengirim /context', true); }
+        }
+
         async function applyProfileNow() {
             const engine = targetEngine();
             const tab = engine === 'agy' ? 'antigravity' : (engine === 'qoder' ? 'qoder' : activeTab);
@@ -1168,6 +1189,8 @@
             if (ctxWrap) ctxWrap.style.display = engine === 'qoder' ? '' : 'none';
             // Nama model agy sudah memuat effortnya (…-high / …-medium / …-low), dan CLI
             // menolak --effort bersama sebagian nama itu. Tampilkan hanya untuk Qoder.
+            const ctxBtn = document.getElementById('eb-ctx');
+            if (ctxBtn) ctxBtn.style.display = engine === 'agy' ? '' : 'none';
             const effWrap = document.getElementById('eb-effort-wrap');
             if (effWrap) effWrap.style.display = engine === 'qoder' ? '' : 'none';
             if (engine === 'qoder') {

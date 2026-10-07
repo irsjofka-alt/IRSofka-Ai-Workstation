@@ -1,6 +1,6 @@
 # 🗺️ Roadmap — Irsofka AI Workstation
 
-Latest status: **October 7, 2026.** Every verified milestone includes reproducible evidence;
+Latest status: **October 8, 2026.** Every verified milestone includes reproducible evidence;
 untested components are explicitly labeled. This document consolidates and supersedes
 `ai_workstation_master_plan.md` and `PROJECT_SUMMARY_IRSOFKA_AI_WORKSTATION.md` along with `README.md`.
 
@@ -14,7 +14,9 @@ F4 Native Rust Window GUI         ✅ Completed
 F5 Memory & Session Integrity     ✅ Completed (Oct 6)
 F6 Cross-Verification Ecosystem   🟡 In Progress
 F7 Creative Studio (ComfyUI/UE5)  ⬜ Planned
-F8 Station — System of Record     ⬜ Planned
+F8 Station — System of Record     🟡 In Progress (F8.2, F8.3 shipped)
+F9 Refleks — Closed Sense-Act Loop ⬜ Planned
+F10 Autopilot — Improvement Unattended ⬜ Planned
 ```
 
 ## F1–F4 — Foundation (Completed & Re-verified Oct 6)
@@ -140,7 +142,7 @@ Pending:
 
 Planned integration: ComfyUI HTTP API (`:8188`) integration via `comfy_workflow` MCP tool sharing the same VRAM gate to prevent resource contention with local LLMs and graphical viewports.
 
-## F8 — Station: System of Record ⬜
+## F8 — Station: System of Record 🟡
 
 **What it is.** The Workstation (this cockpit) is where the operator *gives orders*; it must stay
 open and is terminal-centric. The Station is where results are *seen* — a human-facing, modern web
@@ -211,6 +213,14 @@ of a partial ledger displays wrong numbers confidently — and the operator trus
   bound team and leader. *Open decision:* whether each phase requires the operator's approval
   before the next one runs. Recommendation on record: yes — with a thin wallet, an unattended
   pipeline is a meter running.
+  Measured precondition (Oct 8): `quest_tasks` has exactly eight columns —
+  `id, title, status, model_assigned, cli_engine, summary, created_at, completed_at` — and holds
+  18 `COMPLETED`, 4 `FAILED`, 4 `UNAVAILABLE` rows. It cannot express a check command, a phase, a
+  dependency or who is holding the task, so no engine can pick work from it. F8.4 is therefore the
+  enabler for F10, not a sibling: an autopilot that cannot read the queue would have to invent one,
+  and §12 forbids a second definition of `job`. This migration must add `phase`, `check_command`,
+  `depends_on`, `claimed_by`, `lease_expires_at`, `evidence` — and `evidence` is what makes
+  "COMPLETED" mean something other than "someone felt like it".
 - ⬜ **F8.5 Daily digest.** `/api/day` grouping the day's transactions per session, summarised by
   the local model, raw rows always one click below the summary.
 
@@ -218,6 +228,145 @@ of a partial ledger displays wrong numbers confidently — and the operator trus
 result (thumbnail, diff, screenshot) so the Station renders it without touching the producing app?
 Metadata-only is cheaper and cannot go stale silently; copies look better and survive deletion of
 the original. Not yet decided.
+
+## F9 — Refleks: Closing the Sense–Act Loop ⬜
+
+**What it is.** The operator's own decomposition of this machine: head (`brain/`), eyes (Wayland
+screenshot), hands (ydotool + tmux), body (one PostgreSQL). Head and body are built. Eyes and hands
+are **open-loop**: an engine moves the mouse and then *assumes* the screen followed, presses Enter
+and *assumes* the pane answered. F9 replaces each assumption with a measurement, so the cheapest
+local model behaves like a careful one — it is not smarter, it is fed facts it cannot hallucinate.
+
+Every item below is a re-graded survivor of `~/Documents/Ide Nyeleneh` 1–6 (reviewed Oct 8 against
+measurements, not against enthusiasm). The refused ideas are recorded with a **numeric re-open
+threshold**: a refusal without a threshold is a preference, and preferences rot.
+
+- ⬜ **F9.1 Deterministic environment state.** On every command exit the Rust side writes one
+  structured row — exit code, cwd, the process tree still alive, and the pane delta — and the
+  SessionStart/PreToolUse briefing injects that row instead of letting the model recall what it ran.
+  This is the single highest-value item in all six notebooks because it attacks the known failure:
+  a model guessing terminal state. *Acceptance:* ask an engine "what is running in this pane" with
+  no tools available; it answers from the row, and its answer is byte-checkable against
+  `ps`/`tmux list-panes`. A wrong answer is a `DISPUTED`, not a retry.
+- ⬜ **F9.2 Action ↔ outcome graph.** Link `action_log` to its verdict (success / FAILED / DISPUTED)
+  keyed by command *shape*, then answer one question before an engine types: has this shape failed on
+  this path before? Partially exists already — `incident_recorder` promotes an error signature after
+  5 repeats (52 incident rows → 2 learned skills). F9.2 lowers the latency from "5 disasters" to
+  "1, remembered per path" and turns the answer into injected prompt text rather than a note nobody
+  opens. *Acceptance:* reproduce a recorded failure command; the briefing must warn about it before
+  the command runs, naming the incident id.
+- ⬜ **F9.3 Reflex proof — did the screen actually change.** After any `ydotool` act, diff a tiny
+  region (64×64 around the target is enough) before and after, in Rust, and report changed/not-changed
+  with the delta. Today the `station-visual` skill can only say "belum terverifikasi visual" when
+  capture fails; this converts *unknown* into *known*, which is the whole point of §5.
+  *Acceptance:* move the mouse over a window that exists and one that does not; the tool returns
+  CHANGED for the first and NO_CHANGE for the second, without an LLM in the loop.
+- ⬜ **F9.4 Wake on event instead of asking.** Two cheap event paths replace two poll loops: `epoll`
+  on the PTY master fd (a character arriving wakes the reader — the value is *no polling*, not the
+  fantasy of beating tmux's measured ~3 ms capture) and PostgreSQL `LISTEN`/`NOTIFY` so a new
+  `quest_tasks` row pushes to the daemon instead of being re-selected. Both keep the current API;
+  neither changes a number the operator sees. *Acceptance:* a row inserted from `psql` reaches the
+  daemon with no timer in between, proven by a log line carrying the row id, and `ai-station workers`
+  shows one fewer busy loop.
+
+### F9 — refused, with the threshold that would un-refuse it
+
+| idea (source) | why refused on this machine | re-open when |
+|---|---|---|
+| `/dev/shm` zero-copy IPC (4.1) | the path it would speed up is measured at **0.88 ms** per recall query and ~3 ms per pane capture; SHM shaves microseconds and adds a concurrency-bug class PostgreSQL cannot see | a measured tick of the ingest loop exceeds **20 ms** |
+| time-partitioned memory tables (4.3) | whole DB is **17 MB**, `action_log` 12 599 rows / 7.7 MB; a seq scan already finishes sub-millisecond | `action_log` passes **2 M rows** or DB passes **2 GB** |
+| Grimoire in `pgvector` (6.3, 4) | `vector` is **not installed** (`pg_available_extensions` empty for it), and the brain is 42 skill + 24 memory files, which the selective-loading rule already ranks by hand | the index stops ranking right: a needed file exists but grep misses it **twice in a week** |
+| `synchronous_commit = off` (4.2) | the contract's premise is "unrecorded history never happened"; this trades the body's memory for throughput the body does not need | never — this one is refused on principle, not on budget |
+| Java core: Loom, ZGC, Panama SIMD, R2DBC (2) | the SIMD claim rests on AVX-512 and **`/proc/cpuinfo` shows no `avx512*` flag** on the i7-12700F; a JVM is a second runtime that can call a model, which §1 forbids; and our ceiling is tokens/sec, not thread count | never as a core; a JVM may exist only as a *tool* behind a gate |
+| CXL unified memory, kernel module pinning weights into GPU registers, neuromorphic co-processor, NVMe-oF (3.1) | no CXL device in `lspci`; registers are per-thread and hold kilobytes, not 6.6 GB of weights; the NVIDIA driver is binary; a custom kernel module is the one idea here that can stop the box booting | new hardware that actually enumerates, and a reason that survives a benchmark |
+| PL/Rust in triggers, `pgai`/`pgvectorscale` in-DB RAG (5.1, 5.2) | neither extension is installed; more importantly a model call born *inside* PostgreSQL bypasses `run_grouped`/`probe::run_bounded`, so `ai-station workers` cannot see it and cannot cut it, and the DB — the body — becomes an engine | never; the database does not speak to models |
+| pg_cron as the scheduler (5.4) | `pg_cron` is not installed and would need `shared_preload_libraries` plus a restart of the DB every engine shares; a user timer already exists and is proven (`irsofka-memory-backup.timer`) | never — right tool exists |
+| genetic prompt evolver rewriting `brain/**` (1.1) | §12 rule 2: reports are derived. A machine rewriting the contract ends the contract | only as **proposals** into the F10.4 queue, approved by the operator |
+
+## F10 — Autopilot: Improving Without Being Told ⬜
+
+**What it is.** The operator asked (Oct 8): how do you keep improving with no order, forever, without
+stopping — and should every choice you offer me be thrown at Antigravity/Gemini instead, since that
+pool has longer breath while Qoder's is cheap to spend here.
+
+Measured before designing, so this section is not aspiration:
+
+- Qoder hooks **already fire unattended** — `PreToolUse`, `SessionStart`, `SessionEnd`, `PreCompact`,
+  `PostCompact` are configured in `engines/qoder/settings.json`.
+- The "AI failed → AI learns" wire **already runs**: `session_ingestor.py` calls `incident_recorder`
+  on sweep, and 2 learned skills exist out of 52 incident rows.
+- A user-level systemd timer **already works on this box** (`irsofka-memory-backup.timer`, hourly).
+- Nothing was scheduled by the assistant: `CronList` → no jobs. So the missing piece is not a
+  trigger. It is a **queue with a check command**, a **lease**, and a **stop condition** — and those
+  are F8.4, which is why F10 is written after it and not before it.
+
+### Four invariants (the cheap-to-skip, expensive-to-revert part)
+
+1. **Autonomy in selection, never in scope.** The loop may decide *which* queued item to do next; it
+   may not decide what is allowed to exist. Scope stays in the contract and in the deploy gate.
+   Without this, "always improving" is a process with write access to the repo and no owner.
+2. **A tick ends with a check command passing, or a row saying why it did not.** Silence is the one
+   output an unattended loop must never produce; an empty tick that invents work is indistinguishable
+   from a healthy one. Idle with an empty queue means *stop*, not *find something*.
+3. **Unattended never touches:** git history (force push, reset, branch deletion), PostgreSQL
+   durability parameters, contract/`§` text, files outside the claimed item's paths, `pkill -f` or
+   `tmux kill-server` (§6). Those become `ESCALATED` rows that wait for the operator.
+4. **`UNAVAILABLE` stops the tick; it never switches engine silently.** A quota gate that cannot read
+   a meter refuses the dispatch (§4). An autopilot that responds to a closed pool by quietly using a
+   different one produces work whose cost is attributed to nobody — and F8.2 exists precisely so cost
+   has an owner.
+
+### Modules
+
+- ⬜ **F10.1 Decision broker.** When an engine would ask the operator "option 1 or 2", it writes a
+  `decision` row — question, options, evidence *per option*, and cost per option — then dispatches the
+  resolver **role** resolved from `config/slots.yaml` at the moment of use. The answer is recorded in
+  the same row, with the model id that actually answered.
+  *Why the operator's instinct is right:* `slots.yaml` already names `architect` as a long-breath
+  engine (`gemini-3.1-pro`) and `auditor` as Qoder, so routing a choice to the other pool is not a new
+  direction — it is the team as configured, finally used for decisions instead of only for code.
+  Quota pools are separate (measured in §4), so a decision spent there does not shorten the working
+  agent's breath. Decisions are also the cheapest thing to delegate: a few hundred tokens.
+  *Where it must not go:* independence. `decider`/`verifier` stay on the Claude tier for exactly the
+  reason a peer review is worth something — the reviewer is not the reviewed. A resolver that both
+  picks the direction and grades the result is not a reviewer. And invariant 3 outranks the broker:
+  irreversible calls are never delegated to any engine, however much quota it has.
+  *Honest constraint from measurement:* headless `agy -p` cannot approve tool permissions, so the
+  decision must arrive fully evidenced in the prompt — the broker sends the file, not a pointer. One
+  `gemini` dispatch was also measured as `TIMEOUT` by the harness while the pane had already answered:
+  a broker that reads only the pipe loses real answers, so it reads the message table first.
+  *Acceptance:* pose a two-option question with an empty queue; `ai-station decisions` shows the row
+  resolved by a model id taken from config, the working engine's own quota untouched, and — if the
+  resolver's pool reads `UNAVAILABLE` — the row lands `ESCALATED` rather than answered by someone else.
+- ⬜ **F10.2 Task lease — the actual sync primitive.** Two engines coordinating by chatting is two
+  engines racing to read the same prose. Add `claimed_by` + `lease_expires_at` (F8.4 columns): one
+  `UPDATE ... WHERE claimed_by IS NULL` claims the item, an expired lease is reclaimable, and the
+  Station's team view shows who holds what. This is what "bekerja saling sinkron" has to mean, or it
+  means duplicate work with nicer vocabulary. *Acceptance:* start the same item from both CLIs;
+  exactly one proceeds, the other prints the holder's id and leaves no half-written file.
+- ⬜ **F10.3 The drainer.** A systemd user timer runs a deterministic script — no LLM — which picks
+  the next unclaimed `PENDING` item, runs its `check_command` before and after, and only then calls an
+  engine to do the work. The gate stays the same one that blocks a human: `cargo test -q` and
+  `call_workers.py --guard`. *Acceptance:* the timer's log for a whole night contains item ids, exit
+  codes, and at least one item it refused to touch because its scope hit invariant 3.
+- ⬜ **F10.4 Proposal queue — the safe form of "improve forever".** The loop may *author* new roadmap
+  items, never *adopt* them: proposals land as `PROPOSED` rows carrying the observation, the proposed
+  check command, and the files it would touch. Bro approves by editing one column in the Station.
+  This is also where the notebook's prompt-evolver idea becomes legitimate: it mutates candidates in a
+  queue, and the contract stays written by hand. *Acceptance:* a proposal produced from a repeated
+  failure shows up in `/api/decisions` with its evidence, and nothing it suggested has run.
+- ⬜ **F10.5 Dream phase.** On idle ≥30 min (the notebook's file 1 idea, on a user timer instead of
+  `pg_cron`): re-rank `world_memory`, compact stale session rows into handoffs, run
+  `arch_map.sh --check` for documentation debt, and re-scan `incident_log` for a signature at 4
+  repeats so the 5th one is already answered. *Acceptance:* one night of dreaming emits a digest row
+  and changes no tracked file without naming it in the digest.
+- ⬜ **F10.6 Whose breath is spent.** The operator's premise — "Gemini has long breath, Qoder's points
+  are plenty and you barely cost anything" — must be enforced, not believed. F8.2 measured that
+  Qoder exposes **no per-turn credit field**, so my own cost reads `UNAVAILABLE` to me; the panel Bro
+  reads is the source, and I may not reason as if I had measured it. So the budget is expressed as
+  *pool + window*, resolved from `config/engines.json` per role, and the autopilot states on every
+  tick which pool it is spending. *Acceptance:* a tick that would exceed a configured window fraction
+  goes `ESCALATED` with the meter's own numbers.
 
 ## Known Boundaries & Constraints
 

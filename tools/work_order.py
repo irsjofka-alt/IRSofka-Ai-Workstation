@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sqlite3
 import sys
 import time
@@ -103,7 +104,7 @@ CREATE_PG = [
         created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP, completed_at TIMESTAMP)""",
     """CREATE TABLE IF NOT EXISTS decisions (
         id SERIAL PRIMARY KEY, question TEXT NOT NULL, options TEXT,
-        weight VARCHAR(10) DEFAULT 'heavy', rung_used VARCHAR(50), engine_key VARCHAR(50),
+        weight VARCHAR(20) DEFAULT 'heavy', rung_used VARCHAR(50), engine_key VARCHAR(50),
         model_id VARCHAR(120), answer TEXT, state VARCHAR(20) DEFAULT 'OPEN',
         note TEXT, created_epoch BIGINT, resolved_epoch BIGINT)""",
     """CREATE TABLE IF NOT EXISTS autopilot_state (
@@ -138,6 +139,15 @@ NEW_COLUMNS = [
     ("quest_tasks", "due_epoch", "BIGINT", "INTEGER"),
 ]
 
+# Lebar kolom yang ditumbuhkan, bukan diganti isinya. `weight` lahir sebagai VARCHAR(10) pada
+# saat kosakatanya masih muat di situ; bobot ketiga dari invarian 3 — `irreversible`, 12 huruf —
+# meledak di PostgreSQL dengan StringDataRightTruncation sementara SQLite tidak pernah memeriksa
+# panjang, jadi fixture offline tetap hijau. Kolom dibaca dulu; hanya yang sempit yang dilebarkan,
+# supaya pemanggilan ulang tidak menulis ulang tabel yang sudah benar.
+WIDENINGS = [
+    ("decisions", "weight", 20),
+]
+
 
 def ensure_schema(conn, engine: str) -> list[str]:
     """Bangun yang belum ada; tidak pernah mengubah baris yang sudah ada."""
@@ -162,6 +172,18 @@ def ensure_schema(conn, engine: str) -> list[str]:
             log.append(f"col {table}.{column}")
         except Exception as exc:  # noqa: BLE001
             log.append(f"skip {table}.{column}: {exc}")
+    if engine == "POSTGRESQL":
+        # Lewat run(), bukan cur.execute().fetchone(): cursor psycopg2 mengembalikan None dari
+        # execute, jadi bentuk sqlite3 di sini akan AttributeError tepat saat schema sedang
+        # diperbaiki — dan ensure_schema dipanggil pada setiap start, bukan saat sepi.
+        for table, column, want in WIDENINGS:
+            have = run(conn, engine,
+                       "SELECT character_maximum_length AS n FROM information_schema.columns "
+                       "WHERE table_name=%s AND column_name=%s", (table, column))
+            width = have[0]["n"] if have else None
+            if width and width < want:
+                cur.execute(f"ALTER TABLE {table} ALTER COLUMN {column} TYPE VARCHAR({want})")
+                log.append(f"widen {table}.{column} {width}->{want}")
     if engine != "POSTGRESQL":
         cur.execute("INSERT OR IGNORE INTO autopilot_state (id) VALUES (1)")
     else:
@@ -297,14 +319,20 @@ def next_item(conn, engine, skip_blocked=True):
 
 def resolve_decision(conn, engine, decision_id, rung, engine_key, model_id, answer,
                      state="RESOLVED", note=None):
-    """Catat siapa yang menjawab. Baris OPEN tanpa jawaban adalah pertanyaan yang belum dijawab."""
+    """Catat siapa yang menjawab. Baris OPEN tanpa jawaban adalah pertanyaan yang belum dijawab.
+
+    `answer` boleh None: jalur ESCALATED memang tidak punya jawaban, dan di sinilah pertanyaan
+    yang tidak bisa diselesaikan mesin berakhir di antrean orang. Membedah None dengan slicing
+    akan membuat kegagalan pertama yang paling penting justru crash alih-alih melaporkan.
+    """
     if state == "RESOLVED" and not (model_id or "").strip():
         return False, "RESOLVED tanpa model_id ditolak: laporan harus menyebut yang menjawab"
     ph = "%s" if engine == "POSTGRESQL" else "?"
     run(conn, engine,
         f"UPDATE decisions SET state={ph}, rung_used={ph}, engine_key={ph}, model_id={ph}, "
         f"answer={ph}, note={ph}, resolved_epoch={ph} WHERE id={ph}",
-        (state, rung, engine_key, model_id, answer[:4000], note, now(), decision_id))
+        (state, rung, engine_key, model_id, answer[:4000] if answer else None,
+         note, now(), decision_id))
     return True, f"decision {decision_id} -> {state}"
 
 
@@ -351,12 +379,207 @@ def autopilot(conn, engine, mode=None, minutes=None, budget=None, who="operator"
 
 
 def decide(conn, engine, question, options=None, weight="heavy"):
+    """Catat satu pertanyaan. `options` boleh label polos atau objek dengan bukti + biaya.
+
+    Bentuknya {label, evidence, cost} karena kontrak F10.1 menuntut resolver melihat bukti
+    per pilihan, bukan hanya namanya: pertanyaan "A atau B" tanpa angka di belakangnya hanya
+    memindahkan tebakan ke mesin lain.
+
+    `weight='irreversible'` tidak pernah dikirim ke resolver — invarian 3 outranks the broker,
+    dan gerbangnya ada di sini supaya pemanggil mana pun mendapatinya, bukan hanya yang ingat.
+    """
     ph = "%s" if engine == "POSTGRESQL" else "?"
+    state = "ESCALATED" if weight == "irreversible" else "OPEN"
     run(conn, engine,
-        f"INSERT INTO decisions (question, options, weight, state, created_epoch) "
-        f"VALUES ({ph}, {ph}, {ph}, 'OPEN', {ph})",
-        (question, json.dumps(options or [])[:4000], weight, now()))
-    return run(conn, engine, "SELECT * FROM decisions WHERE state='OPEN' ORDER BY id DESC LIMIT 1")
+        f"INSERT INTO decisions (question, options, weight, state, rung_used, note, created_epoch) "
+        f"VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})",
+        (question, json.dumps(normalise_options(options))[:4000], weight, state,
+         "human-only" if state == "ESCALATED" else None,
+         "invarian 3: pilihan yang tidak bisa dibatalkan tidak didelegasikan ke mesin mana pun"
+         if state == "ESCALATED" else None,
+         now()))
+    return run(conn, engine, "SELECT * FROM decisions ORDER BY id DESC LIMIT 1")
+
+
+# --- F10.1 decision broker ---------------------------------------------------
+
+RESOLVER_ROLES = ("resolver", "resolver-alt", "resolver-local")
+
+
+def normalise_options(options):
+    """Label polos dan objek {label, evidence, cost} masuk ke satu bentuk yang sama."""
+    out = []
+    for o in (options or []):
+        if isinstance(o, str):
+            out.append({"label": o})
+        elif isinstance(o, dict):
+            out.append({k: v for k, v in o.items() if k in ("label", "evidence", "cost")})
+    return out
+
+
+def parse_options_arg(raw):
+    """`--options` menerima label polos (A|B) dan JSON ([{"label":...,"evidence":...}])."""
+    s = (raw or "").strip()
+    if not s:
+        return []
+    if s.startswith("["):
+        return json.loads(s)
+    return [o for o in s.split("|") if o.strip()]
+
+
+def resolver_rungs():
+    """Tangga resolver dibaca dari config/slots.yaml pada saat dipakai, bukan dari ingatan.
+
+    Kontrak §12 dan aturan 'never select a model from memory': berkas itu yang jadi kontrak,
+    dan operator menyuntingnya dari Station. Yang dikembalikan adalah (role_id, registry_key) —
+    nama model, kolam kuota dan jendelanya tetap milik config/engines.json, satu definisi.
+    """
+    import yaml
+    slots = REPO / "config" / "slots.yaml"
+    doc = yaml.safe_load(slots.read_text(encoding="utf-8")) or {}
+    want = {r.get("role_id"): r.get("registry_key")
+            for t in doc.get("teams", []) if t.get("id") == doc.get("active_team")
+            for r in t.get("roles", [])}
+    return [(role, want[role]) for role in RESOLVER_ROLES if want.get(role)]
+
+
+def decision_prompt(question, options):
+    """Pertanyaan yang berdiri sendiri: headless tidak bisa mencari berkasnya sendiri."""
+    lines = [
+        "Kamu adalah RESOLVER keputusan di workstation ini (kontrak §4). Sebuah pilihan level "
+        "preferensi tidak boleh dilempar ke manusia, jadi kamu yang memilih.",
+        "",
+        f"PERTANYAAN: {question}",
+        "",
+        "PILIHAN (bukti dan biaya ikut ditulis; yang kosong berarti memang tidak diukur):",
+    ]
+    for i, o in enumerate(options, 1):
+        lines.append(f"{i}. {o.get('label', '(tanpa label)')}")
+        lines.append(f"   bukti: {o.get('evidence') or '(tidak ada bukti terukur yang dilampirkan)'}")
+        lines.append(f"   biaya: {o.get('cost') or '(tidak diukur)'}")
+    lines += [
+        "",
+        "Aturan yang mengikat kamu:",
+        "- Pilih salah satu nomor. Kalau semua pilihan buruk, pilih yang paling sedikit "
+        "merusak dan tulis alasannya; jangan menolak memilih.",
+        "- Jangan menambah pilihan ketiga, jangan mengubah pertanyaan.",
+        "- Keputusan yang tidak bisa dibatalkan (hapus data, push paksa, kirim uang, pasang "
+        "perangkat) tidak pernah jadi tugasmu: jawab `PILIHAN: TIDAK` dan sebutkan kenapa.",
+        "",
+        "Balas PERSIS dengan tiga baris ini, tanpa apa pun sebelumnya:",
+        "PILIHAN: <nomor>",
+        "ALASAN: <satu atau dua kalimat>",
+        "BUKTI: <baris atau angka yang kamu pakai>",
+    ]
+    return "\n".join(lines)
+
+
+def answer_tail(text, prompt):
+    """Buang gema prompt sebelum jawabannya dibaca.
+
+    Pane menampilkan kembali apa yang diketik ke dalamnya, jadi baris contoh format
+    (`PILIHAN: <nomor>`, `ALASAN: <satu atau dua kalimat>`) dan kalimat aturan
+    `jawab PILIHAN: TIDAK` ikut berada di layar SEBELUM jawaban yang sebenarnya. Parser yang
+    mencari dari awal akan membaca instruksinya sendiri sebagai jawaban — dan yang paling
+    berbahaya bukan nomor yang salah, melainkan sebuah penolakan yang tidak pernah diucapkan
+    siapa pun. Yang dipakai di sini adalah teks setelah kemunculan TERAKHIR baris terakhir
+    prompt: batas antara apa yang kita kirim dan apa yang mereka balas.
+    """
+    lines = [l.strip() for l in (prompt or "").splitlines() if l.strip()]
+    if not lines or not text:
+        return text or ""
+    marker = lines[-1]
+    i = text.rfind(marker)
+    return text[i + len(marker):] if i >= 0 else text
+
+
+def parse_choice(text, count):
+    """Ambil nomor pilihan dari jawaban. Tidak ada baris PILIHAN = tidak ada keputusan."""
+    if not text:
+        return None, "jawaban kosong"
+    m = re.search(r"PILIHAN\s*[:=]\s*(?:nomor\s*)?(\d+)", text, re.I)
+    if not m:
+        if re.search(r"PILIHAN\s*[:=]\s*TIDAK", text, re.I):
+            return None, "resolver menolak memilih (PILIHAN: TIDAK)"
+        return None, "tidak ada baris 'PILIHAN: <nomor>' — jawaban tidak bisa dibaca sebagai keputusan"
+    idx = int(m.group(1))
+    if not 1 <= idx <= count:
+        return None, f"nomor {idx} di luar 1..{count}"
+    reason = re.search(r"ALASAN\s*[:=]\s*(.+)", text, re.I)
+    return idx, (reason.group(1).strip() if reason else "(tanpa alasan)")
+
+
+def broker(conn, engine, decision_id, timeout=240):
+    """Kiratkan satu pertanyaan OPEN ke tangga resolver, catat yang menjawab.
+
+    Tiga hal yang membuat fungsi ini ada, semuanya hasil pengukuran, bukan selera:
+
+    1. Model dipilih dari config pada saat dipakai, dan setiap anak panah dispatch adalah
+       `cross_verify.run_engine` — registry, pagar kuota, dan pembacaan pane sudah milik di
+       sana. Menyalinnya ke sini menghasilkan dua pagar yang boleh berbeda.
+    2. Pane diperiksa sebelum diketik. `run_via_pane` mengirim lewat /api/cli/run, jadi
+       mengetik ke pane yang sedang bekerja atau penuh teks belum terkirim akan menumpuk
+       prompt ke dalam pekerjaan orang lain. Tingkatnya dilewati, bukan dipaksakan.
+    3. Jawaban dibaca walau statusnya TIMEOUT. Satu dispatch gemini terukur TIMEOUT oleh
+       harness padahal pane sudah menjawab; broker yang hanya percaya pipa akan membuang
+       keputusan yang nyata-nyata sudah ada.
+    4. Gema prompt dibuang sebelum parsing (`answer_tail`). Yang diketemukan saat uji pertama
+       malam ini: ALASAN terbaca dari baris contoh di instruksi sendiri, dan teks aturan
+       memuat `PILIHAN: TIDAK` — pane yang hanya menggemakan prompt akan tercatat sebagai
+       resolver yang menolak memilih. Kesimpulan palsu dari kalimat kita sendiri.
+    """
+    import cross_verify as cv
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    rows = run(conn, engine, f"SELECT * FROM decisions WHERE id={ph}", (decision_id,))
+    if not rows:
+        return False, f"decision {decision_id} tidak ada"
+    d = rows[0]
+    if d["state"] != "OPEN":
+        return False, f"decision {decision_id} sudah {d['state']} — broker tidak menulis ulang kesimpulan"
+    opts = normalise_options(json.loads(d["options"] or "[]"))
+    if not opts:
+        return False, "pertanyaan tanpa pilihan — broker bukan tempat menebak apa opsinya"
+    prompt = decision_prompt(d["question"], opts)
+
+    rungs = resolver_rungs()
+    if not rungs:
+        return False, ("tidak satu pun role resolver ada di config/slots.yaml — pertanyaan "
+                       "dibiarkan OPEN, bukan dijawab oleh mesin yang dipilih di tempat")
+    registry = cv.load_registry()
+    attempts = []
+    for role_id, key in rungs:
+        spec = registry.get(key)
+        if not spec:
+            attempts.append(f"{role_id}->{key}: tidak ada di config/engines.json")
+            continue
+        present, why = cv.engine_present(spec)
+        if not present:
+            attempts.append(f"{role_id}->{key}: UNAVAILABLE — {why or 'tidak hadir di mesin ini'}")
+            continue
+        if spec.get("kind") == "pane":
+            tab = spec.get("tab", "antigravity")
+            screen = cv.capture_pane(tab)
+            if screen is None or not cv.pane_idle(screen):
+                attempts.append(f"{role_id}->{key}: pane '{tab}' sedang bekerja atau ada teks "
+                                "belum terkirim — prompt tidak diketik ke dalamnya")
+                continue
+        status, out = cv.run_engine(spec, prompt, timeout)
+        idx, detail = parse_choice(answer_tail(out, prompt), len(opts))
+        if idx:
+            chosen = opts[idx - 1].get("label", f"pilihan {idx}")
+            answer = (f"PILIHAN {idx}: {chosen}\nALASAN: {detail}\n\n"
+                      f"--- jawaban mentah ({status}) ---\n{(out or '')[:2500]}")
+            ok, msg = resolve_decision(conn, engine, decision_id, role_id, key,
+                                       spec.get("model", ""), answer, "RESOLVED",
+                                       note=f"{status}; {len(attempts)} tingkat dicoba sebelum ini")
+            return ok, msg
+        attempts.append(f"{role_id}->{key}: {status} — {detail}")
+
+    note = "semua tingkat habis: " + " | ".join(attempts)
+    ok, msg = resolve_decision(conn, engine, decision_id, None, None, None, None,
+                               "ESCALATED", note[:3000])
+    return ok, f"{msg} — {note}"
+
 
 
 def seed(conn, engine, items):
@@ -497,6 +720,82 @@ def selftest():
         check("jawabannya mencatat model yang menjawab", ok and row["model_id"].startswith("gemini")
               and row["state"] == "RESOLVED", str(row["model_id"]))
 
+        # --- F10.1 decision broker: yang diuji adalah gerbangnya, BUKAN dispatch-nya.
+        # Satu panggilan run_engine di dalam selftest akan membakar kuota asli dan mengetik
+        # ke pane orang, jadi yang diverifikasi di sini adalah jalur yang berhenti sendiri.
+        irr = decide(conn, "SQLITE", "Hapus seluruh tabel?", ["ya", "tidak"], weight="irreversible")
+        check("pilihan tak bisa dibatalkan tidak pernah dikirim ke resolver",
+              irr[0]["state"] == "ESCALATED" and irr[0]["rung_used"] == "human-only",
+              f"{irr[0]['state']}/{irr[0]['rung_used']}")
+        ok, msg = broker(conn, "SQLITE", irr[0]["id"])
+        check("broker menolak menulis ulang baris yang sudah selesai",
+              not ok and "kesimpulan" in msg, msg)
+        empty = decide(conn, "SQLITE", "A atau B?", [], weight="light")
+        ok, msg = broker(conn, "SQLITE", empty[0]["id"])
+        check("pertanyaan tanpa pilihan ditolak, tidak ditebak", not ok and "pilihan" in msg, msg)
+
+        # Anak tangga yang tidak bisa dibaca harus dilewati, dan kalau semuanya habis
+        # pertanyaannya mendarat ESCALATED — BUKAN dijawab oleh mesin lain yang kebetulan ada.
+        # Kunci palsu dipilih sengaja: ia gagal sebelum dispatch, jadi tes ini tidak bisa
+        # membakar kuota maupun mengetik ke pane siapa pun.
+        orig_rungs = globals()["resolver_rungs"]
+        globals()["resolver_rungs"] = lambda: [("resolver", "mesin-yang-tidak-ada")]
+        try:
+            un = decide(conn, "SQLITE", "A atau B?", ["A", "B"], weight="light")
+            ok, msg = broker(conn, "SQLITE", un[0]["id"])
+            ur = run(conn, "SQLITE", "SELECT state, model_id, note FROM decisions WHERE id=?",
+                     (un[0]["id"],))[0]
+            check("resolver tak terbaca -> ESCALATED tanpa model penjawab",
+                  ur["state"] == "ESCALATED" and not ur["model_id"]
+                  and "engines.json" in (ur["note"] or ""), str(ur))
+        finally:
+            globals()["resolver_rungs"] = orig_rungs
+
+        rungs = resolver_rungs()
+        check("tangga resolver dibaca dari config, urut seperti di slots.yaml",
+              [r for r, _k in rungs] == list(RESOLVER_ROLES) and all(k for _r, k in rungs),
+              str(rungs))
+        import cross_verify as _cv
+        reg = _cv.load_registry()
+        check("setiap anak tangga menunjuk registry key yang benar-benar ada",
+              all(k in reg for _r, k in rungs), str([k for _r, k in rungs if k not in reg]))
+
+        p = decision_prompt("A atau B?", [{"label": "A", "evidence": "ukur 3ms", "cost": "1 GB"},
+                                          {"label": "B"}])
+        check("prompt membawa bukti dan biaya per pilihan",
+              "ukur 3ms" in p and "1 GB" in p and "tidak diukur" in p)
+        check("prompt memuat aturan menolak yang tak bisa dibatalkan", "PILIHAN: TIDAK" in p)
+        check("prosa tanpa baris PILIHAN bukan keputusan",
+              parse_choice("menurut saya dua-duanya bagus", 2)[0] is None)
+        check("nomor di luar jangkauan ditolak", parse_choice("PILIHAN: 7", 2)[0] is None)
+        check("penolakan eksplisit terbaca sebagai penolakan",
+              "menolak" in (parse_choice("PILIHAN: TIDAK", 2)[1] or ""))
+
+        # Regresi nyata dari uji pertama broker (decision 3, pane antigravity): teks yang
+        # kembali adalah prompt + jawaban, dan parser membaca baris contoh di prompt sebagai
+        # jawaban. Yang berbahaya bukan nomornya — yang berbahaya adalah penolakan palsu.
+        pr = decision_prompt("A atau B?", [{"label": "A"}, {"label": "B"}])
+        echoed = pr + "\n▸ Thought for 10s, 714 tokens\nPILIHAN: 2\nALASAN: lebih hemat\nBUKTI: 8x4=32\n"
+        i2, d2 = parse_choice(answer_tail(echoed, pr), 2)
+        check("gema prompt dibuang: nomor dan alasan datang dari jawaban, bukan instruksi",
+              i2 == 2 and d2.startswith("lebih hemat"), f"{i2}/{d2}")
+        i3, d3 = parse_choice(answer_tail(pr + "\n", pr), 2)
+        check("pane yang hanya menggemakan prompt bukan keputusan, dan bukan penolakan",
+              i3 is None and "TIDAK" not in (d3 or ""), str(d3))
+        check("tanpa pemotongan, kalimat aturan kita sendiri terbaca sebagai penolakan",
+              "menolak" in (parse_choice(pr, 2)[1] or ""), str(parse_choice(pr, 2)))
+        stt_irr = status(conn, "SQLITE")
+        check("baris ESCALATED muncul di antrean yang dibaca GUI",
+              any(x["id"] == irr[0]["id"] for x in stt_irr["decisions_open"]),
+              str([x["id"] for x in stt_irr["decisions_open"]]))
+        # Tab Human Decide membaca kolom ini satu per satu. Kalau query di status() berhenti
+        # menyertainya, halaman tidak error — ia cuma menampilkan baris kosong, dan yang
+        # dilihat operator adalah pertanyaan tanpa alasan. Jadi kolomnya diassert.
+        need = {"id", "question", "options", "weight", "state", "rung_used", "model_id", "note"}
+        sample = next((x for x in stt_irr["decisions_open"] if x["state"] != "OPEN"), None)
+        check("setiap kolom yang dibaca tab Human Decide ikut terkirim",
+              sample is not None and need <= set(sample), str(sorted(set(sample or {}))))
+
         item = get_item(conn, "SQLITE", ids["A"])
         check("resume_count ada", "resume_count" in item)
         # alias: baris lama tidak ditulis ulang, hanya dibaca sebagai CLAIMED
@@ -608,9 +907,25 @@ def selftest_live():
         check("next_item tidak menawarkan baris UNAVAILABLE di produksi",
               not nxt or norm(nxt["status"]) not in ("UNAVAILABLE", "FAILED", "COMPLETED"),
               str(nxt))
+        # decide() yang baru menyebut kolom rung_used/note, dan status() yang baru menyebut
+        # rung_used di SELECT. Keduanya sudah ada di SQLite fixture, jadi fixture tidak bisa
+        # membuktikan PostgreSQL punya kolom yang sama — dan itu persis kelas bug yang sudah
+        # dua kali lolos ke produksi dari modul ini.
+        irr = decide(conn, engine, f"{mark} hapus tabel?", [{"label": "ya"}, {"label": "tidak"}],
+                     weight="irreversible")
+        check("decide() bentuk baru tertulis di backend produksi",
+              irr and irr[0]["state"] == "ESCALATED" and irr[0]["rung_used"] == "human-only",
+              str(irr[0] if irr else None))
+        stt = status(conn, engine)
+        check("status() membaca kolom baru decisions di produksi",
+              any(x["id"] == irr[0]["id"] for x in stt["decisions_open"])
+              and "rung_used" in (stt["decisions_open"][0] if stt["decisions_open"] else {}),
+              str([x.get("id") for x in stt["decisions_open"]][:5]))
     finally:
         like = f"{mark}%"
         run(conn, engine, "DELETE FROM quest_tasks WHERE title LIKE "
+            + ("%s" if engine == "POSTGRESQL" else "?"), (like,))
+        run(conn, engine, "DELETE FROM decisions WHERE question LIKE "
             + ("%s" if engine == "POSTGRESQL" else "?"), (like,))
         left = run(conn, engine, "SELECT COUNT(*) AS n FROM quest_tasks WHERE title LIKE "
                     + ("%s" if engine == "POSTGRESQL" else "?"), (like,))
@@ -634,6 +949,10 @@ def status(conn, engine, older_than=180):
     Semua isinya turunan: baris database, angka pemutus, dan satu pembacaan git. Tidak ada
     satu pun field yang boleh ditulis tangan — §12 melarang laporan yang dikarang, dan muka
     GUI yang mengarang adalah cara tercepat membuat operator percaya angka yang salah.
+
+    `decisions_open` adalah "belum selesai", bukan "berstatus OPEN": baris ESCALATED dan
+    UNAVAILABLE juga muncul di sini, karena keduanya adalah pertanyaan yang mesin tidak bisa
+    tutup sendiri dan artinya menunggu orang.
     """
     ap = autopilot(conn, engine) or {}
     per_status = run(conn, engine,
@@ -642,8 +961,8 @@ def status(conn, engine, older_than=180):
                 "SELECT id, title, status, escalation_reason, phase FROM quest_tasks "
                 "WHERE status='HUMAN' ORDER BY id")
     dec = run(conn, engine,
-              "SELECT id, question, options, weight, state, model_id, created_epoch "
-              "FROM decisions WHERE state='OPEN' ORDER BY id")
+              "SELECT id, question, options, weight, state, rung_used, engine_key, model_id, "
+              "note, created_epoch FROM decisions WHERE state <> 'RESOLVED' ORDER BY id")
     nxt = next_item(conn, engine)
     return {
         "engine": engine,
@@ -677,7 +996,14 @@ def main(argv=None):
     p.add_argument("--minutes", type=int); p.add_argument("--budget", type=int)
     p.add_argument("--reason", default=None); p.add_argument("--by", default="operator")
     p = sub.add_parser("decide"); p.add_argument("question"); p.add_argument("--options", default="")
-    p.add_argument("--weight", default="heavy", choices=["heavy", "light"])
+    p.add_argument("--weight", default="heavy", choices=["heavy", "light", "irreversible"])
+    p.add_argument("--route", action="store_true", help="langsung kiratkan ke tangga resolver")
+    p.add_argument("--timeout", type=int, default=240)
+    p = sub.add_parser("route"); p.add_argument("id", type=int)
+    p.add_argument("--timeout", type=int, default=240)
+    p.add_argument("--dry-run", action="store_true",
+                   help="tunjukkan tangga + prompt tanpa mengirim apa pun")
+    p = sub.add_parser("decisions"); p.add_argument("--limit", type=int, default=15)
     p = sub.add_parser("resolve"); p.add_argument("id", type=int)
     p.add_argument("--rung", required=True); p.add_argument("--engine-key", required=True)
     p.add_argument("--model", required=True); p.add_argument("--answer", required=True)
@@ -734,9 +1060,58 @@ def main(argv=None):
         print(json.dumps(autopilot(conn, engine, mode, a.minutes, a.budget, a.by, a.reason),
                          default=str, indent=2))
     elif a.cmd == "decide":
-        opts = [o for o in a.options.split("|") if o]
-        rows = decide(conn, engine, a.question, opts, a.weight)
-        print(json.dumps(rows[0], default=str, indent=2))
+        rows = decide(conn, engine, a.question, parse_options_arg(a.options), a.weight)
+        row = rows[0]
+        print(json.dumps(row, default=str, indent=2))
+        if a.weight == "irreversible":
+            print("-> ESCALATED: invarian 3, tidak dikirim ke resolver mana pun")
+        elif a.route:
+            ok, msg = broker(conn, engine, row["id"], a.timeout)
+            print(msg)
+            return 0 if ok else 1
+    elif a.cmd == "route":
+        if a.dry_run:
+            import cross_verify as cv
+            rows = run(conn, engine, "SELECT * FROM decisions WHERE id=%s"
+                       if engine == "POSTGRESQL" else "SELECT * FROM decisions WHERE id=?",
+                       (a.id,))
+            if not rows:
+                print(f"decision {a.id} tidak ada")
+                return 1
+            d = rows[0]
+            registry = cv.load_registry()
+            opts = normalise_options(json.loads(d["options"] or "[]"))
+            print(json.dumps({
+                "state": d["state"], "weight": d["weight"],
+                "rungs": [{"role": r, "registry_key": k,
+                           "model": registry.get(k, {}).get("model"),
+                           "kind": registry.get(k, {}).get("kind")}
+                          for r, k in resolver_rungs()],
+                "prompt": decision_prompt(d["question"], opts),
+            }, indent=2, ensure_ascii=False))
+            return 0
+        ok, msg = broker(conn, engine, a.id, a.timeout)
+        print(msg)
+        return 0 if ok else 1
+    elif a.cmd == "decisions":
+        rows = run(conn, engine, "SELECT id, state, weight, rung_used, model_id, question, answer, "
+                                 "note FROM decisions ORDER BY id DESC LIMIT "
+                   + ("%s" if engine == "POSTGRESQL" else "?"), (a.limit,))
+        if not rows:
+            print("belum ada keputusan — antrean ini kosong artinya normal")
+        for r in rows:
+            who = r["model_id"] or ("MENUNGGU ORANG" if r["state"] != "RESOLVED" else "?")
+            pick = ""
+            if r["answer"]:
+                first = r["answer"].splitlines()[0].strip()
+                pick = first[:70]
+            print(f"#{r['id']:<4} {r['state']:<10} {r['weight']:<12} "
+                  f"{(r['rung_used'] or '-'):<14} {who:<28} {r['question'][:44]}")
+            if pick:
+                print(f"      ↳ {pick}")
+            if r["state"] != "RESOLVED" and r["note"]:
+                print(f"      ↳ {r['note'][:110]}")
+        return 0
     elif a.cmd == "resolve":
         ok, msg = resolve_decision(conn, engine, a.id, a.rung, a.engine_key, a.model,
                                    a.answer, a.state, a.note)

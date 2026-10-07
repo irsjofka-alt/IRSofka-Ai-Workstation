@@ -884,12 +884,27 @@
     feed.appendChild(head("Decisions no rung could answer"));
     listOrNull(feed, ap.decisions_open, function (d) {
       var c = el("div", "card");
-      c.appendChild(el("h3", null, d.question || "untitled question"));
+      var esc = d.state !== "OPEN";
+      var h = el("h3", null, d.question || "untitled question");
+      c.appendChild(h);
+      c.appendChild(el("p", esc ? "note" : null,
+        esc ? "every resolver rung was tried and none of them settled this — it is here because "
+              + "the machines could not, not because someone chose to skip you"
+            : "no engine has dispatched this yet"));
       var opts = [];
       try { opts = JSON.parse(d.options || "[]"); } catch (e) { opts = []; }
-      opts.forEach(function (o) { c.appendChild(el("p", null, "— " + o)); });
+      opts.forEach(function (o) {
+        var label = (o && typeof o === "object") ? (o.label || "(no label)") : String(o);
+        c.appendChild(el("p", null, "— " + label));
+        if (o && typeof o === "object") {
+          c.appendChild(el("p", "note", "  evidence: " + (o.evidence || "not measured")));
+          c.appendChild(el("p", "note", "  cost: " + (o.cost || "not measured")));
+        }
+      });
+      if (esc && d.note) c.appendChild(el("p", "note", "why: " + d.note));
       c.appendChild(el("p", "note",
-        "weight " + (d.weight || "—") + " · opened " +
+        "weight " + (d.weight || "—") + " · state " + d.state +
+        (d.rung_used ? " · rung " + d.rung_used : "") + " · opened " +
         new Date(Number(d.created_epoch) * 1000).toLocaleString() +
         " · nothing was answered by a substitute engine"));
       return c;

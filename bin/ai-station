@@ -40,6 +40,9 @@ case "$1" in
     # no AI's cooperation (contract §6), so it calls the tool directly instead of the HTTP API.
     python3 "$SCRIPT_DIR/tools/work_order.py" autopilot "${2:-show}" "${@:3}"
     ;;
+  decisions)
+    python3 "$SCRIPT_DIR/tools/work_order.py" decisions "${@:2}"
+    ;;
   snapshot)
     python3 "$SCRIPT_DIR/tools/session_ingestor.py" snapshot "${2:-25}"
     ;;
@@ -68,6 +71,7 @@ case "$1" in
     echo "  verify <mesin> [--file P|teks]  Minta AI lain memeriksa pekerjaan AI ini (gemini|qoder|local)"
     echo "  workers [--list|--audit|--cut|--guard]  Panggilan engine yang masih hidup di luar Active Workspace"
     echo "  autopilot [on|off|show] [--minutes N] [--budget N]  Autopilot switch; 'off' works without the daemon"
+    echo "  decisions [--limit N]   Who answered each unattended choice, and what is still waiting"
     echo "  snapshot [N]            Tulis handoff mekanis sekarang (dipanggil otomatis saat sesi mati)"
     echo "  recovery [N]            recall + handoff sekaligus, untuk memulihkan konteks sesi baru"
     echo "  logstats                Statistik isi action_log & save-state"

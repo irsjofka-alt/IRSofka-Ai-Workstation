@@ -315,6 +315,13 @@ Measured before designing, so this section is not aspiration:
    a meter refuses the dispatch (§4). An autopilot that responds to a closed pool by quietly using a
    different one produces work whose cost is attributed to nobody — and F8.2 exists precisely so cost
    has an owner.
+5. **Unknown is never idle.** The mirror of the invariant that made the call-worker cut safe
+   ("unknown is never empty"): a watchdog that cannot read the pane must not conclude the engine
+   stopped. Measured reason — a `gemini` verification dispatch was recorded `TIMEOUT` by the harness
+   while the tmux pane had already answered. Absence of a signal is not evidence of rest, and acting
+   on that absence resumes a session that was mid-sentence.
+6. **The off switch does not require the AI's cooperation.** If the only way to stop an unattended
+   loop is to ask it politely, it is not a switch. See F10.8.
 
 ### Modules
 
@@ -338,6 +345,35 @@ Measured before designing, so this section is not aspiration:
   *Acceptance:* pose a two-option question with an empty queue; `ai-station decisions` shows the row
   resolved by a model id taken from config, the working engine's own quota untouched, and — if the
   resolver's pool reads `UNAVAILABLE` — the row lands `ESCALATED` rather than answered by someone else.
+
+  **Standing order from the operator (Oct 8, 00:30), now contract §4:** a preference-level choice —
+  "option 1 or 2", which of two designs, which queued item next — is **never** put to the operator.
+  It is resolved by the `resolver` role and the answer is recorded. Only an item that crosses a named
+  threshold waits for a human (F10.8 queue). The operator's stated reason is that the engine choices
+  would come out the same anyway, and the point of the notebook is not to be consulted twice.
+
+  The pool the operator named is `gemini` (`gemini-3.8-flash-high`, registered as `reviewer` in
+  `cross_verify --list`, and it has its own tools so it can read code before answering). And on the
+  fresh meter it is the right call — measured 00:33 the same night, read rather than believed:
+
+  | pool | 5h left | weekly left | whose breath it competes with |
+  |---|---|---|---|
+  | Gemini Models | 0.9802 | **0.9792** | the `architect` role — the engine writing the code |
+  | Claude and GPT models | 1.0000 | **0.6224** | nobody's; 38 % of it went to yesterday's audit dispatches |
+  | Qoder add-on credits | — | 451 / 1500 used | the working agent (this engine) |
+
+  So `gemini` has more weekly air than the verify tier does tonight, which is the operator's whole
+  point. The one caveat worth keeping in writing: that air is the *architect's* air, so a long Gemini
+  implementation session and a long Gemini decision queue draw from the same meter — which is why the
+  order is a **ladder of three roles in `config/slots.yaml`**, not a hard-coded name: `resolver` →
+  `gemini`, `resolver-alt` → `claude-sonnet` (a pool the architect does not touch), `resolver-local` →
+  `local` (`qwen3.5:9b`: no quota at all, only VRAM, and the §7 gate still has to clear it). A meter
+  that reads 98 % free tonight is not the meter that is free next week, and §12 forbids picking a model
+  from memory — so the rung order is config, editable from the F8.3 face, and the contract text names
+  roles only. Each rung skipped must be skipped as `UNAVAILABLE` with its own number, never silently.
+  Verified as shipped (Oct 8): the three rungs parse under `active_team`, `master_data.py selftest`
+  still passes 30/30, and `cross_verify --list` still resolves the registry — the rungs are role ids
+  pointing at existing keys, so nothing was restated.
 - ⬜ **F10.2 Task lease — the actual sync primitive.** Two engines coordinating by chatting is two
   engines racing to read the same prose. Add `claimed_by` + `lease_expires_at` (F8.4 columns): one
   `UPDATE ... WHERE claimed_by IS NULL` claims the item, an expired lease is reclaimable, and the
@@ -367,6 +403,44 @@ Measured before designing, so this section is not aspiration:
   *pool + window*, resolved from `config/engines.json` per role, and the autopilot states on every
   tick which pool it is spending. *Acceptance:* a tick that would exceed a configured window fraction
   goes `ESCALATED` with the meter's own numbers.
+- ⬜ **F10.7 Heartbeat — is that engine working or resting?** This is the piece the operator described
+  directly (Oct 8): when a CLI stops because a session got long, Rust and PostgreSQL must tell
+  *"mid-task"* from *"at rest"*, and only the second one gets a `continue`. The daemon already owns the
+  state it needs — `action_log` rows arrive per action, the pane is readable in ~3 ms, and
+  `quest_tasks.claimed_by` (F10.2) says what is held — so the detector is a join, not a new sense.
+  It requires **two independent signals agreeing** before it may send anything: an open claim, no
+  `action_log` row for T minutes, and a pane whose text is not changing. Invariant 5 is the whole
+  design: if the pane cannot be read, the state is `UNKNOWN`, the tick is logged as `UNKNOWN`, and no
+  keystroke is sent. A resume budget per item (default 3) then parks it, because a task that needs
+  four nudges is not asleep — it is stuck, and nudging it again is noise that looks like progress.
+  *Acceptance:* stop a session mid-item on purpose and the daemon resumes it once, visibly, with the
+  item id in the log; then make the pane unreadable and prove it sends nothing at all.
+- ⬜ **F10.8 Autopilot switch — ON means the machine is entrusted, not that it is unowned.** A toggle on
+  the Workstation cockpit (`gui.html` is the control surface; the *state* of the toggle is recorded as
+  a row so the Station can show who had the machine and when). The operator's framing is the spec:
+  ON = this computer belongs to the AI and its ecosystem for the night; OFF = a human is at the desk.
+  Four things make that survivable, and they are the non-negotiable part of this module:
+  1. **Three off paths, none of which asks permission.** The GUI toggle, `ai-station autopilot off`
+     from any shell, and `systemctl --user stop` of the drainer timer. Invariant 6: if the loop is
+     misbehaving at 03:00, waking it to negotiate is not an off switch.
+  2. **Self-expiry.** ON carries a wall-clock boundary and an item count; either one reached ends the
+     run and emits the morning digest. A switch that stays ON because everyone forgot is a background
+     process running with the operator's identity.
+  3. **The hands floor.** Autopilot ON grants tmux panes and headless APIs. It does **not** grant
+     `ydotool`: moving the real mouse and typing real keys steals the desktop of a sleeping person,
+     and a misclick into whatever window is frontmost at 03:00 is the one failure this ledger cannot
+     undo — no `action_log` row restores a deleted file from an app that has no CLI. GUI control is
+     allowed only for an item that explicitly claims the `visual_operator` team, and — with autopilot
+     ON and nobody at the desk — such an item enters the human queue instead of clicking.
+  4. **The human queue is for facts, not preferences.** The operator's own example, checked instead of
+     assumed: "OS disk left 10 GB but must download `phi4:14b`". Measured tonight: **389 G free** on
+     `/` (449 G total, 9 % used), VRAM **928 MiB used of 12 288**, and `phi4:14b` genuinely not pulled
+     (`cross_verify --list`: server alive, catalogue holds `qwen3.5:4b`, `qwen3.5:9b`, `tev1:0.8b`).
+     So that item does not wait for a human tonight — and that is precisely why the threshold is a
+     measured number evaluated when the item runs, never a remembered number.
+     *Acceptance:* with the toggle ON, walk away; the morning digest lists every item attempted, every
+     item skipped and why, which pool each cost came from, and the queue contains only items whose
+     measured resource line actually crossed its threshold.
 
 ## Known Boundaries & Constraints
 

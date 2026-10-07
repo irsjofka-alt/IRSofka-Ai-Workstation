@@ -106,6 +106,33 @@ Verification Policy:
 - Responses lacking sufficient evidence must be marked `DISPUTED`, not `ANSWERED`.
 - Reviewed engines may dispute verification conclusions with reasoned justification. Truth is evidence-based.
 
+**Decision routing — the operator is not a menu.** When an engine faces two or more acceptable paths and
+no measurement decides between them, it does **not** put the choice to the operator. It resolves the
+`resolver` role from `config/slots.yaml` and `config/engines.json` at the moment of use, dispatches the
+question with the evidence for *every* option inside the prompt (a headless worker cannot go looking —
+same rule as `--file` above), and records which model id answered. Standing order set by the operator on
+2026-10-08: preference-level questions are answered by the long-breath engine, named there as
+`gemini` / Flash 3.8 High, because the `Claude and GPT models` pool can empty first and the operator's own
+reading is that the answer would be the same one they would have given. The implementation is a **three-rung
+ladder of roles in `config/slots.yaml`** — `resolver` → `resolver-alt` → `resolver-local` — each pointing at
+a `config/engines.json` key, never restating a model id. The order is config and the operator can invert it
+from the Station, because a meter that reads 98 % free tonight is not the meter that is free next week, and
+because §12 forbids selecting a model from memory. When no rung's meter can be read, the question lands
+`ESCALATED`; it is never answered by a substitute engine picked in the moment.
+
+A choice becomes the operator's only when the item crosses a **named threshold, measured when the item
+runs**: free disk, free VRAM, quota window fraction, an irreversible git or database operation, or real
+mouse and keyboard input with nobody at the desk. Thresholds are re-read, never remembered — the operator's
+own worked example (10 GB disk left against a 14B model download) did **not** apply on 2026-10-08, where
+`/` had 389 G free and 928 MiB of 12 288 MiB VRAM in use.
+
+**Unattended ticks inherit every rule above.** Autopilot changes *who triggers* a tick, never *what a tick
+may do*: the deploy gates, the call-worker cut, the `DISPUTED`-over-silence rule and §6 all apply with no
+human watching. The daemon may nudge an engine it believes has stopped only when two independent signals
+agree — an open task claim, no `action_log` row for T minutes, and a pane whose text is not changing. A
+pane that cannot be read is `UNKNOWN`, never `idle`: absence of evidence is not permission, on the resume
+path exactly as on the cut path.
+
 ## 5. Honest Status Reporting
 
 Report actual status without embellishment. An unavailable engine or model is `UNAVAILABLE`,
@@ -119,6 +146,20 @@ False status reports harm system reliability because subsequent engines build up
 - **Do NOT** execute `tmux -L irsofka kill-server` — this destroys all terminal tabs and running AI sessions.
 - Reload interface: `refresh_workstation_ui`.
 - Restart daemon (safe, tmux preserves tabs): `restart_workstation_daemon(reason="...")` — `reason` is required and logged.
+
+**Autopilot (`ROADMAP` F10.8).** The cockpit carries one toggle. ON entrusts the machine to the engines
+for a bounded run; OFF means a human is at the desk and watching. Three rules are load-bearing:
+
+- **Turning it off must not need the AI's cooperation.** The GUI toggle, `ai-station autopilot off` from
+  any shell, and stopping the drainer's user timer each end the run on their own. If stopping requires
+  asking the loop politely, it is not a switch.
+- **ON grants panes and headless APIs; it does not grant `ydotool`.** Moving the real mouse and typing
+  real keys steals the desktop of a sleeping person, and a misclick into whatever window is frontmost at
+  03:00 is the one failure the ledger cannot undo — no `action_log` row restores a file deleted inside an
+  application that has no CLI. An item that genuinely needs the desktop joins the human queue instead of
+  clicking.
+- **ON expires by itself**, at a wall-clock boundary or an item count, and emits the morning digest. A
+  toggle left ON because everyone forgot is a background process running with the operator's identity.
 
 ## 7. GPU Resource Discipline
 

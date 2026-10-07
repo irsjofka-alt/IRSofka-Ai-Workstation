@@ -30,6 +30,21 @@ teams:
       - role_id: "verifier"
         title: "Second-tier Verifier (same pool, cheaper)"
         registry_key: "claude-sonnet"
+      # Decision routing (contract §4, operator standing order 2026-10-08). A preference-level
+      # choice is never put to the operator: it is resolved here, rung by rung. Each rung is a
+      # registry key and never restates its model, pool or windows — those are defined once, in
+      # config/engines.json, and read at the moment of use. A rung whose meter cannot be read is
+      # skipped UNAVAILABLE and the next rung is tried; when every rung fails the question lands
+      # ESCALATED, never answered by a substitute engine picked in the moment.
+      - role_id: "resolver"          # rung 1 — the model the operator named
+        title: "Decision Resolver (unattended choice)"
+        registry_key: "gemini"
+      - role_id: "resolver-alt"      # rung 2 — a pool the working architect does not draw on
+        title: "Decision Resolver fallback"
+        registry_key: "claude-sonnet"
+      - role_id: "resolver-local"   # rung 3 — no quota at all; VRAM gate (§7) still applies
+        title: "Decision Resolver, local tier, last rung"
+        registry_key: "local"
 
   - id: "visual_operator"
     name: "Visual & Desktop Automation Squad"

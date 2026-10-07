@@ -21,9 +21,22 @@ use portable_pty::{CommandBuilder, MasterPty, NativePtySystem, PtySize, PtySyste
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 
+mod engineinfo;
+mod paths;
+mod probe;
 mod procinfo;
 // hanya yang dipakai di main.rs; sisanya tetap privat untuk modul procinfo
 use procinfo::{descendants, proc_alive, proc_cmdline, proc_comm, proc_cwd, LiveProc};
+use engineinfo::{
+    agy_efforts, agy_models, antigravity_last_model, antigravity_usage, cli_version, qoder_account,
+    qoder_efforts, qoder_models, qoder_session_usage,
+};
+use probe::{cached_json, py_json, run_capture};
+use paths::{
+    assets_dir, config_dir, gui_path, home_dir, ingestor_path, profiles_path, runner_path,
+    spool_path, station_dir, station_port, tabs_log_dir, tmux_socket, tmux_session_name,
+    FALLBACK_HOST,
+};
 use std::{
     collections::HashMap,
     fs,
@@ -32,14 +45,12 @@ use std::{
     process::Command,
     sync::{
         atomic::{AtomicU64, Ordering},
-        Arc, Mutex, OnceLock,
+        Arc, Mutex,
     },
-    time::{Duration, Instant},
+    time::Duration,
 };
 use tower_http::cors::{AllowOrigin, CorsLayer};
 
-const FALLBACK_HOST: &str = "127.0.0.1";
-const DEFAULT_PORT: u16 = 8999;
 const TABS: [&str; 3] = ["qoder", "antigravity", "shell"];
 
 /// Penghitung permintaan muat-ulang UI; dibaca WebView lewat polling /api/stats.
@@ -80,62 +91,6 @@ fn pg_conn_str() -> String {
         pick("password", "STATION_PG_PASSWORD", ""),
         pick("dbname", "STATION_PG_DB", "irsofka_ai_workstation"),
     )
-}
-
-fn station_port() -> u16 {
-    std::env::var("STATION_PORT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(DEFAULT_PORT)
-}
-
-fn home_dir() -> PathBuf {
-    // $HOME praktis selalu terisi (systemd user maupun shell mengisinya). Fallback-nya
-    // tidak boleh berupa nama orang tertentu — hasil clone tidak boleh membawa home
-    // directory milik mesin saya. Urutannya: $HOME, lalu /home/$USER, lalu direktori kerja.
-    if let Ok(h) = std::env::var("HOME") {
-        if !h.is_empty() {
-            return PathBuf::from(h);
-        }
-    }
-    if let Ok(u) = std::env::var("USER") {
-        if !u.is_empty() {
-            return PathBuf::from(format!("/home/{u}"));
-        }
-    }
-    std::env::current_dir().unwrap_or_else(|_| PathBuf::from("/"))
-}
-
-fn station_dir() -> PathBuf {
-    home_dir().join(".ai-station")
-}
-
-fn config_dir() -> PathBuf {
-    station_dir().join("config")
-}
-
-fn profiles_path() -> PathBuf {
-    config_dir().join("cli_profiles.json")
-}
-
-fn runner_path() -> PathBuf {
-    config_dir().join("run_tab.sh")
-}
-
-fn assets_dir() -> PathBuf {
-    station_dir().join("engine-rust").join("assets")
-}
-
-fn gui_path() -> PathBuf {
-    station_dir().join("engine-rust").join("src").join("gui.html")
-}
-
-fn spool_path() -> PathBuf {
-    station_dir().join("logs").join("station_events.jsonl")
-}
-
-fn ingestor_path() -> PathBuf {
-    station_dir().join("tools").join("session_ingestor.py")
 }
 
 // ---------------------------------------------------------------------------
@@ -636,18 +591,6 @@ fn create_direct_session(tab: &str, profile: &TabProfile) -> PtySession {
 // tmux backend: CLI berumur panjang, daemon hanya penayang
 // ---------------------------------------------------------------------------
 
-fn tmux_socket() -> String {
-    std::env::var("STATION_TMUX_SOCKET").unwrap_or_else(|_| "irsofka".to_string())
-}
-
-fn tabs_log_dir() -> PathBuf {
-    station_dir().join("logs").join("tabs")
-}
-
-fn tmux_session_name(tab: &str) -> String {
-    format!("station-{}", tab)
-}
-
 /// Ambil TAMPILAN pane saat ini, lengkap dengan sekuens escape-nya.
 ///
 /// Ini yang dibutuhkan xterm.js untuk menggambar ulang sebuah TUI dengan benar. Memutar
@@ -845,238 +788,6 @@ fn engine_hint(engine: &str) -> Option<&'static str> {
         "agy" => Some("agy"),
         _ => None,
     }
-}
-
-// ---------------------------------------------------------------------------
-// Cached subprocess helpers
-// ---------------------------------------------------------------------------
-
-fn cache() -> &'static Mutex<HashMap<String, (Instant, Value)>> {
-    static CACHE: OnceLock<Mutex<HashMap<String, (Instant, Value)>>> = OnceLock::new();
-    CACHE.get_or_init(Default::default)
-}
-
-fn cached_json<F>(key: &str, ttl: Duration, producer: F) -> Value
-where
-    F: FnOnce() -> Value,
-{
-    if let Ok(c) = cache().lock() {
-        if let Some((at, val)) = c.get(key) {
-            if at.elapsed() < ttl {
-                return val.clone();
-            }
-        }
-    }
-    let val = producer();
-    if let Ok(mut c) = cache().lock() {
-        c.insert(key.to_string(), (Instant::now(), val.clone()));
-    }
-    val
-}
-
-fn run_capture(program: &str, args: &[&str]) -> Option<String> {
-    let out = Command::new(program).args(args).output().ok()?;
-    if !out.status.success() {
-        return None;
-    }
-    Some(String::from_utf8_lossy(&out.stdout).trim().to_string())
-}
-
-/// Run a python one-liner that prints JSON on stdout.
-fn py_json(script: &str, args: &[&str]) -> Option<Value> {
-    let mut cmd = Command::new("python3");
-    cmd.arg("-c").arg(script);
-    cmd.args(args);
-    let out = cmd.output().ok()?;
-    let stdout = String::from_utf8_lossy(&out.stdout).trim().to_string();
-    stdout
-        .find('{')
-        .and_then(|i| serde_json::from_str(&stdout[i..]).ok())
-}
-
-// ---------------------------------------------------------------------------
-// Models catalog
-// ---------------------------------------------------------------------------
-
-fn qoder_models() -> Vec<Value> {
-    run_capture("qoder", &["--list-models"])
-        .map(|raw| {
-            raw.lines()
-                .map(|l| l.trim().to_string())
-                .filter(|l| !l.is_empty() && !l.eq_ignore_ascii_case("MODEL"))
-                .map(|name| json!({ "id": name, "label": name }))
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn agy_models() -> Vec<Value> {
-    run_capture("agy", &["models"])
-        .map(|raw| {
-            raw.lines()
-                .filter_map(|l| {
-                    let l = l.trim();
-                    if l.is_empty() || l.starts_with("Fetching") {
-                        return None;
-                    }
-                    let mut it = l.split('\t');
-                    let id = it.next()?.trim();
-                    if id.is_empty() {
-                        return None;
-                    }
-                    let label = it.next().unwrap_or(id).trim();
-                    Some(json!({ "id": id, "label": label }))
-                })
-                .collect()
-        })
-        .unwrap_or_default()
-}
-
-fn qoder_efforts() -> Vec<&'static str> {
-    vec!["xhigh", "high", "medium", "low", "auto"]
-}
-
-fn agy_efforts() -> Vec<&'static str> {
-    vec!["max", "xhigh", "high", "medium", "low"]
-}
-
-// ---------------------------------------------------------------------------
-// Usage / account telemetry
-// ---------------------------------------------------------------------------
-
-/// `qoder status -o json` membawa identitas pemilik akun. Daemon ini hanya listen di
-/// 127.0.0.1, tapi yang membaca API-nya bukan cuma manusia — tiap engine di tab ini punya
-/// shell dan bisa `curl localhost:8999`. Email dan nama lengkap yang masuk ke konteks model
-/// cloud tidak bisa ditarik kembali, jadi dipangkas di sumbernya, bukan di tiap pemakai.
-fn redact_account(value: Value) -> Value {
-    const SENSITIVE: [&str; 5] = ["email", "username", "avatar_url", "user_id", "name"];
-    let mut v = value;
-    if let Some(map) = v.as_object_mut() {
-        for key in SENSITIVE {
-            map.remove(key);
-        }
-        // Kunci apa pun yang nilainya tampak seperti alamat email, walau namanya tidak
-        // ada di daftar — API pihak ketiga suka mengganti bentuknya.
-        let looks_like_mail: Vec<String> = map
-            .iter()
-            .filter(|(_, val)| {
-                val.as_str()
-                    .is_some_and(|s| s.contains('@') && s.contains('.'))
-            })
-            .map(|(k, _)| k.clone())
-            .collect();
-        for key in looks_like_mail {
-            map.remove(&key);
-        }
-        map.insert("identity_redacted".to_string(), json!(true));
-    }
-    v
-}
-
-fn qoder_account() -> Value {
-    cached_json("qoder_account", Duration::from_secs(60), || {
-        run_capture("qoder", &["status", "-o", "json"])
-            .and_then(|raw| serde_json::from_str::<Value>(&raw).ok())
-            .map(redact_account)
-            .unwrap_or_else(|| json!({ "logged_in": false }))
-    })
-}
-
-fn cli_version(bin: &str) -> Value {
-    cached_json(&format!("ver_{}", bin), Duration::from_secs(300), || {
-        match run_capture(bin, &["--version"]) {
-            Some(raw) => {
-                let ver = raw
-                    .lines()
-                    .next()
-                    .and_then(|l| l.split_whitespace().last())
-                    .unwrap_or("N/A")
-                    .trim_matches(|c: char| c == 'v' || c == ':')
-                    .to_string();
-                json!({ "connected": true, "version": ver })
-            }
-            None => json!({ "connected": false, "version": "N/A" }),
-        }
-    })
-}
-
-/// Aggregate today's activity from the newest Qoder session log of the tab's cwd.
-fn qoder_session_usage(workspace: &str) -> Value {
-    let script = r#"
-import glob, json, os, sys, time
-enc = sys.argv[1].replace("/", "-").replace(".", "-")
-base = os.path.expanduser("~/.ai-station/engines/qoder/logs/sessions")
-cand = []
-for seg in glob.glob(os.path.join(base, enc, "*", "segments", "*.jsonl")):
-    try: cand.append((os.path.getmtime(seg), seg))
-    except OSError: pass
-out = {"turns": 0, "input_tokens": 0, "output_tokens": 0, "cache_read_tokens": 0,
-       "duration_ms": 0, "models": [], "session_id": "", "log_file": "", "tool_calls": 0}
-if cand:
-    newest = max(cand)[1]
-    out["log_file"] = newest
-    out["session_id"] = newest.split(os.sep)[-3]
-    today = time.strftime("%Y-%m-%d")
-    models = {}
-    for line in open(newest, errors="ignore"):
-        try: ev = json.loads(line)
-        except Exception: continue
-        if not str(ev.get("ts", "")).startswith(today): continue
-        d = ev.get("data") or {}
-        t = ev.get("type")
-        if t == "turn.finished":
-            out["turns"] += int(d.get("num_turns") or 0) or 1
-            out["duration_ms"] += int(d.get("duration_ms") or 0)
-            out["input_tokens"] += int(d.get("input_tokens") or 0)
-            out["output_tokens"] += int(d.get("output_tokens") or 0)
-            out["cache_read_tokens"] += int(d.get("cache_read_input_tokens") or 0)
-        elif t == "tool.execution.finished":
-            out["tool_calls"] += 1
-        elif t == "session.config.loaded" and d.get("model"):
-            models[d["model"]] = models.get(d["model"], 0) + 1
-    out["models"] = list(models.keys())
-print(json.dumps(out))
-"#;
-    py_json(script, &[workspace]).unwrap_or(Value::Null)
-}
-
-fn antigravity_usage() -> Value {
-    let script = r#"
-import json, os, sqlite3, sys
-db = os.path.expanduser("~/.gemini/antigravity/conversation_summaries.db")
-out = {"conversation":"","steps":0,"status":"","workspace":"","project_id":"","last_modified":""}
-try:
-    c = sqlite3.connect("file:%s?mode=ro" % db, uri=True)
-    c.row_factory = sqlite3.Row
-    row = c.execute("select * from conversation_summaries order by last_modified_time desc limit 1").fetchone()
-    if row:
-        d = dict(row)
-        uris = d.get("workspace_uris") or "[]"
-        try:
-            import urllib.parse as up
-            ws = ", ".join(up.urlparse(u).path for u in json.loads(uris) if u)
-        except Exception:
-            ws = uris
-        out = {"conversation": d.get("title",""), "steps": int(d.get("step_count") or 0),
-               "status": (d.get("status") or "").replace("CASCADE_RUN_STATUS_","").lower(),
-               "workspace": ws, "project_id": d.get("project_id",""),
-               "last_modified": str(d.get("last_modified_time",""))[:19]}
-except Exception as exc:
-    out["error"] = str(exc)
-print(json.dumps(out))
-"#;
-    py_json(script, &[]).unwrap_or(Value::Null)
-}
-
-fn antigravity_last_model() -> String {
-    fs::read_to_string(home_dir().join(".gemini/antigravity/antigravity_state.pbtxt"))
-        .ok()
-        .and_then(|raw| {
-            raw.lines()
-                .find(|l| l.trim_start().starts_with("last_selected_agent_model:"))
-                .map(|l| l.split(':').nth(1).unwrap_or("").trim().to_string())
-        })
-        .unwrap_or_default()
 }
 
 // ---------------------------------------------------------------------------

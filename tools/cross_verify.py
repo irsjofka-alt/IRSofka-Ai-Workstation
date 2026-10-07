@@ -29,6 +29,9 @@ import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from call_workers import run_grouped  # noqa: E402  (worker panggilan mati bersama pemanggilnya)
+
 AI_STATION = Path.home() / ".ai-station"
 REGISTRY_PATH = AI_STATION / "config" / "engines.json"
 TIMEOUT = int(os.environ.get("STATION_VERIFY_TIMEOUT", "900"))
@@ -478,8 +481,7 @@ def run_engine(spec, prompt, timeout):
     cmd = [c.replace("{model}", str(spec.get("model", "")))
              .replace("{prompt}", prompt) for c in spec["template"]]
     try:
-        res = subprocess.run(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                             text=True, timeout=timeout)
+        res = run_grouped(cmd, timeout=timeout, text=True, merge_stderr=True)
         out = (res.stdout or "").strip()
         if res.returncode != 0:
             return "FAILED", out or f"exit {res.returncode} tanpa output"

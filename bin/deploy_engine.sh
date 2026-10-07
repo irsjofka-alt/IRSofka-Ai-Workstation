@@ -35,6 +35,8 @@ done
 if [ "$DO_BUILD" = "1" ]; then
   echo "🔨 cargo build --release ..."
   ( cd "$ROOT" && cargo build --release )
+  echo "🧪 cargo test ..."
+  ( cd "$ROOT" && cargo test -q ) || { echo "  ✗ uji Rust gagal — deploy dihentikan"; exit 1; }
 fi
 [ -x "$BIN_SRC" ] || { echo "❌ biner hasil build tidak ada di $BIN_SRC"; exit 1; }
 
@@ -142,6 +144,16 @@ if command -v jq >/dev/null 2>&1; then
     echo "      api   : $ORDER_API"
     fail=1
   fi
+fi
+
+# Kontrak §4: satu panggilan engine harus mati bersama pemanggilnya. Dua hal diperiksa, dan
+# keduanya pernah terbukti gagal tanpa suara: subprocess.run(timeout=) meninggalkan anak proses
+# yang tetap memegang RSS (kontrol terukur: 1 cucu lolos), dan `/bin/kill -KILL -PGID` keluar
+# dengan rc=0 tanpa membunuh apa pun karena angka negatif dibaca sebagai nomor sinyal.
+# Yang dijaga: bentuk kode (spawner liar membuat bocor lagi besok) dan keadaan mesin (yatim yang
+# ada sekarang adalah RAM yang sedang hilang).
+if ! python3 "$HOME/.ai-station/tools/call_workers.py" --guard; then
+  fail=1
 fi
 
 # 1) Buktikan tab benar-benar pindah ke tmux, bukan PTY milik daemon.

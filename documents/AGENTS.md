@@ -64,6 +64,29 @@ Two measured limits of this tier, so no one rediscovers them as a false pass:
 - Exit 0 with text is not evidence of an audit. A headless run that only prints a permission
   denial exits 0; `cross_verify.py` now records such an answer as `FAILED`, never `COMPLETED`.
 
+**Call workers are cut, not kept.** The Active Workspace is the only persistent set on this
+workstation: the tmux panes the operator works in. Every other process that speaks to a model —
+a verification dispatch, a quota meter probe, a `--version` poll — is a **call worker**. It exists
+for one action, and it must be terminated together with its whole process group as soon as its
+answer has been read. `tools/call_workers.py` is the single place that decides what is persistent,
+and it decides by asking: the pane list comes from the tmux socket and the engine list from
+`config/engines.json`, at the moment of use. No PID is ever written into a rule or a script —
+PIDs change at every boot, and a remembered list is a wrong list (§12).
+
+- Inspect it with `ai-station workers`; it prints what is persistent and what is still alive
+  beyond it, with each process's RSS.
+- Engine calls are dispatched through `run_grouped` (Python) or `probe::run_bounded` (Rust), which
+  start the command in its own process group and kill the group on timeout. Plain
+  `subprocess.run(timeout=…)` kills only the direct child: measured on this workstation, one hung
+  call left one grandchild alive holding its memory. `deploy_engine.sh` fails a deploy while any
+  engine binary is spawned outside those two helpers, or while a stray call worker is alive.
+- Never cut by name pattern (§6 says the same about `pkill`). Cuts are PID-specific and
+  group-wide. Identity is the resolved executable path, not `argv[0]`: the Qoder desktop IDE is
+  also named `qoder`, and a name-only audit classified its 15 Electron processes as 2.18 GB of
+  leaked workers. Killing that would be the operator's editor, not a leak.
+- "Call worker" is not the same thing as a stray GUI window of the daemon (`--clean-orphans` in
+  `deploy_engine.sh`). Two different failures, two different words.
+
 Verification Policy:
 - If you are **uncertain** about code, do not speculate — request verification from peer engines.
 - Responses lacking sufficient evidence must be marked `DISPUTED`, not `ANSWERED`.

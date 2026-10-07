@@ -34,6 +34,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 import session_ingestor as ingestor  # noqa: E402  (kosakata meter & parser tinggal di sini)
 import cross_verify  # noqa: E402  (load_registry: cara mesin resolve dari config)
+from call_workers import run_grouped  # noqa: E402  (probe CLI harus mati bersama pemanggilnya)
 
 AI_STATION = Path.home() / ".ai-station"
 ENGINES_PATH = AI_STATION / "config" / "engines.json"
@@ -120,15 +121,14 @@ def cli_model_lists(warnings) -> dict:
                   f"`{argv[0]}` tidak ditemukan di PATH: id model tidak bisa dicocokkan")
             continue
         try:
-            res = subprocess.run([*argv], stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
-                                 text=True, timeout=45, env=env)
+            res = run_grouped([*argv], timeout=45, env=env, text=True)
         except (subprocess.TimeoutExpired, OSError) as exc:
             _warn(warnings, f"evidence.{key}", f"`{argv[0]} {argv[1]}` gagal: {exc}")
             continue
         if res.returncode != 0:
             _warn(warnings, f"evidence.{key}",
                   f"`{argv[0]} {argv[1]}` keluar dengan rc={res.returncode}: "
-                  f"{(res.stdout or '')[:160]}")
+                  f"{((res.stdout or '') + (res.stderr or ''))[:160]}")
             continue
         lists[key] = parser(res.stdout or "")
     return lists
@@ -157,8 +157,7 @@ def ollama_models(warnings) -> set | None:
     if not shutil.which("ollama"):
         return None
     try:
-        res = subprocess.run(["ollama", "list"], stdout=subprocess.PIPE,
-                             stderr=subprocess.STDOUT, text=True, timeout=20)
+        res = run_grouped(["ollama", "list"], timeout=20, text=True)
     except (subprocess.TimeoutExpired, OSError):
         return None
     if res.returncode != 0:

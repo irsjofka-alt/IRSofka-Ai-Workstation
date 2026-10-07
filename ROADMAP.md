@@ -88,6 +88,26 @@ Pending:
   pointer lines.
 - ✅ **Binary backup rotation:** `deploy_engine.sh` keeps the 8 newest backups; `bin/` dropped from
   114 MB to 50 MB.
+- ✅ **Call workers are cut, not kept (contract §4).** Any process that speaks to a model outside the
+  operator's tmux panes is a *call worker*: it exists for one action and must die with its whole
+  process group once its answer has been read. `tools/call_workers.py` decides what is persistent by
+  asking — panes from the tmux socket, engines from `config/engines.json`, at the moment of use — and
+  never from a written-down PID. Python dispatchers go through `run_grouped`, Rust probes through
+  `probe::run_bounded`; a deploy now fails while an engine binary is spawned outside them, or while a
+  stray worker is alive. Six defects were found by measurement rather than by reading:
+  `subprocess.run(timeout=…)` kills the child and leaves the grandchild holding its RSS;
+  `/bin/kill -KILL -PGID` exits 0 having killed nothing, because procps reads the leading negative
+  number as a signal spec (`kill -KILL -- -PGID` is the form that works) — a Rust test asserts it, and
+  the test was only proven to have teeth by deleting `--` and watching it fail; `tmux window_name` is
+  `bash` in all four sessions, so the pane probe found one persistent process where three exist;
+  `st_atime` of `/proc/<pid>/stat` is touched by every read and can never report a process's age;
+  the two Claude entries share one `binary` value, so a dict keyed by binary collapsed the engine list
+  to two entries; and identity by name alone classified the Qoder desktop IDE's 15 Electron processes
+  as 2.18 GB of leaked workers — one `--cut` would have closed the operator's editor instead of a leak.
+  Identity is now the resolved executable directory plus the name prefix, which still recognises a CLI
+  that self-updated under it (`agy` runs from a file marked `(deleted)`) and rejects its neighbours.
+  End-to-end proof on a real leak: an orphaned `qoder -p` at 259.6 MB was flagged, cut by group, the
+  three workspace panes survived, audit back to zero.
 
 ## F7 — Creative Studio ⬜
 
@@ -149,7 +169,7 @@ of a partial ledger displays wrong numbers confidently — and the operator trus
   refuses a role that restates the model its registry key already defines — `/api/master` owns
   the files (whitelist of writable paths, timestamped backup, tmp+rename, re-read and re-validate
   from disk after writing, rollback if the read is bad, one `action_log` row per save), and the
-  Station's "Roles & verifier" view is the editor. 29 validator selftest cases pass.
+  Station's "Roles & verifier" view is the editor. 30 validator selftest cases pass.
   `slots.yaml` is validated but never written: rewriting YAML without `ruamel` would delete the
   contract comment inside it, so the editor refuses a changed `slots` instead of silently eating it.
   Measured, not assumed: the acceptance run set `claude-sonnet` to `claude-sonnet-5-5-medium`,

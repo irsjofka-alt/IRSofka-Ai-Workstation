@@ -21,6 +21,8 @@
 //!    satu nilai pun yang berubah. Byte dari validator dikirim apa adanya ke browser, dan
 //!    byte dari browser dikirim apa adanya ke validator; yang boleh disentuh Rust hanyalah
 //!    string dan boolean yang dibutuhkan untuk memutuskan (ok, nama berkas, pesan galat).
+//! 6. validator diberangkatkan dengan batas waktu keras dan dibunuh beserta grup prosesnya
+//!    (kontrak §4): dia memanggil CLI, dan CLI yang tertinggal adalah RAM yang tidak pulang.
 use axum::body::{Body, Bytes};
 use axum::extract::Json;
 use axum::http::header::CONTENT_TYPE;
@@ -29,9 +31,7 @@ use axum::response::{IntoResponse, Response};
 use chrono::Local;
 use serde_json::{json, Value};
 use std::fs;
-use std::io::Write;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
 
 use crate::paths::{engines_registry_path, master_backups_dir, master_data_path, slots_path};
 use crate::spool::spool_event;
@@ -86,42 +86,34 @@ fn run_mode(mode: &str, candidate: Option<&[u8]>) -> Result<ModeOutput, String> 
     if !script.exists() {
         return Err(format!("validator tidak ada di {}", script.display()));
     }
-    let mut cmd = Command::new(python());
-    cmd.arg(&script).arg(mode);
-    cmd.stdin(Stdio::piped())
-        .stdout(Stdio::piped())
-        .stderr(Stdio::piped());
-    let mut child = cmd
-        .spawn()
-        .map_err(|e| format!("gagal menjalankan validator: {e}"))?;
-    if let Some(bytes) = candidate {
-        child
-            .stdin
-            .as_mut()
-            .ok_or_else(|| "stdin validator tertutup".to_string())?
-            .write_all(bytes)
-            .map_err(|e| format!("gagal mengirim kandidat: {e}"))?;
-        // Tutup stdin sebelum menunggu: validator membaca dokumen sampai EOF, dan kita
-        // menunggu prosesnya selesai — keduanya hidup = jalan buntu selamanya.
-        drop(child.stdin.take());
+    // Batas keras: validator memanggil `agy models` / `qoder --list-models`, dan satu
+    // pembacaan yang menggantung tidak boleh membawa serta thread maupun anak prosesnya.
+    let script_arg = script.display().to_string();
+    let python_bin = python().display().to_string();
+    let probe = crate::probe::run_bounded(
+        &python_bin,
+        &[script_arg.as_str(), mode],
+        candidate,
+        crate::probe::PROBE_TIMEOUT,
+    );
+    if probe.timed_out {
+        return Err(format!(
+            "validator tidak selesai dalam {}s dan seluruh grup prosesnya sudah dipotong",
+            crate::probe::PROBE_TIMEOUT.as_secs()
+        ));
     }
-    let out = child
-        .wait_with_output()
-        .map_err(|e| format!("validator tidak selesai: {e}"))?;
-    let stdout = String::from_utf8_lossy(&out.stdout).to_string();
+    let stdout = probe.stdout;
     let parsed = stdout
         .find('{')
         .and_then(|i| serde_json::from_str::<Value>(&stdout[i..]).ok().map(|v| (i, v)));
     match parsed {
         Some((i, value)) => Ok(ModeOutput { text: stdout[i..].to_string(), value }),
         None => Err(format!(
-            "validator tidak mengembalikan JSON: rc={}; stdout={}; stderr={}",
-            out.status,
+            "validator tidak mengembalikan JSON: rc={:?}; ok={}; stdout={}; stderr={}",
+            probe.code,
+            probe.ok,
             stdout.chars().take(400).collect::<String>(),
-            String::from_utf8_lossy(&out.stderr)
-                .chars()
-                .take(400)
-                .collect::<String>()
+            probe.stderr.chars().take(400).collect::<String>()
         )),
     }
 }

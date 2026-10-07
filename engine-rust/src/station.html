@@ -152,6 +152,42 @@
   .box .why { font-size: 11.5px; color: var(--ink-faint); margin-top: 8px; line-height: 1.45; }
   .box .reset { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); margin-top: 8px; }
 
+  /* Roles & verifier (F8.3). Form fields are deliberately narrow: the only values an
+     operator may type here are ones the validator can check against a real CLI or meter. */
+  .erow { background: var(--panel); border: 1px solid var(--line); border-radius: 11px; padding: 12px 14px; }
+  .erow h3 { margin: 0 0 2px; font: 500 14px/1.3 var(--mono); }
+  .erow .kind { font-size: 11px; color: var(--ink-faint); margin: 0 0 10px; }
+  .fields { display: grid; grid-template-columns: repeat(auto-fit, minmax(196px, 1fr)); gap: 9px; }
+  .field label { display: block; font-size: 10px; text-transform: uppercase; letter-spacing: .7px;
+                 color: var(--ink-faint); margin-bottom: 4px; }
+  .field input, .field select {
+    width: 100%; box-sizing: border-box; background: #0d141d; border: 1px solid var(--line);
+    color: var(--ink); font-family: var(--mono); font-size: 12.5px; padding: 6px 8px; border-radius: 7px;
+  }
+  .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+  .wins { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-top: 3px; }
+  .wins label { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); display: flex; gap: 5px; align-items: center; }
+  .savebar { display: flex; gap: 10px; align-items: center; margin: 4px 0 2px; flex-wrap: wrap; }
+  .btn { background: #0d141d; border: 1px solid var(--line); color: var(--ink-dim); border-radius: 8px;
+         padding: 7px 14px; font: 500 12.5px var(--mono); cursor: pointer; }
+  .btn:hover { color: var(--ink); border-color: var(--ink-faint); }
+  .btn.primary { background: var(--accent); border-color: var(--accent); color: #06202a; font-weight: 600; }
+  .btn[disabled] { opacity: .45; cursor: default; }
+  .note { font-size: 12px; color: var(--ink-faint); }
+  .findings { display: flex; flex-direction: column; gap: 6px; }
+  .finding { border-left: 2px solid var(--rose); background: #0d141d; padding: 8px 11px; border-radius: 0 8px 8px 0;
+             font-size: 12.5px; color: var(--ink-dim); line-height: 1.5; }
+  .finding.warn { border-left-color: var(--amber); }
+  .finding b { font-family: var(--mono); font-weight: 500; color: var(--ink); display: block; font-size: 11.5px;
+               margin-bottom: 3px; word-break: break-all; }
+  .rtable { width: 100%; border-collapse: collapse; font-size: 12.5px; }
+  .rtable th { text-align: left; font-family: var(--serif); font-size: 10px; font-weight: 500;
+               text-transform: uppercase; letter-spacing: .7px;
+               color: var(--ink-faint); padding: 6px 10px 6px 0; border-bottom: 1px solid var(--line); }
+  .rtable td { padding: 7px 10px 7px 0; border-bottom: 1px solid #101a24; vertical-align: top; }
+  .rtable td.mono { font-family: var(--mono); font-size: 12px; }
+  .rtable td .why { display: block; font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
+
   .empty { color: var(--ink-faint); text-align: center; padding: 56px 0; font-size: 14px; }
   footer { margin-top: 24px; padding-top: 13px; border-top: 1px solid var(--line);
            color: var(--ink-faint); font-size: 12px; display: flex; justify-content: space-between; gap: 16px; }
@@ -171,7 +207,7 @@
   </div>
   <div class="group">
     <h2>Team</h2>
-    <button class="nav soon" data-soon="roles"><i>◎</i> Roles &amp; verifier<em>soon</em></button>
+    <button class="nav" data-view="roles"><i>◎</i> Roles &amp; verifier</button>
     <button class="nav soon" data-soon="models"><i>◈</i> Models &amp; VRAM<em>soon</em></button>
   </div>
   <div class="group">
@@ -211,6 +247,13 @@
 (function () {
   "use strict";
   var filter = "all", query = "", view = "feed", data = { posts: [], totals: {} };
+
+  // Setiap view adalah halaman yang berbeda secara mental. Tanpa ini, reload atau deep link
+  // (#roles) melanjutkan posisi scroll view sebelumnya dan operator mendarat di tengah
+  // laporan tanpa tahu ada apa di atasnya.
+  if (window.history && "scrollRestoration" in window.history) {
+    window.history.scrollRestoration = "manual";
+  }
 
   function el(tag, cls, text) {
     var n = document.createElement(tag);
@@ -519,8 +562,334 @@
     }
   }
 
+  var master = null, masterBusy = false, masterMsg = null, masterBlocked = null;
+
+  function loadMaster() {
+    if (masterBusy) return;
+    masterBusy = true;
+    fetch("/api/master", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        masterBusy = false;
+        master = json;
+        masterBlocked = null;
+        if (json.error) { masterMsg = { kind: "bad", text: json.error }; }
+        else if (!masterMsg) { masterMsg = { kind: "note", text: "read from config/engines.json and config/slots.yaml just now" }; }
+        if (view === "roles") render();
+      })
+      .catch(function () {
+        masterBusy = false;
+        master = { error: "daemon unreachable — is irsofka-ai-workstation running?" };
+        if (view === "roles") render();
+      });
+  }
+
+  function saveMaster() {
+    if (!master || !master.document) return;
+    masterBusy = true;
+    masterMsg = { kind: "wait", text: "validating against the CLI's own model list and the live meter…" };
+    render();
+    fetch("/api/master", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(master.document)
+    }).then(function (r) {
+      return r.json().then(function (j) { return { code: r.status, body: j }; });
+    }).then(function (res) {
+      masterBusy = false;
+      var b = res.body || {};
+      if (res.code === 200 && b.ok) {
+        masterMsg = { kind: "good", text: "saved " + (b.written || []).join(", ") +
+          " · previous copy kept as " + (b.backups || []).join(", ") };
+        masterBlocked = null;
+        loadMaster();
+      } else if (b.errors && b.errors.length) {
+        masterMsg = { kind: "bad", text: "refused — not one byte was written" };
+        masterBlocked = b;
+        render();
+      } else {
+        masterMsg = { kind: "bad", text: b.error || ("daemon answered " + res.code) };
+        render();
+      }
+    }).catch(function () {
+      masterBusy = false;
+      masterMsg = { kind: "bad", text: "save failed: daemon unreachable" };
+      render();
+    });
+  }
+
+  function field(labelText, node) {
+    var f = el("div", "field");
+    f.appendChild(el("label", null, labelText));
+    f.appendChild(node);
+    return f;
+  }
+
+  function textInput(value, onset, listId) {
+    var i = el("input");
+    i.type = "text";
+    i.value = value === undefined || value === null ? "" : String(value);
+    if (listId) i.setAttribute("list", listId);
+    i.addEventListener("input", function () { onset(i.value); });
+    return i;
+  }
+
+  function numberInput(value, onset, step) {
+    var i = el("input");
+    i.type = "number";
+    i.step = step || "1";
+    i.value = value === undefined || value === null ? "" : String(value);
+    i.addEventListener("input", function () {
+      onset(i.value === "" ? null : Number(i.value));
+    });
+    return i;
+  }
+
+  function windowPicker(gate, available) {
+    var box = el("div", "wins");
+    available.forEach(function (w) {
+      var lab = el("label");
+      var cb = el("input");
+      cb.type = "checkbox";
+      cb.checked = (gate.windows || []).indexOf(w) !== -1;
+      cb.addEventListener("change", function () {
+        var cur = gate.windows || [];
+        var at = cur.indexOf(w);
+        if (cb.checked && at === -1) { cur.push(w); }
+        if (!cb.checked && at !== -1) { cur.splice(at, 1); }
+        gate.windows = cur;
+      });
+      lab.appendChild(cb);
+      lab.appendChild(document.createTextNode(w));
+      box.appendChild(lab);
+    });
+    if (!available.length) {
+      box.appendChild(el("span", "note", "the meter reported no windows it could read"));
+    }
+    return box;
+  }
+
+  function engineEditor(key, spec, evidence) {
+    var row = el("div", "erow");
+    row.appendChild(el("h3", null, key));
+    row.appendChild(el("p", "kind", "kind " + (spec.kind || "?") +
+      (spec.binary ? " · binary " + spec.binary : "") +
+      (spec.tab ? " · tab " + spec.tab : "") +
+      (spec.template ? " · spawns a fresh process" : " · types into a live pane")));
+
+    var agy = spec.binary === "agy" || (spec.kind === "pane" && spec.tab === "antigravity");
+    var qoder = spec.binary === "qoder" || (spec.kind === "pane" && spec.tab === "qoder");
+    var list = agy ? (evidence.model_lists || {}).agy
+             : qoder ? (evidence.model_lists || {}).qoder
+             : (spec.kind === "ollama" ? evidence.ollama_pulled : null);
+    var listId = "dl-" + (agy ? "agy" : qoder ? "qoder" : "ollama");
+    var fields = el("div", "fields");
+
+    if (!document.getElementById(listId)) {
+      var dl = el("datalist");
+      dl.id = listId;
+      (list || []).forEach(function (m) {
+        var o = el("option");
+        o.value = m;
+        dl.appendChild(o);
+      });
+      document.body.appendChild(dl);
+    }
+    fields.appendChild(field("model", textInput(spec.model, function (v) { spec.model = v; }, listId)));
+    fields.appendChild(field("role", textInput(spec.role, function (v) { spec.role = v; })));
+    if (spec.kind === "ollama") {
+      fields.appendChild(field("min free MiB", numberInput(spec.min_free_mib, function (v) {
+        if (v === null || isNaN(v)) { delete spec.min_free_mib; } else { spec.min_free_mib = v; }
+      })));
+    }
+    if (spec.quota_gate || agy) {
+      if (!spec.quota_gate) {
+        /* Menambah gate adalah satu-satunya cara mesin ini boleh diberangkatkan;
+           validator menolak registry agy tanpa gate, jadi jangan buat operator
+           mengetik JSON mentah untuk memenuhinya. */
+        spec.quota_gate = { engine: "antigravity", scope: "Claude and GPT models",
+                            windows: ["5h", "weekly"] };
+      }
+      var gate = spec.quota_gate;
+      fields.appendChild(field("quota scope (meter)", textInput(gate.scope, function (v) {
+        gate.scope = v;
+      })));
+      fields.appendChild(field("minimum fraction left", numberInput(gate.min_fraction || 0,
+        function (v) {
+          if (v === null || isNaN(v)) { delete gate.min_fraction; } else { gate.min_fraction = v; }
+        }, "0.01")));
+      var pairs = evidence.meter_pairs || {};
+      var available = pairs[(gate.engine || "antigravity") + "/" + (gate.scope || "")] || [];
+      if (!available.length) {
+        var union = {};
+        Object.keys(pairs).forEach(function (k) { pairs[k].forEach(function (w) { union[w] = 1; }); });
+        available = Object.keys(union).sort();
+      }
+      var wf = field("windows the meter reports", windowPicker(gate, available));
+      fields.appendChild(wf);
+    }
+    row.appendChild(fields);
+    if (spec.note) row.appendChild(el("p", "note", spec.note));
+    return row;
+  }
+
+  function findings(list, cls, emptyText) {
+    if (!list || !list.length) {
+      return el("p", "note", emptyText);
+    }
+    var box = el("div", "findings");
+    list.forEach(function (f) {
+      var n = el("div", "finding" + (cls || ""));
+      n.appendChild(el("b", null, f.path));
+      n.appendChild(document.createTextNode(f.message));
+      box.appendChild(n);
+    });
+    return box;
+  }
+
+  function renderRolesView() {
+    document.getElementById("title").textContent = "Who is on the team";
+    document.getElementById("crumb").textContent = "Roles & verifier";
+    document.getElementById("tabs").style.display = "none";
+    var box = document.getElementById("stats");
+    box.textContent = "";
+    var feed = document.getElementById("feed");
+    feed.textContent = "";
+
+    if (!master) {
+      document.getElementById("sub").textContent = "reading the master data…";
+      feed.appendChild(el("p", "empty", masterBusy ? "validating against the CLIs and the meter…" : "not loaded yet"));
+      loadMaster();
+      return;
+    }
+    if (master.error) {
+      document.getElementById("sub").textContent = "the daemon could not answer";
+      feed.appendChild(el("p", "empty", master.error));
+      return;
+    }
+
+    var report = masterBlocked || master.report || {};
+    var evidence = report.evidence || {};
+    var registry = (master.document && master.document.engines && master.document.engines.engines) || {};
+    var dispatch = master.dispatch || {};
+    var live = ((master.report || {}).evidence || {});
+    var can = Object.keys(dispatch).filter(function (k) { return dispatch[k].can_dispatch; }).length;
+
+    [["engines", Object.keys(registry).length, ""],
+     ["can be dispatched now", can + " / " + Object.keys(dispatch).length,
+      can ? "good" : "bad"],
+     ["blocking errors", (report.errors || []).length, (report.errors || []).length ? "bad" : ""],
+     ["warnings", (report.warnings || []).length, ""],
+     ["model ids read from CLIs",
+      Object.keys(evidence.model_lists || {}).map(function (k) {
+        return k + " " + evidence.model_lists[k].length;
+      }).join(" · ") || "none", ""]].forEach(function (r) {
+      var card = el("div", "stat " + r[2]);
+      card.appendChild(el("span", null, r[0]));
+      card.appendChild(el("strong", null, r[1]));
+      box.appendChild(card);
+    });
+
+    document.getElementById("sub").textContent =
+      "the model named here is the one read out of config at the moment of use — " +
+      "nothing on this page is remembered from a previous session";
+
+    var team = null;
+    var slots = (master.document && master.document.slots) || {};
+    (slots.teams || []).forEach(function (t) { if (t.id === slots.active_team) team = t; });
+
+    if (team) {
+      feed.appendChild(head("Roles in " + team.id));
+      var table = el("table", "rtable");
+      var thead = el("thead");
+      var hr = el("tr");
+      ["role", "engine key", "model resolved now", "would it start?"].forEach(function (h) {
+        hr.appendChild(el("th", null, h));
+      });
+      thead.appendChild(hr);
+      table.appendChild(thead);
+      var tbody = el("tbody");
+      (team.roles || []).forEach(function (role) {
+        var tr = el("tr");
+        var resolved = (master.report.resolved || {})[role.role_id] || {};
+        var d = dispatch[resolved.registry_key || ""] || null;
+        var first = el("td", null);
+        first.appendChild(el("b", null, role.role_id));
+        if (role.title) {
+          var why = el("span", "why");
+          why.textContent = role.title;
+          first.appendChild(why);
+        }
+        tr.appendChild(first);
+        tr.appendChild(el("td", "mono", resolved.registry_key || "— not bound"));
+        var mt = el("td", "mono", resolved.model || (role.model || "—"));
+        if (resolved.registry_key && resolved.model) {
+          var src = el("span", "why");
+          src.textContent = "from config/engines.json → " + resolved.registry_key;
+          mt.appendChild(src);
+        }
+        tr.appendChild(mt);
+        var st = el("td", null);
+        if (!resolved.registry_key) {
+          st.appendChild(el("span", "why", "team description only — this role dispatches nothing"));
+        } else if (d && d.can_dispatch) {
+          st.appendChild(el("span", "tag state", "yes · " + (d.model || "")));
+        } else {
+          st.appendChild(el("span", "tag bad", "no"));
+          var why2 = el("span", "why");
+          why2.textContent = (d && d.reason) || "not in the registry";
+          st.appendChild(why2);
+        }
+        tr.appendChild(st);
+        tbody.appendChild(tr);
+      });
+      table.appendChild(tbody);
+      feed.appendChild(table);
+    }
+
+    feed.appendChild(head("Engine registry — edit and save"));
+    Object.keys(registry).sort().forEach(function (key) {
+      feed.appendChild(engineEditor(key, registry[key], live));
+    });
+
+    var bar = el("div", "savebar");
+    var save = el("button", "btn primary" + (masterBusy ? " waiting" : ""),
+      masterBusy ? "working…" : "Save & validate");
+    save.disabled = !!masterBusy;
+    save.addEventListener("click", saveMaster);
+    var reload = el("button", "btn", "Reload from disk");
+    reload.disabled = !!masterBusy;
+    reload.addEventListener("click", function () {
+      master = null; masterMsg = null; masterBlocked = null; loadMaster();
+    });
+    bar.appendChild(save);
+    bar.appendChild(reload);
+    if (masterMsg) {
+      bar.appendChild(el("span", "note", masterMsg.text));
+    }
+    feed.appendChild(bar);
+
+    if ((report.errors || []).length) {
+      feed.appendChild(head("Refused — the registry would not start"));
+      feed.appendChild(findings(report.errors, "", ""));
+    }
+    feed.appendChild(head("Warnings — saved is not the same as certain"));
+    feed.appendChild(findings((master.report || {}).warnings || [], " warn",
+      "no warnings: every declared meter, model id and window matched what the machine reports"));
+    if (report.errors && report.errors.length && masterBlocked) {
+      feed.appendChild(el("p", "note",
+        "the fields above still hold what you typed; nothing was written to config."));
+    }
+  }
+
   function render() {
     if (view === "treasury") { return renderTreasuryView(); }
+    if (view === "roles") {
+      /* Jangan membangun ulang formulir yang sedang diketik: poll 10 detik akan
+         merebut fokus di tengah nama model. */
+      if (document.querySelector("#feed input:focus, #feed select:focus")) { return; }
+      return renderRolesView();
+    }
     renderStats();
     var titles = { feed: ["What happened", "Activity feed"], files: ["Artefacts", "Files touched"] };
     document.getElementById("title").textContent = titles[view][0];
@@ -577,6 +946,7 @@
       document.querySelector(".nav.on").classList.remove("on");
       item.classList.add("on");
       view = item.dataset.view;
+      window.scrollTo(0, 0);
       render();
     });
   });
@@ -590,6 +960,18 @@
     query = e.target.value.toLowerCase();
     render();
   });
+
+  // Deep link: /station#roles, #treasury, ... — sebuah view bisa dibuka dan diuji tanpa
+  // harus mengklik, dan tautan dari terminal mendarat di tempat yang dimaksud.
+  var wanted = (location.hash || "").replace(/^#/, "");
+  if (wanted) {
+    var link = document.querySelector('.nav[data-view="' + wanted + '"]');
+    if (link) {
+      document.querySelector(".nav.on").classList.remove("on");
+      link.classList.add("on");
+      view = wanted;
+    }
+  }
 
   setInterval(function () { if (!document.hidden) load(); }, 10000);
   document.addEventListener("visibilitychange", function () { if (!document.hidden) load(); });

@@ -45,6 +45,13 @@ PANE_TABS = ("qoder", "antigravity", "shell")
 # Mesin yang kuotanya bukan milik kita sendiri: kalau binary-nya agy, satu turn yang salah
 # pilih menghabiskan kolam Anthropic/GPT. Gate wajib, bukan opsional.
 GATED_BINARIES = ("agy",)
+# Bentuk berkas config/engines.json. Kunci di luar daftar ini bukan bagian dari kontrak dan
+# tidak ada engine yang membacanya: ia ikut tersimpan, save menjawab 200 OK, dan tidak ada
+# satu pun perilaku yang berubah. Ditemukan malam ini oleh ujian penerimaan F8.3 — salah
+# path menulis "claude-sonnet" di SEBELAH "engines", bukan di dalamnya, dan verifier diam-diam
+# tetap model lama. Menambah kunci di sini = mengubah kontrak, jadi itu keputusan tertulis
+# (malam ini, di baris ini), bukan efek samping sebuah save.
+REGISTRY_KEYS = ("_comment", "engines", "local_tiers", "policy")
 
 
 def _err(errors, path, message):
@@ -81,6 +88,18 @@ def meter_state() -> dict:
     return {"available": True, "reason": "", "rows": rows}
 
 
+def meter_pairs(rows) -> dict:
+    """Jendela yang benar-benar dilaporkan meter, per (engine, scope) — untuk didaftarkan
+    sebagai pilihan di editor, bukan diketik dari ingatan."""
+    out: dict = {}
+    for r in rows or []:
+        if not isinstance(r, dict):
+            continue
+        key = f"{r.get('engine')}/{r.get('scope')}"
+        out.setdefault(key, set()).add(str(r.get("limit_window")))
+    return {k: sorted(v) for k, v in sorted(out.items())}
+
+
 def cli_model_lists(warnings) -> dict:
     """Daftar model yang benar-benar dilaporkan CLI, untuk mengecek id yang ditulis config.
 
@@ -111,7 +130,7 @@ def cli_model_lists(warnings) -> dict:
                   f"`{argv[0]} {argv[1]}` keluar dengan rc={res.returncode}: "
                   f"{(res.stdout or '')[:160]}")
             continue
-        lists[parser.__name__] = parser(res.stdout or "")
+        lists[key] = parser(res.stdout or "")
     return lists
 
 
@@ -167,6 +186,24 @@ def validate(document: dict, with_evidence: bool = True) -> dict:
              "tidak ada satu mesin pun di registry: tidak ada yang bisa diminta memverifikasi")
         registry = {}
 
+    if isinstance(engines_doc, dict):
+        for key in engines_doc:
+            if key in REGISTRY_KEYS:
+                continue
+            looks_like_entry = isinstance(engines_doc[key], dict) and any(
+                f in engines_doc[key] for f in ("kind", "model", "binary", "template"))
+            _err(errors, f"engines.{key}",
+                 f"kunci top-level {key!r} bukan bagian dari bentuk registry "
+                 f"({', '.join(REGISTRY_KEYS)}), dan tidak ada engine yang pernah membacanya — "
+                 "perubahan ini akan tersimpan tanpa mengubah apa pun"
+                 + (", padahal bentuknya entri mesin: mungkin maksudnya menaruhnya DI DALAM "
+                    "'engines'" if looks_like_entry else "") + ".")
+        if not str(engines_doc.get("_comment") or "").strip():
+            _err(errors, "engines._comment",
+                 "registry kehilangan kunci '_comment'-nya: kontrak §11 membaca tujuan berkas "
+                 "dari kunci itu, dan `arch_map.sh --check` akan menandainya sebagai berkas "
+                 "tanpa dokumen")
+
     meter = meter_state() if with_evidence else {"available": False, "reason": "skip",
                                                  "rows": []}
     lists = cli_model_lists(warnings) if with_evidence else {}
@@ -185,15 +222,16 @@ def validate(document: dict, with_evidence: bool = True) -> dict:
         "evidence": {
             "meter_available": meter["available"],
             "meter_reason": meter.get("reason", ""),
-            "model_lists": {k: len(v) for k, v in lists.items()},
-            "ollama_pulled": None if pulled is None else len(pulled),
+            "meter_pairs": meter_pairs(meter["rows"]),
+            "model_lists": {k: sorted(v) for k, v in lists.items()},
+            "ollama_pulled": sorted(pulled) if pulled is not None else None,
         },
     }
 
 
 def _validate_registry(registry, engines_doc, errors, warnings, meter, lists, pulled) -> None:
-    agy_ids = lists.get("_parse_agy_models") or set()
-    qoder_ids = lists.get("_parse_lines") or set()
+    agy_ids = lists.get("agy") or set()
+    qoder_ids = lists.get("qoder") or set()
     tiers = (engines_doc.get("local_tiers") or {}) if isinstance(engines_doc, dict) else {}
 
     for name, spec in registry.items():
@@ -320,20 +358,17 @@ def _validate_gate(name, spec, errors, warnings, meter) -> None:
         _warn(warnings, where,
               f"jendela gate tidak bisa dicocokkan ke meter: {meter['reason']}")
         return
-    seen = {}
-    for row in meter["rows"]:
-        seen.setdefault((str(row.get("engine")), str(row.get("scope"))), set()).add(
-            str(row.get("limit_window")))
-    pairs = seen.get((engine, scope))
-    if engine and scope and pairs is None:
+    seen = meter_pairs(meter["rows"])
+    pairs = set(seen.get(f"{engine}/{scope}", []))
+    if engine and scope and not pairs:
         _err(errors, f"{where}.scope",
              f"meter tidak pernah melaporkan (engine={engine!r}, scope={scope!r}). Yang ada: "
-             + "; ".join(sorted(f"{e}/{s}" for e, s in seen))
+             + "; ".join(f"{k} [{','.join(v)}]" for k, v in seen.items())
              + " — setiap keberangkatan mesin ini akan ditolak gerbang, dan itu terbaca "
-               "sebagai 'kuota habis' padahal configurasi yang salah.")
+               "sebagai 'kuota habis' padahal yang salah adalah konfigurasi.")
         return
     for window in windows:
-        if pairs and str(window) not in pairs:
+        if str(window) not in pairs:
             _err(errors, f"{where}.windows",
                  f"jendela {window!r} tidak dilaporkan meter untuk {engine}/{scope} "
                  f"(yang ada: {', '.join(sorted(pairs))})")
@@ -406,25 +441,41 @@ def _validate_slots(slots, registry, errors, warnings, lists=None, pulled=None) 
             if spec:
                 role_model = str(role.get("model") or "")
                 reg_model = str(spec.get("model") or "")
-                if role_model and reg_model and role_model != reg_model:
+                if role_model:
                     _err(errors, f"{where}.model",
-                         f"dua definisi berbeda untuk satu role: slots mengatakan "
-                         f"{role_model!r}, registry ({rkey}) mengatakan {reg_model!r}. "
-                         "Kontrak §12: satu kosakata — salinan kedua adalah laporan yang "
-                         "saling bertentangan tanpa ada cara tahu mana yang benar.")
+                         f"role {rid!r} membawa 'model' sendiri ({role_model!r}) padahal ia "
+                         f"sudah menunjuk registry_key {rkey!r} ({reg_model!r}). Kontrak §12: "
+                         "satu kata didefinisikan satu kali. Registry adalah tempat model "
+                         "dipilih; slots hanya memetakan role ke mesin. Salinan kedua akan "
+                         "bertentangan pada suntingan berikutnya tanpa ada yang bisa "
+                         "menentukan mana yang benar.")
                 gate = spec.get("quota_gate") or {}
                 pool = str(role.get("quota_pool") or "")
-                if pool and gate and str(gate.get("scope") or "") != pool:
+                if pool:
                     _err(errors, f"{where}.quota_pool",
-                         f"quota_pool {pool!r} berbeda dari scope gate "
-                         f"{str(gate.get('scope'))!r} pada {rkey}")
+                         f"role {rid!r} menulis quota_pool {pool!r} sementara gerbang yang "
+                         f"memang bekerja ada di registry ({rkey}.quota_gate.scope = "
+                         f"{str(gate.get('scope') or '-')!r}). Satu tempat saja.")
                 wins = role.get("windows")
-                if wins and gate.get("windows") and list(wins) != list(gate.get("windows")):
+                if wins:
                     _err(errors, f"{where}.windows",
-                         f"jendela role {wins} berbeda dari jendela gate {gate.get('windows')}")
-                resolved[rid] = {"registry_key": rkey, "model": reg_model or role_model,
+                         f"role {rid!r} menulis windows {wins} sementara gerbang registry "
+                         f"({rkey}.quota_gate.windows = {gate.get('windows')}) yang "
+                         "memutuskan keberangkatan. Satu tempat saja.")
+                if role.get("engine"):
+                    _err(errors, f"{where}.engine",
+                         f"role {rid!r} menulis engine {str(role.get('engine'))!r} padahal "
+                         f"registry_key {rkey!r} sudah menentukan mesinnya "
+                         f"(kind={spec.get('kind')}, "
+                         f"{spec.get('binary') or spec.get('tab') or '-'}). Tidak ada yang "
+                         "membaca kata ini saat memberangkatkan — salinan kedua hanya bisa "
+                         "bertentangan dengan registry-nya.")
+                resolved[rid] = {"registry_key": rkey, "model": reg_model,
                                  "kind": spec.get("kind"), "binary": spec.get("binary"),
-                                 "quota_gate": bool(gate)}
+                                 "role": spec.get("role", ""),
+                                 "quota_gate": bool(gate),
+                                 "pool": str(gate.get("scope") or "") if gate else "",
+                                 "windows": list(gate.get("windows") or []) if gate else []}
             else:
                 loose_model = str(role.get("model") or "")
                 resolved[rid] = {"model": loose_model, "registry_key": ""}
@@ -450,6 +501,55 @@ def _validate_slots(slots, registry, errors, warnings, lists=None, pulled=None) 
 
 def document_from_files() -> dict:
     return read_live_document()
+
+
+def dump_engines(engines_doc: dict) -> str:
+    """Teks persis yang akan ditulis ke config/engines.json.
+
+    JSON, bukan YAML: '_comment' di dalamnya adalah kunci nyata, jadi penjelasan untuk
+    manusia ikut tersimpan dan tidak pernah hilang saat program menulis ulang berkas.
+    Inilah alasan slots.yaml TIDAK ditulis oleh jalur ini — PyYAML tidak mempertahankan
+    komentar, dan satu save yang menghapus catatan kontrak adalah kerugian nyata.
+    """
+    return json.dumps(engines_doc, indent=2, ensure_ascii=False) + "\n"
+
+
+def plan(document: dict, with_evidence: bool = True) -> dict:
+    """Validasi kandidat DAN hasilkan teks berkas yang harus ditulis. Tidak menulis apa pun.
+
+    Two writers for one file is the same disease as two definitions for one word: this
+    refuses a candidate whose `slots` section differs from what is on disk, because the
+    editor cannot rewrite YAML without eating its comments. The operator edits slots.yaml
+    by hand; the editor's authority is the registry.
+    """
+    report = validate(document, with_evidence=with_evidence)
+    live = read_live_document()
+    candidate_slots = document.get("slots")
+    if candidate_slots is not None and candidate_slots != (live.get("slots") or {}):
+        report["errors"].append({
+            "path": "slots",
+            "message": ("slots.yaml diubah lewat jalur ini, tapi editor ini tidak bisa "
+                        "menulis YAML tanpa menghapus komentar di dalamnya. Sunting "
+                        "config/slots.yaml langsung (dan jalankan "
+                        "`master_data.py show` untuk memastikannya masih sah).")})
+        report["ok"] = False
+    files = {}
+    if report["ok"]:
+        files["config/engines.json"] = dump_engines(document.get("engines") or {})
+    return {**report, "files": files}
+
+
+def cmd_plan(args) -> int:
+    try:
+        document = json.loads(sys.stdin.read())
+    except json.JSONDecodeError as exc:
+        print(json.dumps({"ok": False, "errors": [{"path": "(stdin)",
+                                                   "message": f"bukan JSON yang sah: {exc}"}],
+                          "warnings": [], "files": {}}, indent=2))
+        return 1
+    result = plan(document, with_evidence=not args.no_evidence)
+    print(json.dumps(result, indent=2, ensure_ascii=False))
+    return 0 if result["ok"] else 1
 
 
 def cmd_show(args) -> int:
@@ -546,14 +646,27 @@ BROKEN_CASES = [
     ("ollama tier tidak ada di local_tiers",
      lambda d: d["engines"]["engines"]["local"].__setitem__("tier", "medium"), True),
     ("registry kosong", lambda d: d["engines"].__setitem__("engines", {}), True),
+    ("kunci top-level asing: entri mesin ditulis DI SEBELAH 'engines' (lolos malam ini)",
+     lambda d: d["engines"].__setitem__(
+         "claude-sonnet", {"model": "claude-sonnet-5-5-medium"}), True),
+    ("kunci top-level asing yang bukan entri mesin",
+     lambda d: d["engines"].__setitem__("typo_key", "whatever"), True),
+    ("_comment registry dihapus", lambda d: d["engines"].pop("_comment"), True),
     ("slots registry_key menunjuk mesin yang dihapus",
      lambda d: d["slots"]["teams"][0]["roles"][-1].__setitem__("registry_key", "claude-gpt"),
      True),
-    ("model role bertentangan dengan registry",
-     lambda d: d["slots"]["teams"][0]["roles"][-1].__setitem__("model", "gemini-3.1-pro"), True),
-    ("quota_pool role bertentangan dengan scope",
-     lambda d: d["slots"]["teams"][0]["roles"][-1].__setitem__("quota_pool", "Gemini Models"),
-     True),
+    ("model role duplikat — walau nilainya SAMA dengan registry",
+     lambda d: d["slots"]["teams"][0]["roles"][-1].__setitem__(
+         "model", "claude-sonnet-5-5-high"), True),
+    ("quota_pool role ditulis ulang di slots",
+     lambda d: d["slots"]["teams"][0]["roles"][-1].__setitem__("quota_pool",
+                                                               "Claude and GPT models"), True),
+    ("windows role ditulis ulang di slots",
+     lambda d: d["slots"]["teams"][0]["roles"][-1].__setitem__("windows",
+                                                               ["5h", "weekly"]), True),
+    ("engine role ditulis ulang di slots — padahal registry_key sudah menunjuk mesin",
+     lambda d: d["slots"]["teams"][0]["roles"][-1].__setitem__("engine",
+                                                               "antigravity_cli"), True),
     ("role_id dobel dalam satu tim",
      lambda d: d["slots"]["teams"][0]["roles"].append(
          {"role_id": "decider", "registry_key": "claude-opus"}), True),
@@ -564,9 +677,20 @@ BROKEN_CASES = [
 ]
 
 
+NEEDS_EVIDENCE = {
+    # Tiga kasus ini hanya bisa dibuktikan dengan dunia luar: baris meter yang sebenarnya
+    # dan daftar model yang CLI laporkan. Tanpa itu validator sengaja TURUN ke peringatan,
+    # bukan pura-pura menolak — jadi dalam mode --no-evidence ketiganya dilewati.
+    "quota_gate scope salah ketik 'Anthropic'",
+    "quota_gate jendela tak dikenal",
+    "model id tidak ada di `agy models`",
+}
+
+
 def cmd_selftest(args) -> int:
     """Jalankan tabel kandidat rusak: semuanya HARUS ditolak, dan dokumen hidup harus lolos."""
     failures = 0
+    skipped = 0
     baseline = validate(read_live_document(), with_evidence=not args.no_evidence)
     if not baseline["ok"]:
         print("GAGAL: konfigurasi hidup saat ini sudah tidak sah — selftest tidak bisa jadi "
@@ -577,6 +701,11 @@ def cmd_selftest(args) -> int:
     print(f"[ok    ] konfigurasi hidup lolos validasi "
           f"({len(baseline['warnings'])} peringatan)")
     for label, mutate, must_refuse in BROKEN_CASES:
+        if args.no_evidence and label in NEEDS_EVIDENCE:
+            skipped += 1
+            print(f"[skip  ] {label}: hanya terbukti rusak dengan membaca meter/CLI "
+                  "sebenarnya (jalankan tanpa --no-evidence)")
+            continue
         document = read_live_document()
         try:
             mutate(document)
@@ -592,20 +721,45 @@ def cmd_selftest(args) -> int:
         print(f"[{'ok    ' if refused == must_refuse else 'GAGAL '}] "
               f"{'ditolak' if must_refuse else 'diterima'}: {label}"
               + (f"  -> {hit}" if hit else ""))
-    print(f"\n=== master-data selftest: {len(BROKEN_CASES) + 1 - failures}/"
-          f"{len(BROKEN_CASES) + 1} sesuai ===")
+
+    # Rencana tulis: byte yang akan ditulis harus SAMA dengan byte yang ada di disk kalau
+    # tidak ada yang diubah. Kalau tidak, satu kali "Save" dari editor akan memformat ulang
+    # seluruh berkas dan diff berikutnya mengubur perubahan sebenarnya di bawah kebisingan.
+    round_trip = plan(read_live_document(), with_evidence=not args.no_evidence)
+    same = (round_trip["ok"] and
+            round_trip["files"].get("config/engines.json") == ENGINES_PATH.read_text())
+    if not same:
+        failures += 1
+    print(f"[{'ok    ' if same else 'GAGAL '}] tulis ulang dokumen hidup = byte yang sama "
+          f"(round-trip bersih)")
+
+    diverged = read_live_document()
+    diverged["slots"]["teams"][0]["roles"].append({"role_id": "ghost", "registry_key": "gemini"})
+    refusal = plan(diverged, with_evidence=False)
+    blocked = not refusal["ok"] and not refusal["files"]
+    if not blocked:
+        failures += 1
+    print(f"[{'ok    ' if blocked else 'GAGAL '}] slots yang diubah lewat editor ini "
+          f"ditolak, tidak ditulis diam-diam")
+
+    total = len(BROKEN_CASES) + 3 - skipped
+    print(f"\n=== master-data selftest: {total - failures}/{total} sesuai"
+          + (f" ({skipped} dilewati: butuh evidence)" if skipped else "") + " ===")
     return 1 if failures else 0
 
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="Penjaga data induk workstation")
-    ap.add_argument("mode", nargs="?", default="show", choices=("show", "validate", "selftest"))
+    ap.add_argument("mode", nargs="?", default="show",
+                    choices=("show", "validate", "plan", "selftest"))
     ap.add_argument("--no-evidence", action="store_true",
                     help="jangan panggil CLI/manusia-meter (agy models, ollama list, database) — "
                          "hanya periksa bentuk struktur")
     args = ap.parse_args()
     if args.mode == "validate":
         return cmd_validate(args)
+    if args.mode == "plan":
+        return cmd_plan(args)
     if args.mode == "selftest":
         return cmd_selftest(args)
     return cmd_show(args)

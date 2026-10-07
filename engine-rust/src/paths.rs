@@ -72,6 +72,27 @@ pub(crate) fn ingestor_path() -> PathBuf {
     station_dir().join("tools").join("session_ingestor.py")
 }
 
+/// Penjaga data induk (slot & registry). Validasi milik Python, berkas milik Rust:
+/// yang mana pun yang memegang keduanya, salah satu akan menulis tanpa diperiksa.
+pub(crate) fn master_data_path() -> PathBuf {
+    station_dir().join("tools").join("master_data.py")
+}
+
+pub(crate) fn engines_registry_path() -> PathBuf {
+    config_dir().join("engines.json")
+}
+
+pub(crate) fn slots_path() -> PathBuf {
+    config_dir().join("slots.yaml")
+}
+
+/// Cadangan setiap tulisan data induk. Bukan biner: satu registry yang salah disimpan
+/// membuat semua keberangkatan mesin berikutnya ditolak, dan korbannya adalah sesi yang
+/// sedang berjalan. `station_backup.sh` tidak menutup lubang sekecil ini.
+pub(crate) fn master_backups_dir() -> PathBuf {
+    config_dir().join("backups")
+}
+
 /// Halaman Station: muka dari semua catatan, dibaca manusia — bukan tempat mengetik.
 pub(crate) fn station_path() -> PathBuf {
     station_dir().join("engine-rust").join("src").join("station.html")

@@ -140,10 +140,26 @@ of a partial ledger displays wrong numbers confidently — and the operator trus
   window at all (5h + weekly only) and Qoder exposes no per-turn credit field, so both are
   reported as `UNAVAILABLE` with the reason the data itself gives. Local tiers are
   `UNSUPPORTED`, which is a different statement and stays a different word.
-- ⬜ **F8.3 Master data face.** Editor for slots and engine registry: pick model per role, save.
+- ✅ **F8.3 Master data face.** Editor for slots and engine registry: pick model per role, save.
   Writes go through schema validation, keep a timestamped backup, and refuse to save a registry
   that no engine can start from. *Acceptance:* change the verifier to another model, and the next
   `ai-station verify` run resolves the new one from config — never from memory.
+  Shipped: `tools/master_data.py` owns the rules — it validates against `agy models`,
+  `qoder --list-models`, the pulled ollama catalogue and the meter's own window names, and it
+  refuses a role that restates the model its registry key already defines — `/api/master` owns
+  the files (whitelist of writable paths, timestamped backup, tmp+rename, re-read and re-validate
+  from disk after writing, rollback if the read is bad, one `action_log` row per save), and the
+  Station's "Roles & verifier" view is the editor. 29 validator selftest cases pass.
+  `slots.yaml` is validated but never written: rewriting YAML without `ruamel` would delete the
+  contract comment inside it, so the editor refuses a changed `slots` instead of silently eating it.
+  Measured, not assumed: the acceptance run set `claude-sonnet` to `claude-sonnet-5-5-medium`,
+  `ai-station verify --list` resolved the new id out of config, and the value was set back.
+  Two defects were only visible in the diff. `serde_json::Value` sorts object keys, so the first
+  version of the endpoint rewrote all 104 lines of `engines.json` without changing a single value
+  — fixed by passing raw bytes in both directions, and `deploy_engine.sh` now fails a deploy if
+  the daemon ever reorders the registry again. And a candidate that placed an engine key *beside*
+  `engines` instead of inside it saved as `200 OK` while changing nothing at all, so the registry
+  document now has a declared shape and anything outside it is refused.
 - ⬜ **F8.4 Work order.** Project entity with phases (intake → plan → build → debug → done),
   bound team and leader. *Open decision:* whether each phase requires the operator's approval
   before the next one runs. Recommendation on record: yes — with a thin wallet, an unattended

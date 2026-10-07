@@ -15,6 +15,7 @@ use crate::terminal::PtySession;
 pub(crate) mod daemon;
 pub(crate) mod desktop;
 pub(crate) mod engine;
+pub(crate) mod master;
 pub(crate) mod stats;
 pub(crate) mod static_files;
 pub(crate) mod terminal;

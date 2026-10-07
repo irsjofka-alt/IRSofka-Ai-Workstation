@@ -124,6 +124,26 @@ probe /api/usage 200
 probe /api/stats 200
 probe / 1
 
+# Urutan kunci master data tidak boleh berubah lewat daemon. serde_json menyimpan objek JSON
+# sebagai map TERURUT NAMA KUNCI, jadi satu kali parse lalu Json(v) sudah cukup untuk mengacak
+# ulang seluruh engines.json: 104 baris "berbeda" padahal tidak ada satu nilai pun yang berubah.
+# Perbaikan = kirim byte mentah bolak-balik; probe ini menjaga supaya tidak diam-diam kembali,
+# karena kegagalannya baru terlihat setelah puluhan save bertumpuk jadi diff yang tak terbaca.
+if command -v jq >/dev/null 2>&1; then
+  ORDER_FILE=$(jq -c '.engines | keys_unsorted' "$HOME/.ai-station/config/engines.json" 2>/dev/null)
+  ORDER_API=$(curl -s --max-time 40 http://127.0.0.1:8999/api/master | jq -c '.document.engines.engines | keys_unsorted')
+  if [ -z "$ORDER_API" ] || [ "$ORDER_API" = "null" ]; then
+    echo "  ✗ /api/master tidak mengembalikan dokumen master data"; fail=1
+  elif [ "$ORDER_FILE" = "$ORDER_API" ]; then
+    echo "  ✓ urutan kunci master data utuh lewat daemon (${ORDER_FILE:0:56}…)"
+  else
+    echo "  ✗ daemon menata ulang kunci master data:"
+    echo "      berkas: $ORDER_FILE"
+    echo "      api   : $ORDER_API"
+    fail=1
+  fi
+fi
+
 # 1) Buktikan tab benar-benar pindah ke tmux, bukan PTY milik daemon.
 #    Ini satu-satunya perbedaan antara "restart menghapus sesi" dan tidak.
 if command -v tmux >/dev/null 2>&1; then

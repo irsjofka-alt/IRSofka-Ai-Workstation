@@ -145,6 +145,12 @@
   .box p { margin: 0; font-size: 12px; color: var(--ink-faint); }
   .box .bar { height: 3px; border-radius: 3px; background: #1b2836; margin-top: 10px; overflow: hidden; }
   .box .bar > i { display: block; height: 100%; background: var(--accent); }
+  .box .bar > i.low { background: var(--amber); }
+  .box .bar > i.none { background: var(--rose); }
+  .box .num { font: 600 20px/1.2 var(--mono); color: var(--ink); margin: 6px 0 2px; }
+  .box .num.muted { color: var(--ink-faint); font-size: 15px; font-weight: 500; }
+  .box .why { font-size: 11.5px; color: var(--ink-faint); margin-top: 8px; line-height: 1.45; }
+  .box .reset { font-family: var(--mono); font-size: 11px; color: var(--ink-dim); margin-top: 8px; }
 
   .empty { color: var(--ink-faint); text-align: center; padding: 56px 0; font-size: 14px; }
   footer { margin-top: 24px; padding-top: 13px; border-top: 1px solid var(--line);
@@ -161,7 +167,7 @@
     <h2>Today</h2>
     <button class="nav on" data-view="feed"><i>≡</i> Activity feed</button>
     <button class="nav" data-view="files"><i>▤</i> Artefacts</button>
-    <button class="nav soon" data-soon="cost"><i>¤</i> Treasury<em>soon</em></button>
+    <button class="nav" data-view="treasury"><i>¤</i> Treasury</button>
   </div>
   <div class="group">
     <h2>Team</h2>
@@ -358,7 +364,163 @@
     feed.appendChild(grid);
   }
 
+  var tre = null, treBusy = false;
+
+  function pct(v) { return (Math.round(v * 1000) / 10).toFixed(1) + "%"; }
+
+  function stateTag(state) {
+    var cls = state === "REPORTED" ? "tag state" : (state === "UNSUPPORTED" ? "tag" : "tag bad");
+    return el("span", cls, state);
+  }
+
+  function head(text) {
+    var h = el("h4", null, text);
+    h.style.cssText = "margin:18px 0 9px;font-size:10.5px;text-transform:uppercase;" +
+                      "letter-spacing:1.1px;color:var(--ink-faint);font-weight:700";
+    return h;
+  }
+
+  /* Satu kartu per pembacaan meter. Baris yang tidak REPORTED justru paling penting:
+     kartu itu harus tetap muncul dan menyebut alasannya, karena menghilangkan barisnya
+     sama dengan membuat laporan terlihat bersih padahal angkanya tidak ada. */
+  function meterBox(r, kind, value, unit) {
+    var box = el("div", "box");
+    box.appendChild(el("h3", null, kind));
+    var row = el("div", "row");
+    row.appendChild(el("span", "tag", r.engine));
+    row.appendChild(stateTag(r.state));
+    box.appendChild(row);
+
+    var num = el("div", "num" + (r.state === "REPORTED" ? "" : " muted"), value);
+    box.appendChild(num);
+    if (unit) box.appendChild(el("p", null, unit));
+    if (r.reset_at) box.appendChild(el("p", "reset", "resets " + when(r.reset_at)));
+    if (r.detail) box.appendChild(el("p", "why", r.detail));
+    if (r.source) box.appendChild(el("p", "why", "source: " + r.source));
+    if (r.ts) box.appendChild(el("p", "why", "read " + clock(r.ts)));
+    return box;
+  }
+
+  function renderTreasury() {
+    var feed = document.getElementById("feed");
+    var quota = (tre.quota || []).filter(function (r) {
+      if (!query) return true;
+      return (r.engine + " " + r.scope + " " + r.limit_window).toLowerCase().indexOf(query) !== -1;
+    });
+    if (quota.length) {
+      feed.appendChild(head("Remaining quota — as the CLI reported it"));
+      var grid = el("div", "grid");
+      quota.forEach(function (r) {
+        var left = r.remaining_fraction;
+        /* Baris "probe/probe" bukan jendela kuota: itu catatan bahwa sebuah meter dicoba.
+           Menampilkannya sebagai "probe · probe" membuat laporan terlihat seperti ada
+           jendela bernama probe, padahal yang dilaporkan hanyalah ketidakmampuan baca. */
+        var kind = r.limit_window === "probe" ? "meter availability"
+                 : r.scope + (r.limit_window && r.limit_window !== "balance" ? " · " + r.limit_window : "");
+        var value, unit = null;
+        if (r.state !== "REPORTED") {
+          value = r.state === "UNSUPPORTED" ? "no meter on this engine" : "no reading";
+        } else if (left !== null && left !== undefined) {
+          value = pct(left) + " left";
+        } else if (r.used !== null && r.used !== undefined && r.total) {
+          /* Angka yang CLI cetak sendiri didahulukan di atas selisih yang dihitung halaman:
+             "451 / 1500" tetap benar bahkan kalau halaman ini salah menafsirkan satuannya. */
+          value = r.used + " / " + r.total; unit = "used of the allowance the meter printed";
+        } else if (r.remaining !== null && r.remaining !== undefined) {
+          value = r.remaining + " left"; unit = "balance in the meter's own unit";
+        } else {
+          value = "reported without a number";
+        }
+        grid.appendChild(meterBox(r, kind, value, unit));
+      });
+      feed.appendChild(grid);
+    }
+
+    var cons = tre.consumption || [];
+    if (cons.length) {
+      feed.appendChild(head("Consumed today — first reading vs last reading"));
+      var g2 = el("div", "grid");
+      cons.forEach(function (c) {
+        var kind = c.scope + (c.limit_window === "balance" ? "" : " · " + c.limit_window);
+        var value = c.state === "REPORTED"
+          ? ((c.consumed >= 0 ? "" : "−") + Math.abs(Math.round(c.consumed * 1e4) / 1e4))
+          : "not enough readings";
+        g2.appendChild(meterBox({ engine: c.engine, state: c.state, detail: c.detail,
+                                  source: c.source, reset_at: null, ts: c.to },
+                                kind, value, c.unit));
+      });
+      feed.appendChild(g2);
+    }
+
+    var cost = tre.ledger_cost || [];
+    if (cost.length) {
+      feed.appendChild(head("Daily cost — counted from the action log"));
+      var g3 = el("div", "grid");
+      cost.forEach(function (c) {
+        var value = c.state === "REPORTED" ? (c.credits + " credits")
+          : (c.state === "TOKENS_ONLY" ? "tokens only" : "unavailable");
+        g3.appendChild(meterBox({ engine: c.engine, state: c.state, detail: c.reason,
+                                  source: "action_log", reset_at: null, ts: null },
+                                "today", value, c.transactions + " transaction rows"));
+      });
+      feed.appendChild(g3);
+    }
+  }
+
+  function loadTreasury() {
+    if (treBusy) return;
+    treBusy = true;
+    fetch("/api/treasury", { cache: "no-store" })
+      .then(function (r) { return r.json(); })
+      .then(function (json) {
+        treBusy = false;
+        if (json.error) { tre = { error: json.error }; } else { tre = json; }
+        if (view === "treasury") render();
+      })
+      .catch(function () { treBusy = false; tre = { error: "daemon unreachable" }; if (view === "treasury") render(); });
+  }
+
+  function renderTreasuryView() {
+    document.getElementById("title").textContent = "What it costs";
+    document.getElementById("crumb").textContent = "Treasury";
+    document.getElementById("tabs").style.display = "none";
+    var box = document.getElementById("stats");
+    box.textContent = "";
+    var feed = document.getElementById("feed");
+    feed.textContent = "";
+
+    if (!tre) {
+      feed.appendChild(el("p", "empty", treBusy ? "reading the meters…" : "no reading yet"));
+      loadTreasury();
+      return;
+    }
+    if (tre.error) {
+      document.getElementById("sub").textContent = "the meters could not be read";
+      feed.appendChild(el("p", "empty", tre.error));
+      return;
+    }
+
+    [["quota rows", (tre.quota || []).length, ""],
+     ["engines with a meter", Object.keys(tre.registry || {}).length, ""],
+     ["meter refresh", human(tre.interval_s), ""],
+     ["day", tre.day, ""]].forEach(function (r) {
+      var card = el("div", "stat " + r[2]);
+      card.appendChild(el("span", null, r[0]));
+      card.appendChild(el("strong", null, r[1]));
+      box.appendChild(card);
+    });
+    document.getElementById("sub").textContent =
+      "every number below is a CLI reading or a count over the action log — " +
+      "a meter that has nothing to say is shown as UNAVAILABLE, never as zero";
+    renderTreasury();
+    if (!(tre.quota || []).length && !(tre.ledger_cost || []).length) {
+      feed.appendChild(el("p", "empty",
+        "no meter has written a reading yet: python3 tools/session_ingestor.py treasury --probe"));
+    }
+  }
+
   function render() {
+    if (view === "treasury") { return renderTreasuryView(); }
     renderStats();
     var titles = { feed: ["What happened", "Activity feed"], files: ["Artefacts", "Files touched"] };
     document.getElementById("title").textContent = titles[view][0];
@@ -394,6 +556,7 @@
         }
         data = json;
         render();
+        if (view === "treasury") loadTreasury();
       })
       .catch(function () {
         document.getElementById("sub").textContent =

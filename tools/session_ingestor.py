@@ -965,9 +965,9 @@ def _run(cmd: list, timeout: int = 30) -> tuple[int, str]:
                              text=True, timeout=timeout)
         return res.returncode, (res.stdout or "").strip()
     except FileNotFoundError:
-        return 127, f"(perintah {cmd[0]!r} tidak terpasang di mesin ini)"
+        return 127, f"(command {cmd[0]!r} is not installed on this machine)"
     except subprocess.TimeoutExpired:
-        return 124, f"(waktu {timeout}s habis sebelum meter selesai menjawab)"
+        return 124, f"(meter did not answer within {timeout}s)"
     except Exception as exc:  # noqa: BLE001
         return 1, f"(gagal: {type(exc).__name__}: {exc})"
 
@@ -1014,7 +1014,7 @@ def parse_agy_usage_json(text: str) -> tuple[list[dict], str]:
     """
     payload = _first_json(text)
     if payload is None:
-        return [], "output bukan JSON"
+        return [], "output is not JSON"
     groups = (((payload.get("command") or {}).get("data") or {}).get("groups")) or []
     rows = []
     for g in groups:
@@ -1049,12 +1049,12 @@ def parse_agy_usage_json(text: str) -> tuple[list[dict], str]:
             "scope": parts[0], "limit_window": parts[1],
             "state": "REPORTED", "used": None, "total": None,
             "remaining_fraction": _frac(frac), "reset_at": ts_for_tstz(parts[3]),
-            "detail": "dibaca dari teks response (bentuk terstruktur tidak ada)",
+            "detail": "read from the response text (no structured payload)",
             "raw": json.dumps({"line": line}, ensure_ascii=False),
         })
     if rows:
         return rows, ""
-    return [], "tidak ada kelompok kuota di output CLI (bentuknya berubah?)"
+    return [], "no quota group in the CLI output (did its shape change?)"
 
 
 def parse_agy_credits_json(text: str) -> tuple[list[dict], str]:
@@ -1068,7 +1068,7 @@ def parse_agy_credits_json(text: str) -> tuple[list[dict], str]:
     """
     payload = _first_json(text)
     if payload is None:
-        return [], "output bukan JSON"
+        return [], "output is not JSON"
     data = (payload.get("command") or {}).get("data") or {}
     value = data.get("remaining_credits")
     if value is None:
@@ -1080,7 +1080,7 @@ def parse_agy_credits_json(text: str) -> tuple[list[dict], str]:
     try:
         amount = float(value)
     except (TypeError, ValueError):
-        return [], "saldo kredit tidak terbaca sebagai angka dari output CLI"
+        return [], "the credit balance is not readable as a number in the CLI output"
     return [{
         "scope": "credits",
         "limit_window": "balance",
@@ -1090,7 +1090,7 @@ def parse_agy_credits_json(text: str) -> tuple[list[dict], str]:
         "remaining_fraction": None,
         "remaining": amount,
         "reset_at": None,
-        "detail": "saldo kredit akun (absolute), bukan konsumsi harian",
+        "detail": "account credit balance (absolute), not daily consumption",
         "raw": json.dumps({"remaining_credits": value,
                            "upgrade_uri": data.get("upgrade_uri")}, ensure_ascii=False),
     }], ""
@@ -1148,7 +1148,7 @@ def parse_qoder_usage_panel(screen: str) -> tuple[list[dict], str]:
         })
     if rows:
         return rows, ""
-    return [], "panel /usage tidak memuat kunci meter yang dikenal (versi CLI berubah?)"
+    return [], "the /usage panel holds no recognised meter key (did the CLI version change?)"
 
 
 PARSERS = {
@@ -1199,7 +1199,7 @@ def read_qoder_panel(cfg: dict) -> tuple[str, str]:
     rc, out = _tmux("new-session", "-d", "-s", TREASURY_TAB, "-x", "220", "-y", "50",
                     "-c", str(TREASURY_DIR), *cmd)
     if rc != 0:
-        return "", f"probe gagal dimulai: {out[:TREASURY_DETAIL_MAX]}"
+        return "", f"probe could not be started: {out[:TREASURY_DETAIL_MAX]}"
 
     screen = ""
     previous = None
@@ -1213,12 +1213,12 @@ def read_qoder_panel(cfg: dict) -> tuple[str, str]:
             time.sleep(1.0)
             rc, screen = _tmux("capture-pane", "-t", TREASURY_TAB, "-p")
             if rc != 0:
-                return "", f"capture-pane gagal: {screen[:TREASURY_DETAIL_MAX]}"
+                return "", f"capture-pane failed: {screen[:TREASURY_DETAIL_MAX]}"
 
             if _turn_started(screen):
                 _tmux("send-keys", "-t", TREASURY_TAB, "Escape")
-                return "", ("perintah probe berubah menjadi turn model dan dibatalkan; "
-                            "TUI belum siap saat diketik — pembacaan ditolak")
+                return "", ("the probe command became a model turn and was cancelled; "
+                            "the TUI was not ready when it was typed — reading rejected")
 
             if any(lbl in screen for lbl in QODER_PANEL_METERS):
                 return screen, ""
@@ -1227,7 +1227,7 @@ def read_qoder_panel(cfg: dict) -> tuple[str, str]:
                 # Enter hanya untuk folder probe buatan kita sendiri. Folder lain berarti
                 # cwd salah dan probe harus berhenti, bukan setuju-setuju.
                 if str(TREASURY_DIR) not in screen:
-                    return "", "jendela trust menyebut folder lain; probe dihentikan"
+                    return "", "the trust window names another folder; probe stopped"
                 typed, steady, previous = False, 0, None
                 settle_at = time.time() + PANEL_BOOT_S
                 _tmux("send-keys", "-t", TREASURY_TAB, "Enter")
@@ -1254,8 +1254,8 @@ def read_qoder_panel(cfg: dict) -> tuple[str, str]:
     finally:
         _tmux("send-keys", "-t", TREASURY_TAB, "Escape")
         _tmux("kill-session", "-t", TREASURY_TAB)
-    return "", (f"panel {panel} tidak muncul dalam {timeout}s "
-                f"(perintah dicoba {tries} kali, masuk ke input: {int(typed)})")
+    return "", (f"panel {panel} did not appear within {timeout}s "
+                f"(command tried {tries} time(s), reached the input box: {int(typed)})")
 
 
 def read_meter(reg_key: str, cfg: dict) -> tuple[list[dict], str, str]:
@@ -1297,7 +1297,7 @@ def _read_one_meter(reg_key: str, cfg: dict) -> tuple[list[dict], str, str]:
         return [], "", "UNSUPPORTED"
     parser = PARSERS.get(name)
     if parser is None:
-        return [], "", f"parser {name!r} tidak dikenal oleh ingestor"
+        return [], "", f"parser {name!r} is unknown to this ingestor"
     if name == "qoder_usage_panel":
         text, err = read_qoder_panel(cfg)
         source = "qoder /usage panel"
@@ -1333,7 +1333,7 @@ def probe_treasury(store: Store, only: tuple = (), force: bool = False) -> dict:
     usage = registry_usage()
     if not usage:
         return {"engines": [], "readings": 0,
-                "note": "engines.json tidak punya blok 'usage': tidak ada meter yang bisa dibaca"}
+                "note": "engines.json has no 'usage' block: there is no meter to read"}
     report, readings = [], 0
     for key, cfg in usage.items():
         if only and key not in only:
@@ -1347,7 +1347,7 @@ def probe_treasury(store: Store, only: tuple = (), force: bool = False) -> dict:
             # jendela kuota yang benar-benar dimiliki mesin itu.
             rows = [{"scope": "probe", "limit_window": "probe",
                      "state": "UNSUPPORTED" if err == "UNSUPPORTED" else "UNAVAILABLE",
-                     "detail": err or "meter tidak menghasilkan baris apa pun"}]
+                     "detail": err or "the meter produced no rows at all"}]
         record_quota(store, rows, source or str(cfg.get("parser") or "-"), engine)
         store.cursor_set("treasury", f"meter/{key}", int(time.time()), redact(err or source)[:200])
         readings += len(rows)
@@ -1472,21 +1472,21 @@ def meter_deltas(store: Store) -> list[dict]:
             # Satu pembacaan hanya menjelaskan POSISI hari ini, bukan berapa yang terpakai.
             # Menyimpulkan "terpakai 0" dari satu pembacaan adalah tebakan.
             entry.update({"state": "UNAVAILABLE", "consumed": None, "unit": None,
-                          "detail": f"baru 1 pembacaan sejak tengah malam; konsumsi harian "
-                                    f"butuh pembacaan pertama dan terakhir"})
+                          "detail": f"only 1 reading since midnight; daily consumption "
+                                    f"needs both a first and a last reading"})
         elif first[1] is not None and last[1] is not None:
             entry.update({"state": "REPORTED", "consumed": last[1] - first[1],
-                          "unit": "kredit akun (kumulatif; CLI tidak memisah per sesi)",
-                          "detail": f"meter naik {first[1]} → {last[1]}"})
+                          "unit": "account credits (cumulative; the CLI does not split them per session)",
+                          "detail": f"meter moved {first[1]} → {last[1]}"})
         elif first[2] is not None and last[2] is not None:
             entry.update({"state": "REPORTED", "consumed": first[2] - last[2],
                           # Sisa kuota TURUN saat dipakai, jadi yang terpakai = awal - akhir.
-                          "unit": "pecahan dari jatah jendela ini",
-                          "detail": f"sisa turun {first[2]:.4f} → {last[2]:.4f}"})
+                          "unit": "fraction of this window's allowance",
+                          "detail": f"remaining fell {first[2]:.4f} → {last[2]:.4f}"})
         else:
             entry.update({"state": "UNAVAILABLE", "consumed": None, "unit": None,
-                          "detail": "pembacaan pertama/terakhir tidak memuat used maupun "
-                                    "remaining_fraction yang bisa dibandingkan"})
+                          "detail": "the first and last reading carry no comparable "
+                                    "used or remaining_fraction"})
         out.append(entry)
     return out
 
@@ -1505,14 +1505,14 @@ def ledger_cost(store: Store) -> list[dict]:
         tokens = _num(in_sum) + _num(out_sum)
         # Alasan dilaporkan sebagai hasil hitungan, bukan kalimat tetap per mesin: instalasi
         # lain punya mesin berbeda dan angkanya harus menjelaskan dirinya sendiri.
-        detail = (f"{_num(rows_n)} baris transaksi hari ini: {_num(cred_n)} membawa kredit, "
-                  f"{_num(tok_n)} membawa token (total masuk {_num(in_sum)}, keluar {_num(out_sum)})")
+        detail = (f"{_num(rows_n)} transaction rows today: {_num(cred_n)} carry credits, "
+                  f"{_num(tok_n)} carry tokens (input {_num(in_sum)}, output {_num(out_sum)})")
         if _num(cred_n):
             state, reason = "REPORTED", detail
         elif tokens:
-            state, reason = "TOKENS_ONLY", detail + " — kredit per transaksi tidak ada di log"
+            state, reason = "TOKENS_ONLY", detail + " — per-transaction credits are absent from the log"
         else:
-            state, reason = "UNAVAILABLE", detail + " — sumber log tidak menuliskan angka nyata"
+            state, reason = "UNAVAILABLE", detail + " — the log source records no real number"
         out.append({"engine": eng, "state": state, "reason": reason,
                     "transactions": _num(rows_n),
                     "credits": _num(cred_sum) if _num(cred_n) else None,
@@ -1533,7 +1533,7 @@ def treasury_report(store: Store) -> dict:
         "registry": {k: {"engine": v.get("engine") or k, "parser": v.get("parser"),
                          "has_meter": bool(v.get("probe"))}
                      for k, v in registry_usage().items()},
-        "invariant": "Semua angka di sini hasil pembacaan CLI atau query transaksi; tidak ada satu pun yang ditulis tangan.",
+        "invariant": "every number here is a CLI reading or a transaction query; nothing is written by hand",
     }
 
 

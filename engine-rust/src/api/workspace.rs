@@ -171,3 +171,12 @@ pub(crate) async fn get_recovery(Query(q): Query<LogQuery>) -> Json<Value> {
 pub(crate) async fn get_station(Query(q): Query<LogQuery>) -> Json<Value> {
     query_history("station", q).await
 }
+
+/// /api/treasury — pembacaan meter biaya & kuota untuk blok Treasury halaman Station.
+///
+/// Handler ini tidak menghitung apa pun. Laporan hidup di satu tempat — mode `treasury`
+/// ingestor — supaya layar dan `ai-station` tidak pernah bisa menghasilkan dua angka yang
+/// berbeda untuk hari yang sama (§12: satu kosakata, laporan selalu turunan).
+pub(crate) async fn get_treasury(Query(q): Query<LogQuery>) -> Json<Value> {
+    query_history("treasury", q).await
+}

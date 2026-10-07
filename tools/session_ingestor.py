@@ -854,6 +854,25 @@ FROM bnd
 """
 
 
+STATION_ARTIFACTS_VIEW = """
+CREATE OR REPLACE VIEW station_artifacts AS
+SELECT a.id AS artifact_id,
+       a.ts,
+       a.session_id,
+       a.tab,
+       a.engine,
+       a.tool,
+       a.summary AS path,
+       CASE WHEN lower(a.summary) ~ '\\.(png|jpe?g|webp|gif|svg|mp4|blend|fbx)$'
+            THEN 'media' ELSE 'file' END AS kind,
+       (SELECT p.id FROM action_log p
+         WHERE p.kind = 'prompt' AND p.session_id = a.session_id AND p.ts <= a.ts
+         ORDER BY p.ts DESC LIMIT 1) AS post_id
+FROM action_log a
+WHERE a.kind = 'tool_call' AND a.tool IN ('Write', 'Edit')
+"""
+
+
 def ensure_station_view(store: Store) -> bool:
     """Bangunkan view `station_posts` — satu baris = satu postingan.
 
@@ -867,14 +886,16 @@ def ensure_station_view(store: Store) -> bool:
     """
     if not str(store.engine).upper().startswith("POSTG"):
         return False
-    try:
-        with store.conn.cursor() as cur:
-            cur.execute(STATION_POSTS_VIEW)
-        store.conn.commit()
-        return True
-    except Exception as exc:  # noqa: BLE001
-        print(f"[ingestor] view station_posts gagal: {exc}", file=sys.stderr)
-        return False
+    ok = True
+    for ddl in (STATION_POSTS_VIEW, STATION_ARTIFACTS_VIEW):
+        try:
+            with store.conn.cursor() as cur:
+                cur.execute(ddl)
+            store.conn.commit()
+        except Exception as exc:  # noqa: BLE001
+            print(f"[ingestor] view station gagal: {exc}", file=sys.stderr)
+            ok = False
+    return ok
 
 
 def posts(store: Store, limit: int = 20) -> int:
@@ -892,11 +913,74 @@ def posts(store: Store, limit: int = 20) -> int:
     return len(rows)
 
 
+def _num(v):
+    """Postgres mengembalikan sum() sebagai Decimal; JSON tidak punya tipe itu."""
+    if v is None:
+        return 0
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return v
+
+
+def station(store: Store, limit: int = 30) -> None:
+    """Satu payload JSON untuk halaman Station: postingan + artefak + ringkasan hari ini.
+
+    Semuanya hasil query. Tidak ada satu pun angka di sini yang ditulis oleh AI yang
+    mengerjakan pekerjaannya — itu persis yang membuat halaman ini bisa dipercaya.
+    """
+    posts_rows = store.query(
+        "SELECT post_id, to_char(opened_at,'YYYY-MM-DD\"T\"HH24:MI:SS\"+07\"'), "
+        " to_char(closed_at,'YYYY-MM-DD\"T\"HH24:MI:SS\"+07\"'), state, duration_s, "
+        " commands, tool_calls, failed, tab, model, cwd, command "
+        "FROM station_posts ORDER BY opened_at DESC LIMIT %s", (limit,))
+    arts = store.query(
+        "SELECT post_id, path, kind, to_char(ts,'HH24:MI') FROM station_artifacts "
+        "WHERE ts >= (SELECT COALESCE(min(opened_at), now()) FROM "
+        "  (SELECT opened_at FROM station_posts ORDER BY opened_at DESC LIMIT %s) t) "
+        "ORDER BY ts", (limit,))
+    per_post: dict = {}
+    for pid, path, kind, hhmm in arts:
+        bucket = per_post.setdefault(int(pid or 0), {})
+        entry = bucket.get(path)
+        if entry:
+            # Berkas yang sama boleh disentuh lima kali dalam satu postingan; yang ingin
+            # dibaca manusia itu "berkas apa, berapa kali", bukan lima baris identik.
+            entry["edits"] += 1
+            entry["last"] = hhmm
+        else:
+            bucket[path] = {"path": path, "kind": kind, "at": hhmm, "last": hhmm, "edits": 1}
+
+    out = []
+    for (pid, opened, closed, state, dur, cmd, tool, fail, tab, model, cwd, command) in posts_rows:
+        out.append({
+            "id": pid, "opened_at": opened, "closed_at": closed, "state": state,
+            "duration_s": _num(dur), "commands": _num(cmd), "tool_calls": _num(tool),
+            "failed": _num(fail), "tab": tab, "model": model, "cwd": cwd,
+            "command": command, "artifacts": list(per_post.get(pid, {}).values()),
+        })
+
+    today = store.query(
+        "SELECT count(*), COALESCE(sum(commands),0), COALESCE(sum(tool_calls),0), "
+        " COALESCE(sum(failed),0), COALESCE(sum(duration_s),0) "
+        "FROM station_posts WHERE opened_at::date = CURRENT_DATE")
+    pcount, pcm, ptl, pfl, pdur = today[0] if today else (0, 0, 0, 0, 0)
+    acount = store.query(
+        "SELECT count(*) FROM station_artifacts WHERE ts::date = CURRENT_DATE")[0][0]
+
+    print(json.dumps({
+        "generated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "totals": {"posts": _num(pcount), "commands": _num(pcm), "tool_calls": _num(ptl),
+                   "failed": _num(pfl), "work_seconds": _num(pdur), "artifacts": _num(acount)},
+        "posts": out,
+    }, ensure_ascii=False, default=str))
+
+
 def main():
     ap = argparse.ArgumentParser(description="Ingestor log sesi AI Workstation ke SQL")
     ap.add_argument("mode", nargs="?", default="once",
                     choices=["once", "watch", "recent", "handoff", "snapshot", "stats",
-                             "recovery", "api", "posts"])
+                             "recovery", "api", "posts", "station"])
     ap.add_argument("limit", nargs="?", type=int, default=40)
     ap.add_argument("--engine", default="")
     ap.add_argument("--kind", default="")
@@ -938,6 +1022,12 @@ def main():
         run_once(store, meta)
         where = snapshot(store, args.session, min(args.limit, 40))
         print(f"[snapshot] tersimpan: {where}", file=sys.stderr)
+    elif args.mode == "station":
+        if not ensure_station_view(store):
+            print(json.dumps({"error": "halaman Station butuh PostgreSQL", "posts": [],
+                              "totals": {}}))
+        else:
+            station(store, args.limit)
     elif args.mode == "posts":
         if not ensure_station_view(store):
             print("(view postingan hanya tersedia di PostgreSQL; fallback SQLite sedang aktif)")

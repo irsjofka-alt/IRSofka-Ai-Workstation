@@ -333,8 +333,14 @@ def emit_qoder_event(store, ev, sid, path, meta, cwd_hint, turn_prompt, turn_row
             turn_row[tid] = row_id
     elif etype == "tool.requested":
         args = data.get("args") or {}
+        # Qoder MEMOTONG argumen tool yang besar menjadi {"truncated":true,"preview":...} —
+        # dan potongan itu tidak lagi menyisakan file_path. Rantai fallback yang berakhir di
+        # json.dumps(args) lalu menjadikan seluruh cuplikan isi berkas sebagai "jejak", yang
+        # di halaman Artefacts tampil sebagai satu kartu raksasa berisi CSS. Sebuah artefak
+        # harus bernama berkas: kalau namanya tidak ada, lebih baik tidak dicatat sama sekali.
         brief = (args.get("command") or args.get("prompt") or args.get("file_path")
-                 or args.get("subject") or json.dumps(args, default=str))
+                 or args.get("path") or args.get("notebook_path") or args.get("subject")
+                 or ("[args terpotong]" if args.get("truncated") else json.dumps(args, default=str)))
         log_event(store, base, kind="tool_call", tool=data.get("tool_name"),
                   summary=redact(brief))
     elif etype == "tool.shell.started":
@@ -873,6 +879,11 @@ SELECT a.id AS artifact_id,
          ORDER BY p.ts DESC LIMIT 1) AS post_id
 FROM action_log a
 WHERE a.kind = 'tool_call' AND a.tool IN ('Write', 'Edit')
+  -- Lapis kedua: yang boleh disebut artefak hanyalah yang berbentuk jalur. Baris lama yang
+  -- tercatat sebelum penjagaan ini ada tetap tertahan di sini, tidak dibuang dari log.
+  AND length(a.summary) <= 512
+  AND a.summary !~ '[\r\n]'
+  AND a.summary ~ '^(~?/[[:print:]]+|[^/[:space:]]+(/[[:print:]]+)*)$'
 """
 
 

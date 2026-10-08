@@ -206,6 +206,13 @@ for a bounded run; OFF means a human is at the desk and watching. The rules belo
   03:00 is the one failure the ledger cannot undo — no `action_log` row restores a file deleted inside an
   application that has no CLI. An item that genuinely needs the desktop joins the human queue instead of
   clicking.
+- **Writing to git while ON is allowed, but only behind a verifier.** Answered by the operator on
+  2026-10-08 07:00 in the Human Decide tab (decision 6, `answered_by=operator-gui`): an unattended run may
+  commit and push, provided a verification pass clears the work first and finds nothing — "kalau tidak di
+  temukan masalah boleh langsung di push". The condition is the whole point of the answer: a push is the
+  one action that leaves the machine, and an unreviewed one becomes everyone's history before anyone
+  wakes. A run that cannot reach a verifier — meter unreadable, engine down, no evidence in the prompt —
+  commits locally and leaves the push in the morning digest.
 - **ON expires by itself**, at a wall-clock boundary or an item count, and emits the morning digest. A
   toggle left ON because everyone forgot is a background process running with the operator's identity.
 - **A fast failure stops the run; it does not retry it.** An unattended loop that fails in under a second

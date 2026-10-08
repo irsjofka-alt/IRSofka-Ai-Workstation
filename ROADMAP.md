@@ -687,10 +687,15 @@ that skips the order cannot claim.
   returned 409 quoting the first answer's timestamp; an empty answer returned 400 and left the question
   open; `POST /api/autopilot` with `mode:"maybe"` and with `minutes:0` each returned 400 and left
   `mode OFF` untouched, while `mode:"off"` returned 200 and wrote `changed_by=operator-gui` plus the
-  reason into the ledger. **A real mouse click on the page was not measured.** This workstation has no
-  input hand installed (`ydotool`, `ydotoold` and `grim` are absent; only `cosmic-screenshot` exists) and
-  Firefox's BiDi socket refuses a client that did not arrive from a WebDriver session, so the render is
-  verified by screenshot and the click layer is not verified at all. The first click is the operator's.
+  reason into the ledger. The click layer was then proven by the only hand allowed to use it: the operator
+  answered three rows from the page at 07:00, each landing in PostgreSQL as `ANSWERED` /
+  `answered_by=operator-gui`, and each producing a `drainer-2026-10-08.jsonl` line that refused to send —
+  once because the question carried no `item_id` ("tidak ada pekerjaan yang bisa dibangunkan") and twice
+  because the target claim still read `WORKING`. No answer was lost to a refused keystroke.
+  Two of those answers are decisions, not tests, and they are binding: **ON may commit and push, but only
+  after a verifier clears the work** (decision 6), and **the drainer's timer stays off tonight because the
+  operator is back at the desk** (decision 19) — so F10.3's acceptance half, one night of unattended log,
+  remains owed by explicit choice rather than by oversight.
 
 ## Known Boundaries & Constraints
 

@@ -270,6 +270,19 @@ def _release_claim(conn, engine, item_id):
            f"WHERE id={wo_p(engine)}", (int(item_id),))
 
 
+def effective_gap(gap, injected):
+    """Berapa lama benar-benar harus menunggu antara dua pembacaan pane.
+
+    Terpisah dan murni karena alasan yang menyakitkan: versi pertama ditulis sebagai
+    `wait = gap if capture is not None else max(...)` di DALAM `pane_is_quiet`, tepat setelah
+    `capture = capture or cv.capture_pane` — sehingga `capture` tidak pernah None lagi, cabang
+    `max(...)` tidak pernah berjalan, dan `gap=0` tetap lolos. Selftest-nya lolos karena hanya
+    mencari teks "max(gap, MIN_PANE_GAP)" di sumber: tes yang membuktikan keberadaan string,
+    bukan keberadaan perilaku.
+    """
+    return gap if injected else max(gap, MIN_PANE_GAP)
+
+
 def pane_is_quiet(target, capture=None, busy=None, gap=MIN_PANE_GAP, sleeper=None):
     """Bukti bahwa pane target tidak sedang dipakai — dibaca dua kali dengan jeda NYATA.
 
@@ -283,6 +296,7 @@ def pane_is_quiet(target, capture=None, busy=None, gap=MIN_PANE_GAP, sleeper=Non
     juga ditolak: di sana "tidak berubah" adalah tautologi, bukan pengamatan.
     """
     import cross_verify as cv
+    injected = capture is not None          # dicatat SEBELUM default dipasang
     capture = capture or cv.capture_pane
     busy = busy or cv.pane_is_busy
     sleeper = sleeper or time.sleep
@@ -294,7 +308,7 @@ def pane_is_quiet(target, capture=None, busy=None, gap=MIN_PANE_GAP, sleeper=Non
     # `gap=0` hanya dihormati kalau pembacanya disuntik (selftest tidak boleh tidur). Dengan
     # pembacaan nyata, dua frame yang diambil berbarengan SELALU sama, dan menyebut itu "diam"
     # adalah mengarang pengamatan — persis yang dilarang invarian 5.
-    wait = gap if capture is not None else max(gap, MIN_PANE_GAP)
+    wait = effective_gap(gap, injected)
     if wait > 0:
         sleeper(wait)
     second = capture(target)
@@ -307,7 +321,12 @@ def pane_is_quiet(target, capture=None, busy=None, gap=MIN_PANE_GAP, sleeper=Non
     return {"quiet": True, "why": f"dua pembacaan dengan jeda {wait}s: tidak berubah, tanpa spinner"}
 
 
-def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None, origin=None,
+def _as_path(text):
+    """Path yang siap dibandingkan dengan `resolve_workspace` — `~` diperluas lebih dulu."""
+    return Path(text).expanduser().resolve(strict=False)
+
+
+def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
                   capture=None, busy=None, tab_project=None, pane_cwd=None, gap=MIN_PANE_GAP):
     """Serahkan satu item baru ke engine yang ditunjuk barisnya. Tidak pernah menebak tujuan.
 
@@ -328,6 +347,12 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None, origi
     semalam untuk sebuah kesamaan yang tidak diminta adalah penurunan, bukan penguatan.
     """
     emit = emit or (lambda *a, **kw: None)   # bentuk panggilan: (action, **isi)
+    # Keranjang Diturunkan dari mode, tidak pernah diterima sebagai argumen terpisah. Selama
+    # `origin` masih bisa dikirim sendiri, `hand_new_work(conn, engine, "SEMI")` tanpa origin
+    # mengambil baris roadmap dan mengirimnya dengan SEMI_PROMPT — satu-satunya penahan adalah
+    # `claim()` yang membaca mode dari database, dan itu pagar yang bisa dilewati pemanggil yang
+    # tidak tahu. Satu sumber kebenaran, tidak ada pasangan yang bisa tidak cocok.
+    origin = wo.ORIGIN_OPERATOR if mode == "SEMI" else None
     item = next_ready(conn, engine, origin=origin)
     if not item:
         emit("QUEUE_EMPTY", origin=origin or "apa pun")
@@ -371,21 +396,18 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None, origi
     else:
         read_live = pane_cwd
     where = read_conf(target)      # proyek yang dikonfigurasi untuk tab ini
-    live = read_live(target)       # direktori pane pada detik ini
+    live = read_live(target)       # dicatat untuk diagnostik; BUKAN pagar — alasannya di bawah
     want = wo.resolve_workspace(full)
-    if where is None or live is None:
+    if where is None:
         cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
         emit("PANE_DIR_UNKNOWN", item=int(item["id"]), target=target,
              why="proyek tab tidak terbaca dari cli_profiles — UNKNOWN, dan UNKNOWN tidak pernah "
                  "boleh mengetik")
         return None
-    if (Path(where).resolve(strict=False) != want
-            or Path(live).resolve(strict=False) != want):
-        # Dua sinyal harus setuju. Konfigurasi tab bisa benar sementara agent-nya sudah pindah
-        # proyek, dan sebaliknya; yang mana pun yang tidak cocok, perintahnya ditahan.
+    if _as_path(where) != want:
         cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
         emit("PANE_WRONG_DIR", item=int(item["id"]), target=target,
-             tab_project=str(where), pane_now=str(live), wants=str(want),
+             tab_project=str(where), pane_now=str(live) if live else None, wants=str(want),
              why="tab target adalah proyek lain — perintah ini tidak akan dikerjakan di tree yang "
                  "bukan miliknya")
         return None
@@ -415,7 +437,10 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None, origi
                                      gate=(full.get("check_command") or "tanpa gerbang"))
     try:
         reply = (sender or default_sender)(target, prompt)
+        # `tab_project` dan `pane_now` dicatat supaya suatu saat seseorang bisa menguji dugaan
+        # tentang penyebab pengiriman ditolak — tanpa itu, menyangkal sebuah klaim butuh menebak.
         emit("WORK_DISPATCHED", item=int(item["id"]), target=target, mode=mode,
+             tab_project=str(where), pane_now=str(live) if live else None,
              reply=str(reply)[:200])
     except Exception as exc:  # noqa: BLE001 — kegagalan kirim dicatat, tidak dikarang ulang
         emit("SEND_FAILED", item=int(item["id"]), target=target,
@@ -594,7 +619,7 @@ def tick(conn, engine, gate=None, beats=None, runner=None, sender=None, log=None
     if lvl["allows_dispatch"]:
         reconcile(conn, engine, mode, runner=runner, emit=ev)
         hand_new_work(conn, engine, mode, runner=runner, sender=sender, emit=ev,
-                      origin=origin, capture=capture, busy=busy,
+                      capture=capture, busy=busy,
                       tab_project=tab_project, pane_cwd=pane_cwd, gap=gap)
     rest = [b for b in (beats if beats is not None else wo.heartbeat(conn, engine))
             if b["state"] == "AT_REST"]
@@ -727,8 +752,47 @@ def selftest():
                        "/api/cli/run", "UPDATE ", "INSERT ", "decision", "ydotool", "subprocess"):
             hit = [f"{banned} di {fn}()" for fn, body in asegs.items() if banned in body]
             check(f"penasehat antrean tidak memakai {banned!r}", not hit, "; ".join(hit))
-        check("penasehat hanya melaporkan antrean milik proyek ini",
-              "ws_path" in asegs.get("build_note", ""), "build_note tidak memfilter proyek")
+        # Perilaku, bukan keberadaan string. Cek lama mencari "ws_path" di badan fungsi dan lulus
+        # meski fungsinya tidak menyaring apa pun.
+        try:
+            sys.path.insert(0, str(wo.REPO / "hooks"))
+            import queue_advisor as _adv
+            _adv.THIS_ENGINE = "qoder"
+            _rows = [{"id": 1, "cli_engine": "qoder", "ws_path": "/tmp/proj-a", "title": "a"},
+                     {"id": 2, "cli_engine": "qoder", "ws_path": "/tmp/proj-b", "title": "b"},
+                     {"id": 3, "cli_engine": "qoder", "ws_path": None, "title": "tanpa proyek"},
+                     {"id": 4, "cli_engine": "antigravity", "ws_path": "/tmp/proj-a", "title": "c"}]
+            _in_a = [r["id"] for r in _adv.select_rows(_rows, "/tmp/proj-a")]
+            check("penasehat menyaring MESIN dan PROYEK, bukan hanya menandai",
+                  _in_a == [1], str(_in_a))
+            check("baris tanpa proyek tidak dilaporkan ke sesi proyek lain "
+                  "— nasihat yang ditolak mesin terasa seperti perintah yang hilang",
+                  3 not in _in_a, str(_in_a))
+            _empty = _adv.select_rows(_rows, "")
+            check("tanpa laporan cwd dari CLI, penasehat DIAM — tidak mengarang proyek "
+                  "lalu menyuruh engine mengerjakan yang akan ditolaknya sendiri",
+                  _empty == [], str(_empty))
+        except Exception as _exc:  # noqa: BLE001
+            check("penasehat bisa diuji", False, f"{type(_exc).__name__}: {_exc}")
+        check("tanpa proyek yang diketahui, penasehat tidak mengklaim 'tidak ada yang untukmu'",
+              'if not cwd:' in open(str(wo.REPO / "hooks" / "queue_advisor.py"),
+                                    encoding="utf-8").read().split("def build_note")[1][:400],
+              "build_note masih bicara tanpa tahu proyeknya")
+        try:
+            import semi_wake as _sw
+            _orig = _sw.guides_for
+            import work_order as _wo
+            _saved = _wo.locked_guides
+            _wo.locked_guides = lambda: (_ for _ in ()).throw(RuntimeError("meter rusak"))
+            try:
+                _res = _sw.guides_for(None, None)
+            finally:
+                _wo.locked_guides = _saved
+            check("jalur gagal pedoman mengembalikan TIGA nilai, bukan dua — kalau dua, hook "
+                  "meledak setelah klaim dan barisnya menggantung WORKING",
+                  isinstance(_res, tuple) and len(_res) == 3, str(type(_res)))
+        except Exception as _exc2:  # noqa: BLE001
+            check("jalur gagal pedoman bisa diuji", False, f"{type(_exc2).__name__}: {_exc2}")
 
     tmp = Path(f"/tmp/drainer_selftest_{wo.now()}.db")
     conn = sqlite3.connect(str(tmp))
@@ -1086,7 +1150,7 @@ def selftest():
         g1 = make("selftest-guard-busy", gate="false", engine_key="qoder", origin="operator")
         sent.clear(); out = []
         hand_new_work(conn, "SQLITE", runner=runner, sender=sender, emit=sink(out),
-                      mode="SEMI", origin=wo.ORIGIN_OPERATOR,
+                      mode="SEMI",
                       capture=shifting_pane, busy=not_busy, tab_project=cwd_of, gap=0)
         check("pane yang teksnya berubah antar pembacaan tidak diketiki, dan barisnya tetap PENDING",
               out and out[-1]["action"] == "PANE_NOT_QUIET" and not sent
@@ -1095,7 +1159,7 @@ def selftest():
         g2 = make("selftest-guard-blind", gate="false", engine_key="qoder", origin="operator")
         sent.clear(); out = []
         hand_new_work(conn, "SQLITE", runner=runner, sender=sender, emit=sink(out),
-                      mode="SEMI", origin=wo.ORIGIN_OPERATOR,
+                      mode="SEMI",
                       capture=quiet_pane, busy=not_busy,
                       tab_project=lambda _t: None, gap=0)
         check("direktori pane yang tidak terbaca adalah UNKNOWN, dan UNKNOWN tidak pernah mengetik",
@@ -1106,7 +1170,7 @@ def selftest():
         cwd_box["v"] = str(Path.home())   # pane berdiri di $HOME, bukan di proyek baris ini
         sent.clear(); out = []
         hand_new_work(conn, "SQLITE", runner=runner, sender=sender, emit=sink(out),
-                      mode="SEMI", origin=wo.ORIGIN_OPERATOR,
+                      mode="SEMI",
                       capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
         check("perintah proyek A tidak pernah diketik ke pane yang sedang berdiri di proyek B",
               out and out[-1]["action"] == "PANE_WRONG_DIR" and not sent
@@ -1131,19 +1195,49 @@ def selftest():
               any(e["action"] == "HELD_BY_MODE" and e["item"] == rm_held for e in out) and not ran,
               str(out))
 
-        # Konfigurasi tab yang cocok saja tidak cukup: pane-nya bisa sudah pindah proyek.
+        # Lepaskan klaim yang masih dipegang engine ini lebih dulu, supaya yang diukur di bawah
+        # adalah pagar direktori — bukan aturan satu-perintah-aktif yang sudah punya tes sendiri.
+        wo.finish(conn, "SQLITE", op, "COMPLETED",
+                  evidence="selftest: melepas klaim agar uji berikutnya mengukur satu hal")
         op3 = make("selftest-semi-cmd-3", gate="false", engine_key="qoder",
                    origin="operator", ws=str(REPO))
         out = []
         hand_new_work(conn, "SQLITE", "SEMI", runner=runner, sender=sender, emit=sink(out),
-                      origin=wo.ORIGIN_OPERATOR, capture=quiet_pane, busy=not_busy,
+                      capture=quiet_pane, busy=not_busy,
                       tab_project=cwd_of, pane_cwd=lambda _t: str(Path.home()), gap=0)
-        check("konfigurasi tab cocok tapi pane sebenarnya pindah proyek = tetap ditahan",
-              out and out[-1]["action"] == "PANE_WRONG_DIR"
+        # Terukur 2026-10-08 11:4x: pane qoder memang duduk di ~/.ai-station (cwd proses
+        # foreground-nya) sambil proyek tab-nya ~/Documents/ai-workstation. Jadi cwd pane BUKAN
+        # sinyal proyek; menuntut keduanya sama akan menolak hampir setiap pengiriman — aman, tapi
+        # diam, dan yang diukur ini justru mengirim.
+        check("cwd pane yang berbeda tidak menahan pengiriman, tapi tetap dicatat",
+              out and out[-1]["action"] == "WORK_DISPATCHED"
               and out[-1].get("pane_now") == str(Path.home()), str(out[-1:]))
 
-        check("jeda dua pembacaan dipaksa nyata kalau pembacanya asli, tidak bisa dinolkan "
-              "lewat parameter", "max(gap, MIN_PANE_GAP)" in timer_code)
+        # Cek perilaku, bukan cek teks. Versi sebelumnya mencari string "max(gap, MIN_PANE_GAP)"
+        # di sumber dan LULUS pada kode mati — persis kelas bug yang kuburu sejak kemarin.
+        check("pembaca asli tidak boleh dinolkan jeda-nya lewat parameter",
+              effective_gap(0, False) == MIN_PANE_GAP and effective_gap(0, True) == 0
+              and effective_gap(5, False) == 5,
+              f"asli:{effective_gap(0, False)} suntik:{effective_gap(0, True)}")
+        _waits = []
+        pane_is_quiet("qoder", capture=lambda _t: "prompt siap", busy=lambda _s: False,
+                      gap=0, sleeper=lambda sec: _waits.append(sec))
+        check("jalur suntikan benar-benar tidak tidur (tes tidak menahan produksi)",
+              _waits == [], str(_waits))
+        _real = []
+        try:
+            pane_is_quiet("qoder", capture=None, busy=lambda _s: False, gap=0,
+                          sleeper=lambda sec: _real.append(sec))
+        except Exception:  # noqa: BLE001 — pembaca asli boleh gagal di fixture, jeda tidak boleh
+            pass
+        check("jalur pembaca asli benar-benar meminta jeda nyata, bukan nol",
+              _real and _real[0] >= MIN_PANE_GAP, str(_real))
+        check("cwd pane dicatat untuk diagnostik tetapi tidak lagi menjadi pagar",
+              "pane_now=str(live) if live else None" in segments.get("hand_new_work", "")
+              and "or Path(live)" not in segments.get("hand_new_work", ""),
+              "masih menuntut cwd pane sama")
+        check("path `~` diperluas sebelum dibandingkan, tidak selalu ditolak",
+              "_as_path(where) != want" in segments.get("hand_new_work", ""))
 
         # Beda mode diukur pada ANTREAN YANG SAMA, bukan dengan dua fixture berbeda: satu baris yang
         # bukan perintah operator harus terlihat oleh FULL AUTO dan tidak terlihat oleh SEMI.

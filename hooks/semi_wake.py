@@ -123,7 +123,11 @@ def guides_for(conn, engine) -> tuple[str, list[str], int]:
         import work_order as wo
         wanted = wo.locked_guides()
     except Exception as exc:  # noqa: BLE001
-        return "", [f"daftar terkunci tidak terbaca: {type(exc).__name__}"]
+        # Tiga nilai, bukan dua. Pemanggilnya `body, notes, nguides = guides_for(...)`, dan
+        # cabang gagal ini terjadi SETELAH baris diklaim — mengembalikan dua nilai di sana
+        # membuat hook melempar ValueError setelah klaim sukses: baris jadi WORKING dan tidak
+        # ada yang menyuntik, kegagalan yang tidak terlihat dari mana pun.
+        return "", [f"daftar terkunci tidak terbaca: {type(exc).__name__}"], 0
     blob, taken, notes = [], [], []
     # Anggaran dibelah PER BERKAS, bukan satu kolam yang dihabiskan berkas pertama.
     # Terukur 2026-10-08 11:28: `documents/AGENTS.md` 27 KB menghabiskan seluruh 3200 karakter,

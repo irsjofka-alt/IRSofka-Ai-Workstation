@@ -49,14 +49,45 @@ def session_cwd(data: dict):
     return None
 
 
+def select_rows(rows, cwd):
+    """Baris yang memang untuk sesi ini — memakai resolver yang sama dengan hook dan drainer.
+
+    Dipisah dan murni supaya bisa diuji dengan daftar sungguhan. Versi sebelumnya hanya
+    MEMBERI TANDA "[proyek lain]" dan memperlakukan `ws_path` kosong sebagai "milik semua proyek",
+    sementara hook menolak baris seperti itu di proyek mana pun selain REPO: nasihat yang bilang
+    "ini untukmu" lalu ditolak mesin adalah cara membuat operator mengira perintahnya hilang.
+    """
+    import work_order as wo
+    here = None
+    if cwd:
+        try:
+            here = Path(cwd).expanduser().resolve(strict=False)
+        except OSError:
+            here = None
+    if here is None:
+        # Sesi tidak melaporkan proyeknya. Melaporkan semua baris milik mesin ini akan menyuruh
+        # engine mengerjakan antrean yang akan ditolak hook-nya sendiri, dan dari kursinya itu
+        # terlihat seperti perintah yang hilang. Yang jujur adalah diam.
+        return []
+    keep = []
+    for r in rows:
+        if (r.get("cli_engine") or "").strip() != THIS_ENGINE:
+            continue
+        if wo.resolve_workspace(r) != here:
+            continue
+        keep.append(r)
+    return keep
+
+
 def build_note(cwd: str) -> str | None:
     """Satu kalimat laporan antrean, atau None kalau memang tidak ada yang perlu dilaporkan."""
+    if not cwd:
+        # Bukan "tidak ada yang untukmu" — itu pernyataan tentang proyek yang tidak kita ketahui.
+        # Yang jujur adalah tidak berkata apa pun.
+        return None
     import work_order as wo
     conn, engine = wo.connect()
     ap = wo.autopilot(conn, engine) or {}
-    rows = wo.next_item(conn, engine, respect_due=False, origin=wo.ORIGIN_OPERATOR,
-                        for_engine=THIS_ENGINE)
-    # `next_item` mengembalikan satu baris; layar butuh daftar, jadi dibaca sebagai baris juga.
     mine_all = wo.run(conn, engine,
                       "SELECT id, title, cli_engine, ws_path, status FROM quest_tasks "
                       "WHERE origin=%s AND status='PENDING' ORDER BY id"
@@ -64,16 +95,15 @@ def build_note(cwd: str) -> str | None:
                       "SELECT id, title, cli_engine, ws_path, status FROM quest_tasks "
                       "WHERE origin=? AND status='PENDING' ORDER BY id",
                       (wo.ORIGIN_OPERATOR,))
-    mine = [r for r in mine_all if (r.get("cli_engine") or "") == THIS_ENGINE]
-    other = [r for r in mine_all if (r.get("cli_engine") or "") != THIS_ENGINE]
+    mine = select_rows(mine_all, cwd)
+    other = [r for r in mine_all if r not in mine]
     if not mine_all:
         return None
     lines = [f"ANTREAN OPERATOR untuk {THIS_ENGINE} (mode {ap.get('mode')}, tangan {ap.get('level')}):"]
     if not mine:
         lines.append("  tidak ada yang untukmu")
     for r in mine[:MAX_LISTED]:
-        mark = "" if not cwd or not r.get("ws_path") or Path(r["ws_path"]) == Path(cwd) else " [proyek lain]"
-        lines.append(f"  #{r['id']} {str(r['title'])[:90]}{mark}")
+        lines.append(f"  #{r['id']} {str(r['title'])[:90]}")
     if len(mine) > MAX_LISTED:
         lines.append(f"  ... {len(mine) - MAX_LISTED} lagi untuk {THIS_ENGINE}")
     if other:

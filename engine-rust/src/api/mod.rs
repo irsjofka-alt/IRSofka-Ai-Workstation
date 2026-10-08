@@ -20,6 +20,7 @@ pub(crate) mod master;
 pub(crate) mod stats;
 pub(crate) mod static_files;
 pub(crate) mod terminal;
+pub(crate) mod work;
 pub(crate) mod workspace;
 
 #[derive(Clone)]

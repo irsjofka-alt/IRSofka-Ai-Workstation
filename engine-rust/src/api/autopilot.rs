@@ -89,7 +89,11 @@ fn run_drainer(args: &[String]) -> Result<String, String> {
 
 /// `run_tool` menunggu database — bisa mencapai detik. Di dalam handler async itu berarti satu
 /// worker tokio tidak melayani apa pun, jadi prosesnya dijalankan di luar runtime.
-async fn run_tool_async(args: Vec<String>) -> Result<String, String> {
+///
+/// `pub(crate)` bukan kebocoran: satu tempat berangkat untuk `work_order.py` adalah satu tempat
+/// yang boleh punya batas waktu dan penyapu grup proses. Modul Dashboard (F10.10) memakainya
+/// justru supaya ia tidak menulis ulang keberangkatan kedua yang boleh lupa memotong.
+pub(crate) async fn run_tool_async(args: Vec<String>) -> Result<String, String> {
     tokio::task::spawn_blocking(move || run_tool(&args))
         .await
         .map_err(|e| format!("task work_order berhenti: {e}"))?
@@ -139,17 +143,23 @@ fn positive_int(v: Option<&Value>) -> Option<u64> {
     }
 }
 
-/// POST /api/autopilot — hanya `on` dan `off` yang dikenal, selain itu ditolak sebelum berangkat.
+/// POST /api/autopilot — `on`, `semi`, `off`; selain itu ditolak sebelum proses berangkat.
 ///
 /// Badan yang sah: `{"mode":"on","minutes":240,"budget":8,"reason":"...","by":"operator-gui"}`.
+///
+/// `semi` diterima di sini karena SEMI adalah jawaban ketiga atas pertanyaan yang sama
+/// ("siapa yang memegang mesin") dan bukan tangga baru: ia menulis `mode='SEMI'` ke baris
+/// sakelar yang sama. Yang TIDAK berubah adalah `level` — naik tangga tetap hanya lewat `arm`
+/// dari `/dev/tty`, dan tidak ada tombol HTTP yang mengangkat tangan (invarian 6).
 pub(crate) async fn post_state(Json(body): Json<Value>) -> Response {
     let mode = match body.get("mode").and_then(Value::as_str) {
         Some(m) if m.eq_ignore_ascii_case("on") => "on",
+        Some(m) if m.eq_ignore_ascii_case("semi") => "semi",
         Some(m) if m.eq_ignore_ascii_case("off") => "off",
         Some(other) => {
             return envelope(
                 StatusCode::BAD_REQUEST,
-                json!({"ok": false, "error": format!("mode {other:?} bukan on/off — status tidak disentuh")}),
+                json!({"ok": false, "error": format!("mode {other:?} bukan on/semi/off — status tidak disentuh")}),
             )
         }
         None => {
@@ -161,7 +171,10 @@ pub(crate) async fn post_state(Json(body): Json<Value>) -> Response {
     };
 
     let mut args: Vec<String> = vec!["autopilot".to_string(), mode.to_string()];
-    if mode == "on" {
+    // Jendela dan anggaran boleh dipasang untuk SEMI juga: `items_done_in_window` dan pemutus
+    // malam membaca `on_epoch`, dan jendela SEMI tanpa `on_epoch` akan melaporkan "0 item malam
+    // ini" selamanya — laporan yang salah lebih berbahaya daripada tidak ada laporan.
+    if mode != "off" {
         if let Some(m) = positive_int(body.get("minutes")) {
             args.extend(["--minutes".to_string(), m.to_string()]);
         } else if body.get("minutes").is_some() {

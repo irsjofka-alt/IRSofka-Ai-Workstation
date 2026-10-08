@@ -26,6 +26,12 @@
     --violet: #a78bfa;
     --mono: ui-monospace, "SF Mono", "JetBrains Mono", Menlo, Consolas, monospace;
     --serif: "Iowan Old Style", "Palatino Linotype", Palatino, Georgia, serif;
+    /* Spacing scale. Before this file had colour and type variables but every gap was a literal,
+       which is how one view ends up tighter than the next for no reason anyone can name. */
+    --sp-1: 6px;
+    --sp-2: 10px;
+    --sp-3: 14px;
+    --sp-4: 22px;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; padding: 0; height: 100%; }
@@ -199,6 +205,86 @@
   .rtable td.mono { font-family: var(--mono); font-size: 12px; }
   .rtable td .why { display: block; font-size: 11px; color: var(--ink-faint); margin-top: 2px; }
 
+  /* ---------- Dashboard: kokpit proyek (3 kolom) ----------
+     `.card` sebelumnya dibangun di delapan tempat di JavaScript dan tidak punya satu aturan CSS
+     pun — itu sebabnya tab ini terlihat "berantakan": setiap kartu adalah div transparan dengan
+     heading ukuran browser di atas latar gelap. Akar masalahnya warna dan ritme, bukan isinya. */
+  #dash, .dash { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 14px; align-items: start; }
+  .dash-col { display: flex; flex-direction: column; gap: 12px; min-width: 0; }
+  .dash-head { display: flex; align-items: baseline; gap: 8px; margin: 0; padding: 0 2px;
+               font: 700 10px/1 var(--serif); letter-spacing: 1.4px; text-transform: uppercase;
+               color: var(--ink-faint); }
+  .dash-head b { color: var(--ink-dim); font-weight: 700; }
+  .card {
+    background: var(--panel); border: 1px solid var(--line); border-radius: 12px;
+    padding: 13px 15px; min-width: 0;
+  }
+  .card:hover { border-color: #2b3d51; }
+  .card > h3 { margin: 0 0 2px; font: 500 13.5px/1.35 var(--serif); letter-spacing: .2px; }
+  .card > p { margin: 0; font-size: 12px; color: var(--ink-dim); line-height: 1.5; }
+  .card .kv { display: flex; justify-content: space-between; gap: 10px; font-size: 12px;
+              padding: 3px 0; border-bottom: 1px dashed #16212e; }
+  .card .kv:last-child { border-bottom: 0; }
+  .card .kv span { color: var(--ink-faint); }
+  .card .kv strong { font-family: var(--mono); font-size: 12px; font-weight: 500; color: var(--ink);
+                     text-align: right; word-break: break-word; }
+  /* Sakelar satu kata, tiga keadaan. Tiga checkbox terpisah adalah tiga laporan tentang satu hal. */
+  .seg { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; padding: 4px;
+         background: #0c1218; border: 1px solid var(--line); border-radius: 10px; }
+  .seg button {
+    background: none; border: 0; border-radius: 7px; color: var(--ink-faint); cursor: pointer;
+    font: 600 11.5px/1 var(--mono); letter-spacing: .6px; padding: 8px 4px; text-transform: uppercase;
+  }
+  .seg button:hover { color: var(--ink); background: #131d28; }
+  .seg button.on { background: var(--panel-2); color: var(--ink); box-shadow: inset 0 0 0 1px var(--line); }
+  .seg button.on[data-mode="SEMI"] { color: var(--amber); box-shadow: inset 0 0 0 1px #4a3a13; }
+  .seg button.on[data-mode="ON"] { color: var(--accent); box-shadow: inset 0 0 0 1px #1d4b48; }
+  .seg button[disabled] { opacity: .4; cursor: default; }
+  .ledger { margin-top: 9px; font-size: 11px; color: var(--ink-faint); font-family: var(--mono); }
+  /* Header proyek: judul, subjek, dan pedoman — bagian "station" dari kalimat operator. */
+  .proj { border-left: 2px solid var(--accent); }
+  .proj .path { font-family: var(--mono); font-size: 11px; color: var(--ink-faint);
+                word-break: break-all; margin-top: 3px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 9px; }
+  .guide {
+    font-family: var(--mono); font-size: 11px; color: var(--ink-dim); background: #0d141d;
+    border: 1px solid var(--line); border-radius: 6px; padding: 2px 8px; cursor: pointer;
+  }
+  .guide:hover { color: var(--ink); border-color: var(--ink-faint); }
+  .guide.on { color: var(--accent); border-color: #1d4b48; background: #10201f; }
+  .guide.can { color: var(--violet); border-color: #322a4d; }
+  .compose textarea { min-height: 74px; }
+  .reply { font-size: 11.5px; font-family: var(--mono); margin-top: 8px; color: var(--ink-faint);
+           word-break: break-word; white-space: pre-wrap; }
+  .reply.bad { color: var(--rose); }
+  .reply.good { color: var(--accent); }
+  /* Kolom 3: kartu keputusan. Ini satu-satunya tempat halaman ini meminta sesuatu dari manusia. */
+  .card.decision { border-left: 2px solid var(--amber); }
+  .card.span { grid-column: 1 / -1; }
+  .card.qrow { display: flex; gap: 10px; align-items: baseline; justify-content: space-between; }
+  .card.qrow .t { font-size: 12.5px; color: var(--ink); min-width: 0; word-break: break-word; }
+  .card.qrow .who { font-family: var(--mono); font-size: 11px; color: var(--ink-faint); white-space: nowrap; }
+  .card.decision .q { margin: 0 0 9px; font-size: 13.5px; line-height: 1.5; white-space: pre-wrap;
+                      word-break: break-word; }
+  .card.decision .why { font-size: 11.5px; color: var(--ink-faint); margin: 0 0 9px; line-height: 1.5; }
+  .card.answered { border-left: 2px solid var(--accent); opacity: .92; }
+  .fold { border: 1px solid var(--line); border-radius: 11px; background: #0d1319; }
+  .fold > summary { cursor: pointer; list-style: none; padding: 9px 13px; font-size: 11.5px;
+                    color: var(--ink-faint); font-family: var(--mono); letter-spacing: .3px; }
+  .fold > summary::-webkit-details-marker { display: none; }
+  .fold > summary:hover { color: var(--ink-dim); }
+  .fold[open] > summary { border-bottom: 1px solid var(--line); }
+  .fold .body { padding: 11px 13px; display: flex; flex-direction: column; gap: 11px; }
+  @media (max-width: 1180px) {
+    body { grid-template-columns: 200px 1fr; }
+    #dash { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  }
+  @media (max-width: 780px) {
+    body { grid-template-columns: 1fr; }
+    aside { position: static; height: auto; }
+    #dash { grid-template-columns: 1fr; }
+  }
+
   .empty { color: var(--ink-faint); text-align: center; padding: 56px 0; font-size: 14px; }
   footer { margin-top: 24px; padding-top: 13px; border-top: 1px solid var(--line);
            color: var(--ink-faint); font-size: 12px; display: flex; justify-content: space-between; gap: 16px; }
@@ -211,8 +297,12 @@
     <p>AI Station</p>
   </div>
   <div class="group">
+    <h2>Workspace</h2>
+    <button class="nav on" data-view="dashboard"><i>▦</i> Dashboard</button>
+  </div>
+  <div class="group">
     <h2>Today</h2>
-    <button class="nav on" data-view="feed"><i>≡</i> Activity feed</button>
+    <button class="nav" data-view="feed"><i>≡</i> Activity feed</button>
     <button class="nav" data-view="files"><i>▤</i> Artefacts</button>
     <button class="nav" data-view="treasury"><i>¤</i> Treasury</button>
   </div>
@@ -223,7 +313,6 @@
   </div>
   <div class="group">
     <h2>System</h2>
-    <button class="nav" data-view="decide"><i>✋</i> Human Decide</button>
     <button class="nav soon" data-soon="engines"><i>⚙</i> Engines<em>soon</em></button>
     <button class="nav soon" data-soon="backup"><i>↺</i> Backups<em>soon</em></button>
     <a class="nav" href="/" style="text-decoration:none"><i>▸</i> Open console</a>
@@ -258,7 +347,7 @@
 <script>
 (function () {
   "use strict";
-  var filter = "all", query = "", view = "feed", data = { posts: [], totals: {} };
+  var filter = "all", query = "", view = "dashboard", data = { posts: [], totals: {} };
 
   // Setiap view adalah halaman yang berbeda secara mental. Tanpa ini, reload atau deep link
   // (#roles) melanjutkan posisi scroll view sebelumnya dan operator mendarat di tengah
@@ -823,12 +912,12 @@
       .then(function (json) {
         apBusy = false;
         ap = json;
-        if (view === "decide") render();
+        if (view === "decide" || view === "dashboard") render();
       })
       .catch(function () {
         apBusy = false;
         ap = { error: "daemon unreachable — is irsofka-ai-workstation running?" };
-        if (view === "decide") render();
+        if (view === "decide" || view === "dashboard") render();
       });
   }
 
@@ -846,6 +935,408 @@
       return;
     }
     items.forEach(function (it) { parent.appendChild(make(it)); });
+  }
+
+  /* ---------- Dashboard: kokpit proyek (F10.10) ----------
+     Tiga kolom, satu layar, dan satu aturan yang dipegang seluruh isinya: halaman ini tidak
+     menghitung apa pun. Angka pemutus, jendela ON, dan antrean dibaca dari /api/autopilot apa
+     adanya — handler-nya sendiri cuma meneruskan byte milik work_order.py. Sebuah tombol yang
+     keputusannya dihitung di JavaScript adalah salinan kedua dari aturan itu, dan dua salinan
+     akan berbeda (§12.3). */
+  function dashCard(title, sub) {
+    var c = el("div", "card");
+    if (title) c.appendChild(el("h3", null, title));
+    if (sub) c.appendChild(el("p", null, sub));
+    return c;
+  }
+
+  function kvRows(card, pairs) {
+    pairs.forEach(function (p) {
+      var row = el("div", "kv");
+      row.appendChild(el("span", null, p[0]));
+      row.appendChild(el("strong", null, p[1] === null || p[1] === undefined ? "—" : p[1]));
+      card.appendChild(row);
+    });
+    return card;
+  }
+
+  function fold(title, build) {
+    var f = el("details", "fold");
+    var s = el("summary", null, title);
+    f.appendChild(s);
+    var body = el("div", "body");
+    build(body);
+    f.appendChild(body);
+    return f;
+  }
+
+  function switchCard(host) {
+    var mode = ((ap.autopilot || {}).mode || "OFF").toUpperCase();
+    var card = dashCard("Autopilot", "Siapa yang memegang mesin malam ini. OFF = ada manusia di "
+      + "meja. SEMI = otomatis, tapi yang dikerjakan hanya perintah yang kamu tulis sendiri ke "
+      + "SQL. ON = komputer ini sepenuhnya milik engine, termasuk antrean ROADMAP.");
+    var seg = el("div", "seg");
+    ["OFF", "SEMI", "ON"].forEach(function (m) {
+      var b = el("button", m === mode ? "on" : null, m);
+      b.dataset.mode = m;
+      b.disabled = !!apBusySend;
+      b.addEventListener("click", function () { dashSwitch(m, b); });
+      seg.appendChild(b);
+    });
+    card.appendChild(seg);
+    var a = ap.autopilot || {};
+    var parts = ["tercatat: " + mode, "oleh " + (a.changed_by || "—")];
+    if (mode === "ON" || mode === "SEMI") { parts.push("jendela " + timeLeft(a.until_epoch)); }
+    if (a.off_reason) { parts.push("alasan: " + a.off_reason); }
+    var led = el("div", "ledger", parts.join(" · "));
+    card.appendChild(led);
+    var box = el("div", "reply");
+    box.id = "switch-reply";
+    card.appendChild(box);
+    if (ap.off_paths) {
+      card.appendChild(fold("empat jalan mati yang tidak butuh AI", function (host2) {
+        (ap.off_paths || []).forEach(function (p) { host2.appendChild(el("div", "step", "· " + p)); });
+      }));
+    }
+    host.appendChild(card);
+  }
+
+  var apBusySend = false;
+  /* Dinamai bukan `sendSwitch`: renderDecideView punya fungsi lokal dengan nama itu, dan dua
+     pengirim sakelar dengan satu nama adalah cara membuat yang mana yang berjalan tergantung
+     pada siapa mendeklarasikan terakhir. */
+  function dashSwitch(mode, btn) {
+    var box = document.getElementById("switch-reply");
+    if (box) { box.textContent = "mengirim " + mode + "…"; box.className = "reply"; }
+    apBusySend = true;
+    var body = { mode: mode.toLowerCase(), by: "operator-gui" };
+    if (mode === "SEMI") body.reason = "SEMI dari Dashboard — operator mengawasi";
+    postJson("/api/autopilot", body).then(function (res) {
+      apBusySend = false;
+      if (!box) { render(); return; }
+      showReply(box, res);
+      box.className = "reply " + (res.status === 200 ? "good" : "bad");
+      loadAutopilot();
+    }).catch(function () { apBusySend = false; if (box) { box.textContent = "gagal"; box.className = "reply bad"; } });
+  }
+
+  function summaryCard(host) {
+    var n = ap.night || {}, d = ap.drain || {}, a = ap.autopilot || {}, w = ap.workspace || {};
+    var card = dashCard("Ringkasan", "Semuanya turunan dari PostgreSQL — tidak ada satu angka pun yang halaman ini hitung.");
+    kvRows(card, [
+      ["mode", a.mode],
+      ["tangan (level)", d.level + (d.allows_dispatch ? " · dispatch" : "") + (d.allows_resume ? " · resume" : "")],
+      ["item selesai di jendela", a.items_done],
+      ["kegagalan 12 jam", n.failures_12h],
+      ["working tree", n.tree_dirty === true ? "kotor — klaim tertutup" : (n.tree_dirty === false ? "bersih" : "UNKNOWN")],
+      ["antrean perintahmu", w.operator_pending + " menunggu"],
+      ["engine yang memegang klaim", (w.engines_with_a_claim || []).join(", ") || "tidak ada"],
+      ["gerbang malam", n.ok ? "terbuka" : "tertutup"]
+    ]);
+    if (!n.ok && (n.why || []).length) {
+      var why = el("p", null);
+      why.style.marginTop = "9px";
+      why.style.color = "var(--amber)";
+      why.textContent = "kenapa tertutup: " + n.why.join(" · ");
+      card.appendChild(why);
+    }
+    if (!d.readable) {
+      card.appendChild(el("p", "note", "level tidak terbaca — UNKNOWN, dan UNKNOWN tidak pernah berarti boleh bergerak."));
+    }
+    host.appendChild(card);
+  }
+
+  function postWork(body, box, done) {
+    if (box) { box.textContent = "mengirim…"; box.className = "reply"; }
+    postJson("/api/work", body).then(function (res) {
+      if (box) {
+        showReply(box, res);
+        box.className = "reply " + (res.json && res.json.ok ? "good" : "bad");
+      }
+      if (done) { done(res); }
+      loadAutopilot();
+    }).catch(function () {
+      if (box) { box.textContent = "jalur kirim gagal — daemon tidak menjawab"; box.className = "reply bad"; }
+    });
+  }
+
+  function projectCard(host) {
+    var w = ap.workspace || {};
+    var card = dashCard("Proyek yang sedang dibuka", "Station adalah kokpit per proyek; konsol "
+      + "Workstation tetap global. Fokus dibaca dari symlink brain/workspaces — tabel registry "
+      + "tidak pernah mengklaimnya.");
+    card.classList.add("proj");
+    if (w.focus_readable) {
+      card.appendChild(el("div", "path", w.focus));
+    } else {
+      card.appendChild(el("p", null, "fokus tidak terbaca — symlink current_project tidak bisa dibaca, jadi tidak ada yang dipilihkan."));
+    }
+    var list = w.workspaces || [];
+    if (!list.length) {
+      card.appendChild(el("p", null, "belum ada proyek terdaftar — daftarkan satu di bawah ini."));
+    } else {
+      var rows = el("div");
+      list.forEach(function (x) {
+        var r = el("div", "kv");
+        var left = el("span", null, x.display_name + (x.is_focus ? " · fokus" : ""));
+        r.appendChild(left);
+        var btn = el("button", "btn", x.is_focus ? "sedang aktif" : "Fokuskan");
+        btn.disabled = !!x.is_focus;
+        btn.addEventListener("click", function () { postWork({ action: "focus", workspace: String(x.id) }, out); });
+        r.appendChild(btn);
+        rows.appendChild(r);
+      });
+      card.appendChild(rows);
+    }
+    var name = el("input"); name.placeholder = "nama proyek baru";
+    var path = el("input"); path.placeholder = "/path/ke/proyek";
+    name.style.width = "100%"; path.style.width = "100%";
+    var mk = el("div", "fields");
+    [name, path].forEach(function (i) { var f = el("div", "field"); f.appendChild(i); mk.appendChild(f); });
+    card.appendChild(mk);
+    var out = el("div", "reply");
+    var bar = el("div", "savebar");
+    var mkBtn = el("button", "btn", "Daftarkan proyek");
+    mkBtn.addEventListener("click", function () {
+      postWork({ action: "create", name: name.value, path: path.value }, out);
+    });
+    bar.appendChild(mkBtn);
+    card.appendChild(bar);
+    card.appendChild(out);
+    host.appendChild(card);
+  }
+
+  function guidesCard(host) {
+    var w = ap.workspace || {};
+    var focus = (w.workspaces || []).filter(function (x) { return x.is_focus; })[0] || null;
+    /* Kunci pilihan adalah path ABSOLUT berkas, bukan namanya. Proyek ini dan workstation sama-sama
+       punya AGENTS.md; kalau yang disimpan hanya "AGENTS.md", tidak ada yang bisa mengatakan
+       aturan yang mana yang sedang dipatuhi engine. */
+    var chosen = ((focus || {}).guidelines || "").split(",").map(function (s) { return s.trim(); });
+    var card = dashCard("Pedoman (handler)", "MD yang dibaca engine bersama perintah ini. "
+      + "Yang ditandai ungu milik workstation dan berlaku di proyek mana pun.");
+    var avail = w.guidelines_available || [];
+    if (!avail.length) {
+      card.appendChild(el("p", null, "tidak ada .md yang terdeteksi di proyek ini."));
+      host.appendChild(card); return;
+    }
+    var chips = el("div", "chips");
+    avail.forEach(function (g) {
+      var on = chosen.indexOf(g.abs) >= 0;
+      var c = el("span", "guide" + (on ? " on" : "") + (g.canonical ? " can" : ""),
+                 (on ? "☑ " : "☐ ") + g.path);
+      c.title = g.abs;
+      c.addEventListener("click", function () {
+        var i = chosen.indexOf(g.abs);
+        if (i >= 0) { chosen.splice(i, 1); } else { chosen.push(g.abs); }
+        var sel = chosen.indexOf(g.abs) >= 0;
+        c.className = "guide" + (sel ? " on" : "") + (g.canonical ? " can" : "");
+        c.textContent = (sel ? "☑ " : "☐ ") + g.path;
+      });
+      chips.appendChild(c);
+    });
+    card.appendChild(chips);
+    var bar = el("div", "savebar");
+    var out = el("div", "reply");
+    if (!focus) {
+      bar.appendChild(el("span", "note", "pilih proyek dulu — pedoman disimpan per proyek"));
+    } else {
+      var gBtn = el("button", "btn primary", "Simpan pedoman");
+      gBtn.addEventListener("click", function () {
+        postWork({ action: "guidelines", workspace: String(focus.id), files: chosen }, out);
+      });
+      bar.appendChild(gBtn);
+    }
+    card.appendChild(bar);
+    card.appendChild(out);
+    host.appendChild(card);
+  }
+
+  function composeCard(host) {
+    var w = ap.workspace || {};
+    var card = dashCard("Generate perintah", "Tulis satu perintah. Ia masuk ke PostgreSQL dan "
+      + "menunggu di antrean yang sama dengan pekerjaan roadmap — tidak ada yang diketik ke CLI "
+      + "dari halaman ini.");
+    card.classList.add("compose");
+    var ta = el("textarea");
+    ta.placeholder = "contoh: rapikan UI Dashboard lalu screenshot untuk verifikasi visual";
+    ta.value = drafts.cmd || "";
+    ta.addEventListener("input", function () { drafts.cmd = ta.value; });
+    card.appendChild(ta);
+    var eng = el("select");
+    (w.known_engines || []).forEach(function (e) { eng.appendChild(el("option", null, e)); });
+    var feng = el("div", "field");
+    feng.appendChild(el("label", null, "mesin tujuan"));
+    feng.appendChild(eng);
+    var gate = el("input");
+    gate.placeholder = "opsional: perintah gerbang penerimaan";
+    var fgate = el("div", "field");
+    fgate.appendChild(el("label", null, "gerbang"));
+    fgate.appendChild(gate);
+    var mk = el("div", "fields");
+    mk.appendChild(feng); mk.appendChild(fgate);
+    card.appendChild(mk);
+    var out = el("div", "reply");
+    var bar = el("div", "savebar");
+    var qBtn = el("button", "btn primary", "Kirim ke SQL");
+    qBtn.addEventListener("click", function () {
+      if (!ta.value.trim()) { out.textContent = "perintah kosong ditolak"; out.className = "reply bad"; return; }
+      postWork({ action: "queue", title: ta.value, engine: eng.value,
+                 gate: gate.value, ws: w.focus || "" }, out);
+    });
+    bar.appendChild(qBtn);
+    bar.appendChild(el("span", "note", "kalau engine-mu diam, backend yang memanggil"));
+    card.appendChild(bar);
+    card.appendChild(out);
+    host.appendChild(card);
+  }
+
+  function queueCard(host) {
+    var w = ap.workspace || {};
+    var card = dashCard("Antrean perintahmu", (w.operator_pending || 0) + " menunggu, "
+      + (w.operator_working || []).length + " sedang dikerjakan.");
+    listOrNull(card, w.operator_queue, function (q) {
+      var r = el("div", "card qrow");
+      r.appendChild(el("span", "t", "#" + q.id + " · " + (q.title || "").slice(0, 90)));
+      r.appendChild(el("span", "who", (q.cli_engine || "?") + (q.ws_path ? " · " + q.ws_path.split("/").pop() : " · ~/.ai-station")));
+      return r;
+    });
+    (w.operator_working || []).forEach(function (q) {
+      var r = el("div", "card qrow");
+      r.appendChild(el("span", "t", "#" + q.id + " · " + (q.title || "").slice(0, 90)));
+      r.appendChild(el("span", "who", "dikerjakan " + (q.claimed_by || "?")));
+      card.appendChild(r);
+    });
+    host.appendChild(card);
+  }
+
+  function renderDashboard() {
+    /* Poll 10 detik tidak boleh merebut apa yang sedang diketik. */
+    if (document.querySelector("#feed textarea:focus, #feed input:focus")) { return; }
+    if (!ap) { return; }
+    if (ap.error) {
+      var f0 = document.getElementById("feed");
+      f0.textContent = "";
+      f0.appendChild(el("p", "empty", ap.error));
+      return;
+    }
+    var feed = document.getElementById("feed");
+    feed.textContent = "";
+    var grid = el("div", "dash");
+    grid.id = "dash";
+    feed.appendChild(grid);
+
+    var c1 = el("div", "dash-col"), c2 = el("div", "dash-col"), c3 = el("div", "dash-col");
+    switchCard(c1);
+    summaryCard(c1);
+    c1.appendChild(diagnosticFold());
+    projectCard(c2);
+    guidesCard(c2);
+    composeCard(c2);
+    queueCard(c2);
+    decisionsCards(c3);
+    grid.appendChild(c1); grid.appendChild(c2); grid.appendChild(c3);
+  }
+
+  function diagnosticFold() {
+    return fold("diagnostik (riwayat, kandidat, tawaran berikutnya)", function (host) {
+      var a = ap.autopilot || {};
+      var rec = dashCard("Sakelar sebagaimana tercatat");
+      kvRows(rec, [["changed_by", a.changed_by], ["on_epoch", a.on_epoch], ["until_epoch", a.until_epoch],
+                   ["item_budget", a.item_budget], ["items_done tersimpan", a.items_done_stored],
+                   ["items_done diturunkan", a.items_done], ["level_until", a.level_until]]);
+      host.appendChild(rec);
+      var st = el("div", "card");
+      st.appendChild(el("h3", null, "Kandidat yang macet"));
+      listOrNull(st, ap.stalled, function (r) { return el("div", "step", "#" + r.id + " " + (r.title || "").slice(0, 70) + " · " + (r.state || "")); });
+      host.appendChild(st);
+      var nx = el("div", "card");
+      nx.appendChild(el("h3", null, "Tawaran berikutnya"));
+      nx.appendChild(el("p", null, ap.next ? "#" + ap.next.id + " · " + ap.next.title : "antrean kosong"));
+      host.appendChild(nx);
+      var hq = el("div", "card");
+      hq.appendChild(el("h3", null, "Antrean HUMAN"));
+      listOrNull(hq, ap.human_queue, function (r) { return el("div", "step", "#" + r.id + " " + (r.title || "").slice(0, 70)); });
+      host.appendChild(hq);
+    });
+  }
+
+  function decisionsCards(host) {
+    var open = ap.decisions_open || [];
+    host.appendChild(el("h3", "dash-head", "Human Decide · " + open.length + " menunggu"));
+    if (!open.length) {
+      var quiet = dashCard("Tidak ada yang menunggu kamu", "Kosong adalah keadaan normal antrean ini. "
+        + "Kalau tab ini mulai penuh, yang salah adalah ambangnya, bukan engine-nya.");
+      host.appendChild(quiet);
+    }
+    open.forEach(function (d) { host.appendChild(decisionCard(d)); });
+    var done = ap.decisions_answered || [];
+    if (done.length) {
+      host.appendChild(fold("sudah dijawab (" + done.length + ")", function (inner) {
+        done.forEach(function (d) {
+          var c = el("div", "card answered");
+          c.appendChild(el("h3", null, "#" + d.id + " " + (d.question || "").slice(0, 90)));
+          c.appendChild(el("p", null, (d.answer || "").slice(0, 400)));
+          c.appendChild(el("div", "ledger", "oleh " + (d.answered_by || d.model_id || "—") + " · " + (d.state || "")));
+          inner.appendChild(c);
+        });
+      }));
+    }
+  }
+
+  function decisionCard(d) {
+    var card = el("div", "card decision");
+    card.appendChild(el("h3", null, "#" + d.id + (d.item_id ? " · item #" + d.item_id : "") + " · " + (d.weight || "")));
+    card.appendChild(el("p", "q", d.question || ""));
+    if (d.note) card.appendChild(el("p", "why", "catatan: " + d.note));
+    var opts;
+    try { opts = JSON.parse(d.options || "[]"); } catch (e) { opts = []; }
+    if (opts.length) {
+      var box = el("div", "opts");
+      opts.forEach(function (o, i) {
+        var lab = el("label");
+        var r = el("input");
+        r.type = "radio";
+        r.name = "dec" + d.id;
+        r.value = o.label || String(i);
+        r.addEventListener("change", function () {
+          drafts["d" + d.id] = o.label || String(i);
+          var t = card.querySelector("textarea");
+          if (t) { t.value = drafts["d" + d.id]; }
+        });
+        lab.appendChild(r);
+        lab.appendChild(document.createTextNode((o.label || "?") + (o.evidence ? " — " + o.evidence : "")));
+        box.appendChild(lab);
+      });
+      card.appendChild(box);
+    } else {
+      card.appendChild(el("p", "why", "tanpa pilihan — pertanyaan ini diajukan mesin karena ia melewati ambang, dan ia tidak mengarang opsi untuk ambang yang baru saja dilanggarnya."));
+    }
+    var ta = el("textarea");
+    ta.placeholder = "tulis jawabanmu…";
+    ta.value = drafts["d" + d.id] || "";
+    ta.addEventListener("input", function () { drafts["d" + d.id] = ta.value; });
+    card.appendChild(ta);
+    var bar = el("div", "savebar");
+    var save = el("button", "btn primary", "Simpan jawaban");
+    var out = el("div", "reply");
+    save.addEventListener("click", function () {
+      if (!ta.value.trim()) { out.textContent = "jawaban kosong ditolak — pertanyaannya tetap menunggu"; out.className = "reply bad"; return; }
+      save.disabled = true;
+      out.textContent = "menulis ke PostgreSQL…";
+      out.className = "reply";
+      postJson("/api/decide", { id: d.id, answer: ta.value, by: "operator-gui" }).then(function (res) {
+        save.disabled = false;
+        showReply(out, res);
+        out.className = "reply " + (res.status === 200 ? "good" : "bad");
+        loadAutopilot();
+      });
+    });
+    bar.appendChild(save);
+    bar.appendChild(el("span", "note", "mencatat dulu, mengantar kemudian"));
+    card.appendChild(bar);
+    card.appendChild(out);
+    return card;
   }
 
   function renderDecideView() {
@@ -905,8 +1396,8 @@
 
     feed.textContent = "";
     feed.appendChild(head("The switch, as recorded"));
-    var switchCard = el("div", "card");
-    switchCard.appendChild(el("h3", null, "Autopilot is " + (state.mode || "UNKNOWN")));
+    var switchBox = el("div", "card");
+    switchBox.appendChild(el("h3", null, "Autopilot is " + (state.mode || "UNKNOWN")));
     [["changed by", state.changed_by || "—"],
      ["ON since", state.on_epoch ? new Date(Number(state.on_epoch) * 1000).toLocaleString() : "—"],
      ["ends", state.mode === "ON" ? timeLeft(state.until_epoch) : "—"],
@@ -917,9 +1408,9 @@
       var p = el("p", null);
       p.appendChild(el("b", null, r[0] + ": "));
       p.appendChild(document.createTextNode(r[1]));
-      switchCard.appendChild(p);
+      switchBox.appendChild(p);
     });
-    feed.appendChild(switchCard);
+    feed.appendChild(switchBox);
 
     /* Kontrol sakelar. `mode` menjawab siapa yang memegang mesin dan boleh diklik dari sini;
        `level` menjawab seberapa jauh tangan boleh bergerak dan tidak punya tombol di sini —
@@ -1272,6 +1763,26 @@
   }
 
   function render() {
+    if (view === "dashboard") {
+      var waiting = !ap;
+      document.getElementById("title").textContent = "Command center";
+      document.getElementById("crumb").textContent = "Dashboard";
+      document.getElementById("tabs").style.display = "none";
+      document.getElementById("stats").textContent = "";
+      document.getElementById("sub").textContent = waiting
+        ? "membaca PostgreSQL lewat /api/autopilot…"
+        : "fokus: " + (((ap.workspace || {}).focus) || "tidak terbaca")
+          + " · mode " + (((ap.autopilot || {}).mode) || "?")
+          + " · tangan " + (((ap.drain || {}).level) || "?")
+          + " · segarkan sendiri setiap 10 detik";
+      if (waiting) {
+        var f = document.getElementById("feed");
+        f.textContent = "";
+        f.appendChild(el("p", "empty", "loading…"));
+        loadAutopilot();
+      }
+      return renderDashboard();
+    }
     if (view === "decide") { return renderDecideView(); }
     if (view === "treasury") { return renderTreasuryView(); }
     if (view === "roles") {
@@ -1316,7 +1827,7 @@
         data = json;
         render();
         if (view === "treasury") loadTreasury();
-        if (view === "decide") loadAutopilot();
+        if (view === "decide" || view === "dashboard") loadAutopilot();
       })
       .catch(function () {
         document.getElementById("sub").textContent =
@@ -1337,6 +1848,10 @@
       document.querySelector(".nav.on").classList.remove("on");
       item.classList.add("on");
       view = item.dataset.view;
+      /* Hash ditulis kembali. Sebelum ini halaman hanya MEMBACA hash sekali saat buka, jadi
+         berpindah tab lalu me-reload mengembalikan kamu ke Activity feed — dan sebuah tombol
+         Back yang tidak pernah ke mana-mana. */
+      try { location.hash = "#" + view; } catch (e) { /* WebView menolak: bukan kesalahan data */ }
       window.scrollTo(0, 0);
       render();
     });
@@ -1352,17 +1867,25 @@
     render();
   });
 
-  // Deep link: /station#roles, #treasury, ... — sebuah view bisa dibuka dan diuji tanpa
-  // harus mengklik, dan tautan dari terminal mendarat di tempat yang dimaksud.
-  var wanted = (location.hash || "").replace(/^#/, "");
-  if (wanted) {
+  // Deep link: /station#dashboard, #roles, #treasury, ... — sebuah view bisa dibuka dan diuji
+  // tanpa harus mengklik, dan tautan dari terminal mendarat di tempat yang dimaksud.
+  function goto(wanted) {
+    /* #decide tetap hidup: bookmark lama tidak boleh mati karena sebuah tab dinamai ulang. */
+    if (wanted === "decide") { wanted = "dashboard"; }
     var link = document.querySelector('.nav[data-view="' + wanted + '"]');
-    if (link) {
-      document.querySelector(".nav.on").classList.remove("on");
-      link.classList.add("on");
-      view = wanted;
-    }
+    if (!link) { return false; }
+    var on = document.querySelector(".nav.on");
+    if (on) { on.classList.remove("on"); }
+    link.classList.add("on");
+    view = wanted;
+    render();
+    if (wanted === "decide" || wanted === "dashboard") { loadAutopilot(); }
+    return true;
   }
+  goto((location.hash || "").replace(/^#/, ""));
+  window.addEventListener("hashchange", function () {
+    goto((location.hash || "").replace(/^#/, ""));
+  });
 
   setInterval(function () { if (!document.hidden) load(); }, 10000);
   document.addEventListener("visibilitychange", function () { if (!document.hidden) load(); });

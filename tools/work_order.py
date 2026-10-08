@@ -358,7 +358,19 @@ def claim(conn, engine, item_id, who, dirty=_MEASURE, mode=None):
     # jendela: tick memutuskan "SEMI" pada detik X dan claim membaca lagi pada detik Y, dan
     # seseorang yang memindahkan sakelar di antaranya membuat satu baris diambil dengan keranjang
     # yang bukan milik keputusan tadi. Kalau tidak dibawa, barulah dibaca di sini.
-    ap = ({"mode": (mode or "").upper()} if mode is not None else (autopilot(conn, engine) or {}))
+    # `mode` dari pemanggil MENAMBAL baris, tidak menggantikannya. Versi pertama membuat
+    # `{"mode": ...}` saja, jadi setiap kolom baris lain hilang diam-diam bagi sisa fungsi —
+    # dan `night_state()` di bawah membaca ulang baris yang sama dari database, sehingga
+    # jendela ON bisa dinilai dengan mode yang berbeda dari yang dipakai pagar SEMI. Sekarang
+    # satu baris, satu mode, dan kalau keduanya bertentangan itu terdengar.
+    ap = autopilot(conn, engine) or {}
+    if mode is not None:
+        wanted_mode = (mode or "").upper()
+        if ap.get("mode") and ap["mode"] != wanted_mode:
+            # Bukan alasan untuk menolak — pemanggil yang sah (tick, hook) memang sudah membaca
+            # mode ini beberapa milidetik lalu. Tapi kalau berduaannya berbeda, itu dicatat.
+            ap["mode_disagreed"] = f"db={ap.get('mode')} caller={wanted_mode}"
+        ap["mode"] = wanted_mode
     if ap.get("mode") in ("ON", "SEMI"):
         # Hanya pembacaan git yang boleh dibawa naik (lihat `dirty` di docstring); jendela,
         # anggaran kegagalan, dan batas item dihitung DI SINI. Audit putaran lima menuntut dua hal
@@ -464,7 +476,8 @@ def release_claim(conn, engine, item_id, who):
     """
     ph = "%s" if engine == "POSTGRESQL" else "?"
     run(conn, engine,
-        f"UPDATE quest_tasks SET status='PENDING', claimed_by=NULL, lease_epoch=0 "
+        f"UPDATE quest_tasks SET status='PENDING', claimed_by=NULL, lease_epoch=0, "
+        f"model_assigned=NULL "
         f"WHERE id={ph} AND claimed_by={ph} AND status IN ('WORKING','CLAIMED')",
         (item_id, who))
     return get_item(conn, engine, item_id)
@@ -2178,6 +2191,36 @@ def selftest():
         ok, msg = guidelines_are_locked()
         check("permintaan mengubah pedoman ditolak dengan alasan, bukan diam",
               not ok and "TERKUNCI" in msg and "LOCKED_GUIDES" in msg, msg)
+        # Ditemukan audit Gemini: pelepasan klaim mengosongkan claimed_by tapi meninggalkan
+        # model_assigned, jadi baris PENDING masih menyebut mesin yang tidak lagi memegangnya —
+        # laporan yang salah tentang siapa yang bekerja, yang justru bentuk kegagalan §12.
+        conn.execute("INSERT INTO quest_tasks (title,status,cli_engine,claimed_by,lease_epoch,"
+                     "model_assigned) VALUES ('uji-lepas-nama','WORKING','qoder','qoder',?,'qoder')",
+                     (now() + 600,))
+        conn.commit()
+        rel_id = int(run(conn, "SQLITE",
+                         "SELECT id FROM quest_tasks WHERE title='uji-lepas-nama'")[0]["id"])
+        release_claim(conn, "SQLITE", rel_id, "qoder")
+        after_release = get_item(conn, "SQLITE", rel_id)
+        check("melepas klaim juga melepas nama mesin yang tercatat di barisnya",
+              not after_release.get("model_assigned"), str(after_release.get("model_assigned")))
+
+        # Jalur PostgreSQL (kunci advisory + finally) tidak bisa dijalankan oleh fixture SQLite.
+        # Yang ditegakkan di sini adalah STRUKTURNYA: klaim berada di dalam try yang finally-nya
+        # melepas kunci, sehingga tidak ada jalur return yang bisa keluar sambil memegang lock.
+        import inspect as _ins
+        _cs = _ins.getsource(claim)
+        _code = "\n".join(l for l in _cs.splitlines() if not l.strip().startswith("#"))
+        _try_at = _code.index("    try:")
+        _claim_at = _code.index("run(conn, engine, q,")
+        _unlock_at = _code.index("pg_advisory_unlock")
+        check("kunci advisory dilepas di finally, bukan di jalur normal yang bisa dilewati return",
+              _try_at < _claim_at < _unlock_at and "finally:" in _code[_try_at:_unlock_at],
+              f"try={_try_at} claim={_claim_at} unlock={_unlock_at}")
+        check("mode dari pemanggil MENAMBAL baris, bukan menggantikannya",
+              "ap = autopilot(conn, engine) or {}" in _code
+              and 'ap["mode"] = wanted_mode' in _code, "penggantian buta masih ada")
+
         # --- push tertunda harus menjadi keadaan yang tercatat ---
         # §6 menjanjikan "commit lokal + push masuk digest pagi" bila verifier tidak tercapai.
         # F10.9 dibuka justru karena janji seperti itu mengikat sejauh engine mengingatnya, jadi

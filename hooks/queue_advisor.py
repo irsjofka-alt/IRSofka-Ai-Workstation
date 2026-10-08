@@ -87,6 +87,20 @@ def build_note(cwd: str) -> str | None:
         return None
     import work_order as wo
     conn, engine = wo.connect()
+    try:
+        return _note_from(conn, engine, cwd, wo)
+    finally:
+        # Ditemukan audit Gemini 2026-10-08 12:4x: hook ini dipanggil SETIAP prompt dan setiap
+        # panggilan membuka koneksi yang tidak pernah ditutup. Tidak meledak hari ini karena
+        # pool PostgreSQL sabar; ia akan meledak di sesi yang panjang, dan itu jenis kegagalan
+        # yang datang sendiri sambil kita tidak melihatnya.
+        try:
+            conn.close()
+        except Exception:  # noqa: BLE001
+            pass
+
+
+def _note_from(conn, engine, cwd, wo):
     ap = wo.autopilot(conn, engine) or {}
     # `ready_items`, bukan SQL sendiri. Ini kesalahan yang baru saja dikutuk putaran lima dan
     # kulakukan lagi di berkas yang sama: query `status='PENDING'` milik sendiri, tanpa `norm()`,

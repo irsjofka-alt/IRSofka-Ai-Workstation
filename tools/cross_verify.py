@@ -315,6 +315,50 @@ def last_frame(raw):
 
 
 
+def tab_project(tab):
+    """Proyek MILIK TAB — dari `cli_profiles.json`, bukan dari cwd shell di dalamnya.
+
+    Dua angka ini berbeda dan yang benar adalah yang pertama. Terukur 2026-10-08 11:2x:
+    `pane_current_path` untuk tab qoder mengembalikan ~/.ai-station hanya karena perintah shell
+    terakhir melakukan `cd` ke sana, sementara Qoder sendiri diluncurkan di
+    ~/Documents/ai-workstation dan tidak pernah pindah. Memakai cwd shell sebagai pagar direktori
+    akan membuat SEMI menolak hampir selalu — kegagalan yang aman, tapi diam lagi, dan diam justru
+    yang sedang dibuang dari mesin ini. Yang menentukan "proyek siapa yang dikerjakan tab ini"
+    adalah kolom workspace profil, karena kolom itulah yang dipakai daemon saat menyalakannya.
+    """
+    try:
+        data = json.loads((Path.home() / ".ai-station" / "config" / "cli_profiles.json")
+                          .read_text(encoding="utf-8"))
+        prof = data.get(tab)
+        if not isinstance(prof, dict):
+            return None
+        ws = (prof.get("workspace") or "").strip()
+        return ws or None
+    except Exception:  # noqa: BLE001 — tidak terbaca = UNKNOWN, bukan "boleh mengetik"
+        return None
+
+
+def pane_cwd(tab):
+    """Direktori kerja pane saat ini, lewat tmux — atau None kalau tidak terbaca.
+
+    Ditambahkan 2026-10-08 setelah audit peer menemukan bahwa drainer bisa mengirim tugas proyek A
+    ke pane yang sedang berdiri di proyek B. Yang menentukan mesin mana yang mengerjakan adalah
+    barisnya, jadi mengirim tanpa tahu di mana pane itu berada membuat engine mengerjakan tree
+    yang bukan tree laporan. None berarti UNKNOWN, dan UNKNOWN tidak pernah berarti boleh mengetik.
+    """
+    try:
+        res = subprocess.run(
+            ["tmux", "-L", os.environ.get("STATION_TMUX_SOCKET", "irsofka"),
+             "display-message", "-p", "-t", f"station-{tab}", "#{pane_current_path}"],
+            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, timeout=10)
+        if res.returncode != 0:
+            return None
+        path = res.stdout.strip()
+        return path or None
+    except Exception:  # noqa: BLE001
+        return None
+
+
 def pane_is_busy(frame):
     return any(ch in frame for ch in SPINNER_CHARS) or "esc to cancel" in frame.lower()
 

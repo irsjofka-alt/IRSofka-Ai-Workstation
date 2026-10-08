@@ -146,6 +146,12 @@ CREATE_PG = [
         on_epoch BIGINT, until_epoch BIGINT, item_budget INT DEFAULT 12,
         items_done INT DEFAULT 0, off_reason TEXT, changed_by VARCHAR(60) DEFAULT 'operator',
         level VARCHAR(16) DEFAULT 'observe', level_until BIGINT)""",
+    # Sama seperti salinan SQLite-nya dan dengan alasan yang sama: `path` adalah identitasnya,
+    # dan tidak ada kolom yang mengklaim sedang aktif. UNIQUE membuat satu proyek tidak bisa
+    # terdaftar dua kali di bawah dua nama, yang adalah cara lain membuat laporan berbeda sendiri.
+    """CREATE TABLE IF NOT EXISTS workspaces (
+        id SERIAL PRIMARY KEY, display_name VARCHAR(200) NOT NULL,
+        path VARCHAR(600) NOT NULL UNIQUE, guidelines TEXT, created_epoch BIGINT)""",
 ]
 CREATE_SQLITE = [
     """CREATE TABLE IF NOT EXISTS quest_tasks (
@@ -160,7 +166,16 @@ CREATE_SQLITE = [
     """CREATE TABLE IF NOT EXISTS autopilot_state (
         id INTEGER PRIMARY KEY CHECK (id = 1), mode TEXT DEFAULT 'OFF',
         on_epoch INTEGER, until_epoch INTEGER, item_budget INTEGER DEFAULT 12,
-        items_done INTEGER DEFAULT 0, off_reason TEXT, changed_by TEXT DEFAULT 'operator')""",
+        items_done INTEGER DEFAULT 0, off_reason TEXT, changed_by TEXT DEFAULT 'operator',
+        level TEXT DEFAULT 'observe', level_until INTEGER)""",
+    # Daftar proyek. Tabel ini TIDAK menjawab "proyek mana yang sedang aktif" — jawaban itu
+    # tinggal di satu tempat seperti sebelumnya, symlink brain/workspaces/current_project yang
+    # ditulis brain_bridge. Menaruh flag `active` di sini akan membuat workstation punya dua
+    # pernyataan yang boleh berbeda tentang identitas proyek, dan engine yang harus memilih di
+    # antaranya adalah engine yang berhalusinasi tentang direktori mana yang sedang ia kerjakan.
+    """CREATE TABLE IF NOT EXISTS workspaces (
+        id INTEGER PRIMARY KEY AUTOINCREMENT, display_name TEXT NOT NULL,
+        path TEXT NOT NULL UNIQUE, guidelines TEXT, created_epoch INTEGER)""",
 ]
 NEW_COLUMNS = [
     ("quest_tasks", "phase", "VARCHAR(20)", "TEXT"),
@@ -182,7 +197,24 @@ NEW_COLUMNS = [
     # membangunkan apa pun, dan jawaban tanpa `answered_by` tidak bisa dibedakan dari jawaban mesin.
     ("decisions", "item_id", "BIGINT", "INTEGER"),
     ("decisions", "answered_by", "VARCHAR(60)", "TEXT"),
+    # `origin` menjawab "siapa yang menulis baris antrean ini" dan hanya punya tiga isi yang
+    # bisa dibuktikan: 'roadmap' (ditulis `seed` dari ROADMAP_ITEMS), 'operator' (ditulis `queue`
+    # dariDashboard), dan 'legacy' (baris yang sudah ada sebelum kolom ini ada — asalnya tidak
+    # diketahui, dan menebak 'roadmap' akan membuat SEMI mengaku mengerjakan perintah orang
+    # yang bukan perintahnya). Nilainya didefinisikan di sini, di kolom, satu kali (§12).
+    ("quest_tasks", "origin", "VARCHAR(16)", "TEXT"),
+    # `ws_path` adalah proyek baris ini — direktori tempat gerbangnya dijalankan. KOSONG berarti
+    # hari kemarin persis: `REPO`. Itulah sebabnya kolom ini boleh ditambahkan tanpa menyentuh
+    # satu pun baris lama: tidak ada yang dipaksa punya proyek sebelum ia memang punya satu.
+    ("quest_tasks", "ws_path", "TEXT", "TEXT"),
 ]
+
+# Nilai `origin` untuk baris yang sudah ada ketika kolomnya belum ada. Ini pernyataan tentang
+# sejarah, bukan tentang perilaku: 'legacy' tetap ditawarkan ke ON (sama seperti sebelum kolom ini
+# ada) dan tetap tidak pernah diambil SEMI.
+ORIGIN_LEGACY = "legacy"
+ORIGIN_ROADMAP = "roadmap"
+ORIGIN_OPERATOR = "operator"
 
 # Lebar kolom yang ditumbuhkan, bukan diganti isinya. `weight` lahir sebagai VARCHAR(10) pada
 # saat kosakatanya masih muat di situ; bobot ketiga dari invarian 3 — `irreversible`, 12 huruf —
@@ -233,6 +265,18 @@ def ensure_schema(conn, engine: str) -> list[str]:
         cur.execute("INSERT OR IGNORE INTO autopilot_state (id) VALUES (1)")
     else:
         cur.execute("INSERT INTO autopilot_state (id) VALUES (1) ON CONFLICT DO NOTHING")
+    # Baris yang lebih tua dari kolomnya tidak bisa diklasifikasikan dengan menebak. Yang bisa
+    # diukur: `seed` selalu menulis `phase`, dan tidak ada jalur lain yang menulisnya — jadi baris
+    # ber-phase adalah butir ROADMAP, dan sisanya benar-benar tidak diketahui asalnya. Menebak
+    # 'roadmap' pada semuanya membuat SEMI mengaku mengerjakan perintah orang, dan menandai
+    # semuanya 'legacy' membuat enam butir ROADMAP yang sudah hidup di sini kehilangan asalnya.
+    # 'legacy' tetap ditawarkan ke ON persis seperti sebelumnya, dan tetap tidak pernah diambil SEMI.
+    for label, clause in ((ORIGIN_ROADMAP, "phase IS NOT NULL"), (ORIGIN_LEGACY, "phase IS NULL")):
+        try:
+            cur.execute(f"UPDATE quest_tasks SET origin='{label}' "
+                        f"WHERE origin IS NULL AND {clause}")
+        except Exception as exc:  # noqa: BLE001
+            log.append(f"skip backfill origin: {exc}")
     conn.commit() if engine != "POSTGRESQL" else None
     cur.close()
     return log
@@ -280,12 +324,16 @@ def get_item(conn, engine, item_id):
 
 
 # --- mesin kerja ------------------------------------------------------------
-def claim(conn, engine, item_id, who):
+def claim(conn, engine, item_id, who, dirty=_MEASURE):
     """Ambil satu item. Gagal dengan alasan, bukan dengan kerja ganda.
 
     PostgreSQL punya UPDATE ... RETURNING; SQLite tidak. Keduanya harus menghasilkan keputusan
     yang sama, jadi klaim dilakukan sebagai UPDATE tersyarat lalu dibaca kembali — bukan
     'select lalu update', yang memenangkan siapa pun yang paling cepat bertanya.
+
+    `dirty` adalah sambatan uji yang sama yang sudah dipakai `night_state`: selftest SQLite berjalan
+    sementara repo NYATA sedang disunting, dan membaca git live akan membuat hasilnya bergantung pada
+    siapa yang sedang menulis kode. Produksi tidak pernah mengirimnya, jadi pagar §6 tetap berdiri.
     """
     item = get_item(conn, engine, item_id)
     if not item:
@@ -298,10 +346,18 @@ def claim(conn, engine, item_id, who):
     if holder and holder != who and lease > now():
         return False, f"dipegang {holder} sampai lease berakhir ({lease - now()}s lagi)"
     ap = autopilot(conn, engine) or {}
-    if ap.get("mode") == "ON":
-        st = night_state(conn, engine)
+    if ap.get("mode") in ("ON", "SEMI"):
+        st = night_state(conn, engine, dirty=dirty)
         if st["why"]:
             return False, "circuit breaker: " + "; ".join(st["why"])
+    if ap.get("mode") == "SEMI" and (item.get("origin") or ORIGIN_LEGACY) != ORIGIN_OPERATOR:
+        # Batas SEMI ditegakkan di pintu, bukan hanya di penyaring antrean — mengikuti preseden
+        # pemutus yang hidup di dalam claim(): siapa pun yang mengabaikan `next_item(origin=...)`
+        # tetap menabrak angka yang sama. Item roadmap tidak hilang; ia hanya tidak boleh dikerjakan
+        # saat yang memegang mesin adalah perintah orang.
+        return False, (f"SEMI hanya mengerjakan perintah operator, dan item {item_id} asalnya "
+                       f"{item.get('origin') or ORIGIN_LEGACY!r} — naikkan ke ON untuk antrean "
+                       "roadmap")
     ph = "%s" if engine == "POSTGRESQL" else "?"
     q = (f"UPDATE quest_tasks SET status='WORKING', claimed_by={ph}, lease_epoch={ph}, "
          f"model_assigned={ph} WHERE id={ph}")
@@ -376,7 +432,7 @@ def finish(conn, engine, item_id, status, evidence=None, reason=None):
     return True, f"{item['title']} -> {status}"
 
 
-def next_item(conn, engine, skip_blocked=True, respect_due=False):
+def next_item(conn, engine, skip_blocked=True, respect_due=False, origin=None):
     """Item berikutnya yang siap: semua dependensinya COMPLETED, dan lease-nya tidak dipegang orang.
 
     `UNAVAILABLE` tidak pernah ditawarkan, sama seperti `FAILED`: keduanya adalah kesimpulan yang
@@ -388,16 +444,24 @@ def next_item(conn, engine, skip_blocked=True, respect_due=False):
     (drainer, F10.3). Filternya tinggal di sini karena menentukan "apa berikutnya" adalah bagian
     dari kosakata antrean — kalau drainer menyusun urutannya sendiri, ada dua definisi "berikutnya"
     dan tidak ada yang bisa mengatakan yang mana yang dibaca GUI (§12).
+
+    `origin` adalah batas antara SEMI dan FULL AUTO, dan ia disaring di fungsi yang sama untuk
+    alasan yang sama. None berarti "apa pun", jadi setiap pemanggil lama berperilaku persis seperti
+    sebelumnya; `ORIGIN_OPERATOR` berarti hanya perintah yang manusia tulis sendiri ke database yang
+    boleh muncul — dan itulah seluruh isi kata "semi": mesinnya tetap otomatis, tetapi yang ia
+    kerjakan adalah perintah orang, bukan apa pun yang kebetulan tersedia.
     """
     rows = run(conn, engine,
-               "SELECT id, title, status, depends_on, claimed_by, lease_epoch, phase, due_epoch "
-               "FROM quest_tasks ORDER BY id")
+               "SELECT id, title, status, depends_on, claimed_by, lease_epoch, phase, due_epoch, "
+               "origin, ws_path, cli_engine FROM quest_tasks ORDER BY id")
     done = {int(r["id"]) for r in rows if norm(r["status"]) == "COMPLETED"}
     for r in rows:
         state = norm(r["status"])
         if state in ("COMPLETED", "FAILED", "UNAVAILABLE"):
             continue
         if state in ("BLOCKED", "HUMAN", "PARKED") and skip_blocked:
+            continue
+        if origin is not None and (r.get("origin") or ORIGIN_LEGACY) != origin:
             continue
         if respect_due and int(r.get("due_epoch") or 0) > now():
             continue
@@ -668,14 +732,29 @@ def autopilot(conn, engine, mode=None, minutes=None, budget=None, who="operator"
         return row
     ph = "%s" if engine == "POSTGRESQL" else "?"
     until = now() + int(minutes) * 60 if minutes else None
-    if mode.upper() == "ON":
+    wanted = (mode or "").upper()
+    if wanted == "ON":
         run(conn, engine,
             f"UPDATE autopilot_state SET mode='ON', on_epoch={ph}, until_epoch={ph}, "
             f"item_budget={ph}, items_done=0, off_reason=NULL, changed_by={ph} WHERE id=1",
             (now(), until, budget or 12, who))
+    elif wanted == "SEMI":
+        # SEMI = otomatis dengan manusia di meja. Bedanya dengan ON bukan derajat otonomi tangan
+        # (tangga `level` tetap milik keduanya) melainkan APA yang boleh diambil dari antrean:
+        # hanya perintah yang operator tulis sendiri ke SQL. Jendela waktu ikut dibuka di sini
+        # karena `items_done_in_window` dan pemutus malam membacanya — tanpa on_epoch yang benar,
+        # laporan "berapa item selesai malam ini" menjadi nol untuk SEMI, dan laporan yang salah
+        # lebih berbahaya daripada laporan yang tidak ada.
+        run(conn, engine,
+            f"UPDATE autopilot_state SET mode='SEMI', on_epoch={ph}, until_epoch={ph}, "
+            f"item_budget={ph}, items_done=0, off_reason=NULL, changed_by={ph}, "
+            f"level='observe', level_until=NULL WHERE id=1",
+            (now(), until, budget or 12, who))
     else:
         # OFF juga menutup tangan. Level `resume` yang dibiarkan menggantung akan dibuka lagi
-        # oleh ON berikutnya tanpa ada orang yang menaikkannya malam itu.
+        # oleh ON berikutnya tanpa ada orang yang menaikkannya malam itu. Cabang ini tetap jadi
+        # SATU-SATUNYA tempat nilai tak dikenal mendarat: invarian 6 menyatakan mematikan mesin
+        # tidak boleh butuh kerja sama AI, jadi jalur mati harus tetap mati walau ada typo.
         run(conn, engine,
             f"UPDATE autopilot_state SET mode='OFF', off_reason={ph}, changed_by={ph}, "
             f"level='observe', level_until=NULL WHERE id=1",
@@ -994,9 +1073,10 @@ def seed(conn, engine, items):
                 continue
             ph = "%s" if engine == "POSTGRESQL" else "?"
             run(conn, engine,
-                f"INSERT INTO quest_tasks (title, status, phase, check_command, summary) "
-                f"VALUES ({ph}, 'PENDING', {ph}, {ph}, {ph})",
-                (title, phase, check, "dipetakan dari ROADMAP.md oleh work_order seed"))
+                f"INSERT INTO quest_tasks (title, status, phase, check_command, summary, origin) "
+                f"VALUES ({ph}, 'PENDING', {ph}, {ph}, {ph}, {ph})",
+                (title, phase, check, "dipetakan dari ROADMAP.md oleh work_order seed",
+                 ORIGIN_ROADMAP))
             row = run(conn, engine, "SELECT id FROM quest_tasks WHERE title=%s"
                       if engine == "POSTGRESQL" else "SELECT id FROM quest_tasks WHERE title=?",
                       (title,))
@@ -1061,6 +1141,245 @@ ROADMAP_ITEMS = [
      "grep -qE '\"kind\": ?\"push_verified\".*sha=[0-9a-f]{7,40}.*model=[A-Za-z0-9._:-]+' "
      "logs/station_events.jsonl"),
 ]
+
+
+# --- proyek: satu kata untuk "di mana pekerjaan ini terjadi" ----------------
+# Workstation punya TIGA pembacaan direktori yang sudah hidup sebelum Dashboard ada, dan itu
+# persis cara mesin jadi bingung identitas: REPO (dipakai gerbang drainer dan aturan working-tree
+# kotor), TabProfile.workspace (dipakai pane), dan symlink brain/workspaces/current_project
+# (ditulis brain_bridge, tidak pernah dibaca Rust). Yang ditambahkan modul ini hanya SATU kata
+# baru — `ws_path` per baris tugas — dan ia membiarkannya KOSONG berarti hari kemarin persis.
+# REPO sengaja BUKAN sebuah proyek: ia keadaan git mesin ini, milik aturan §6, dan menyatukannya
+# dengan "proyek" akan membuat dirty-tree rule memeriksa direktori yang salah besok pagi.
+WORKSPACE_LINK = REPO / "brain" / "workspaces" / "current_project"
+GUIDE_MAX_FILES = 8
+GUIDE_MAX_DEPTH = 2
+GUIDE_MAX_CHARS = 3200          # sama dengan plafon yang sudah dipakai auto_restore.py
+GUIDE_SKIP = (".git", "node_modules", "target", "build", "dist", "__pycache__", ".venv", "runtime")
+# Pedoman yang selalu boleh dipilih, di proyek apa pun, karena ia milik workstation: tanpanya
+# sebuah proyek game di direktori lain tidak punya jalan untuk tunduk pada ROADMAP.
+CANONICAL_GUIDES = ("ROADMAP.md", "AGENTS.md", "documents/AGENTS.md",
+                    "brain/DESIGN_NOTES.md", "brain/memory/projects/ARCHITECTURE.md")
+
+
+def focused_workspace() -> Path | None:
+    """Proyek yang sedang difokuskan — dibaca dari symlink, satu-satunya tempat jawaban itu ada.
+
+    None berarti tidak ada, dan bukan "berarti REPO". Sebuah tabel workspaces tidak pernah boleh
+    mengklaim fokus: dua pernyataan yang boleh berbeda tentang identitas proyek adalah engine yang
+    mengerjakan direktori sambil melaporkan direktori lain.
+    """
+    try:
+        return WORKSPACE_LINK.resolve(strict=True)
+    except OSError:
+        return None
+
+
+def resolve_workspace(item) -> Path:
+    """Direktori tempat gerbang baris ini dijalankan. Baris lama (kolom kosong) = REPO, persis."""
+    raw = (item or {}).get("ws_path")
+    if not (raw or "").strip():
+        return REPO
+    return Path(raw).expanduser().resolve(strict=False)
+
+
+def known_engines() -> list[str]:
+    """Nama tab yang benar-benar terdaftar, dibaca saat ini dipakai — bukan dari ingatan (§12)."""
+    try:
+        data = json.loads((REPO / "config" / "cli_profiles.json").read_text())
+        return [k for k, v in data.items() if isinstance(v, dict)]
+    except Exception:  # noqa: BLE001
+        return []
+
+
+def detect_guidelines(root: Path | None) -> list[dict]:
+    """Berkas .md yang TERDETEKSI, bukan yang diketik bebas.
+
+    Dua sumber dan tidak ada yang ketiga: markdown di dalam proyek sendiri (kedalaman dan jumlah
+    dibatasi, direktori benda-jelek dilewati) dan pedoman milik workstation di REPO. Menandai
+    `canonical` supaya layar bisa membedakan "pedoman proyek" dari "pedoman mesin" — keduanya
+    dibaca engine, tapi yang kedua berlaku bahkan ketika Bro fokus ke proyek game di disk lain.
+    """
+    found: list[dict] = []
+    seen: set[str] = set()
+
+    def add(path: Path, base: Path, canonical: bool):
+        try:
+            rel = str(path.relative_to(base))
+        except ValueError:
+            return
+        if rel in seen:
+            return
+        seen.add(rel)
+        found.append({"path": rel, "abs": str(path), "canonical": canonical,
+                      "size": path.stat().st_size})
+
+    if root and root.is_dir():
+        for dirpath, dirnames, filenames in os.walk(root):
+            depth = len(Path(dirpath).relative_to(root).parts)
+            if depth >= GUIDE_MAX_DEPTH:
+                dirnames[:] = []
+            else:
+                dirnames[:] = [d for d in dirnames if d not in GUIDE_SKIP and not d.startswith(".")]
+            for name in sorted(filenames):
+                if name.lower().endswith(".md") and len(found) < GUIDE_MAX_FILES:
+                    add(Path(dirpath) / name, root, False)
+    for rel in CANONICAL_GUIDES:
+        p = REPO / rel
+        if p.is_file():
+            add(p, REPO, True)
+    return found
+
+
+def list_workspaces(conn, engine) -> dict:
+    """Daftar proyek + fokus yang Diturunkan. Tidak ada kolom `active` untuk dibaca."""
+    rows = run(conn, engine, "SELECT id, display_name, path, guidelines, created_epoch "
+                             "FROM workspaces ORDER BY id")
+    focus = focused_workspace()
+    out = []
+    for r in rows:
+        try:
+            resolved = Path(r["path"]).expanduser().resolve(strict=False)
+        except OSError:
+            resolved = None
+        out.append({**r,
+                    "is_focus": bool(focus) and resolved == focus,
+                    "exists": bool(resolved and Path(r["path"]).is_dir())})
+    return {"workspaces": out,
+            "focus": str(focus) if focus else None,
+            "focus_readable": focus is not None}
+
+
+def create_workspace(conn, engine, display_name: str, path: str) -> tuple[bool, str, int | None]:
+    """Daftarkan sebuah proyek. Mendaftarkan tidak memindahkan fokus — itu keputusan terpisah."""
+    target = Path(path).expanduser()
+    if not target.is_dir():
+        return False, f"{path} bukan direktori yang bisa dibaca — tidak ada yang didaftarkan", None
+    real = str(target.resolve(strict=False))
+    name = (display_name or "").strip()[:120] or Path(real).name
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    before = run(conn, engine, "SELECT id, display_name FROM workspaces WHERE path=" + ph, (real,))
+    if engine == "POSTGRESQL":
+        run(conn, engine,
+            "INSERT INTO workspaces (display_name, path, created_epoch) VALUES (%s, %s, %s) "
+            "ON CONFLICT (path) DO NOTHING", (name, real, now()))
+    else:
+        run(conn, engine,
+            "INSERT OR IGNORE INTO workspaces (display_name, path, created_epoch) VALUES (?, ?, ?)",
+            (name, real, now()))
+    rows = run(conn, engine, "SELECT id, display_name FROM workspaces WHERE path=" + ph, (real,))
+    if not rows:
+        return False, "baris tidak terbalik setelah ditulis — dilaporkan gagal, bukan dikira berhasil", None
+    # Dibaca SEBELUM dan SESUDAH, bukan disimpulkan dari jumlah kolom yang berubah: menyebut
+    # pendaftaran ulang "terdaftar" padahal path-nya sudah ada di bawah nama lain adalah laporan
+    # yangarang, dan satu laporan karangan membuat seluruh layar tidak lagi dipercaya (§12.2).
+    label = "sudah terdaftar" if before else "terdaftar"
+    return True, f"proyek {rows[0]['display_name']} {label} di {real}", int(rows[0]["id"])
+
+
+def set_guidelines(conn, engine, ws_id: int, paths: list[str]) -> tuple[bool, str]:
+    """Simpan pilihan pedoman sebuah proyek. Yang disimpan hanya path TERDETEKSI."""
+    rows = run(conn, engine, "SELECT id, path FROM workspaces WHERE id=%s"
+               if engine == "POSTGRESQL" else "SELECT id, path FROM workspaces WHERE id=?", (ws_id,))
+    if not rows:
+        return False, f"workspace {ws_id} tidak ada"
+    allowed = {g["path"] for g in detect_guidelines(Path(rows[0]["path"]))}
+    kept = [p for p in paths if p in allowed]
+    dropped = [p for p in paths if p not in allowed]
+    run(conn, engine, "UPDATE workspaces SET guidelines=%s WHERE id=%s"
+        if engine == "POSTGRESQL" else "UPDATE workspaces SET guidelines=? WHERE id=?",
+        (",".join(kept), ws_id))
+    msg = f"{len(kept)} pedoman tersimpan"
+    if dropped:
+        msg += f"; {len(dropped)} ditolak karena tidak terdeteksi: {', '.join(dropped[:3])}"
+    return True, msg
+
+
+def focus_workspace(conn, engine, needle: str, who: str = "operator-gui") -> tuple[bool, str]:
+    """Pindahkan fokus lewat PEMILIK yang sudah ada: brain_bridge.link_workspace().
+
+    Fungsi ini tidak menulis symlink sendiri. Membuat penulis kedua atas satu keadaan adalah cara
+    tercepat menghasilkan dua alat yang saling menyangkal, dan §9 sudah menunjuk satu tempat.
+    """
+    listed = list_workspaces(conn, engine)["workspaces"]
+    needle = (needle or "").strip()
+    hit = next((w for w in listed if str(w["id"]) == needle or w["display_name"] == needle
+                or w["path"] == needle), None)
+    if not hit:
+        return False, (f"proyek {needle!r} tidak terdaftar — daftarkan lebih dulu lewat `ws create`"
+                       f" (yang ada: {', '.join(w['display_name'] for w in listed[:5]) or 'kosong'})")
+    try:
+        import brain_bridge
+    except Exception as exc:  # noqa: BLE001
+        return False, f"brain_bridge tidak bisa dimuat ({type(exc).__name__}: {exc}) — fokus tidak diubah"
+    ok = brain_bridge.link_workspace(Path(hit["path"]))
+    if not ok:
+        return False, f"link_workspace menolak {hit['path']} — fokus tidak diubah"
+    return True, (f"fokus = {hit['display_name']} ({hit['path']}) oleh {who}; "
+                  "perpane cli_profiles TIDAK diubah fungsi ini — itu jalur /api/cli/config")
+
+
+def queue_command(conn, engine, title: str, cli_engine: str, gate: str = "",
+                  ws_path: str = "", who: str = "operator") -> tuple[bool, str, int | None]:
+    """Satu perintah operator masuk antrean yang sama dengan pekerjaan roadmap.
+
+    Tabel kedua untuk kata "antrean" akan berarti dua definisi "berikutnya" (§12), jadi baris ini
+    adalah quest_tasks biasa dengan `origin='operator'`. `cli_engine` WAJIB terisi dan wajib nama
+    yang terdaftar: baris tanpa tujuan pernah terbukti direset ke PENDING oleh drainer sebagai
+    NO_TARGET, dan menolak di pintu lebih murah daripada menyimpan baris yang tak bisa dikirim.
+    """
+    title = (title or "").strip()
+    if not title:
+        return False, "perintah kosong ditolak — tidak ada baris yang ditulis", None
+    target = (cli_engine or "").strip()
+    known = known_engines()
+    if not target:
+        return False, f"cli_engine wajib diisi dan tidak boleh ditebak (terdaftar: {', '.join(known)})", None
+    if known and target not in known:
+        return False, f"{target!r} bukan tab terdaftar (terdaftar: {', '.join(known)})", None
+    where = (ws_path or "").strip()
+    if where:
+        p = Path(where).expanduser()
+        if not p.is_dir():
+            return False, f"{where} bukan direktori — perintah ditolak, tidak ada yang antre", None
+        where = str(p.resolve(strict=False))
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    run(conn, engine,
+        f"INSERT INTO quest_tasks (title, status, phase, check_command, summary, cli_engine, "
+        f"origin, ws_path) VALUES ({ph}, 'PENDING', 'operator', {ph}, {ph}, {ph}, {ph}, {ph})",
+        (title[:255], (gate or "").strip()[:2000],
+         f"perintah operator lewat Dashboard ({who})", target, ORIGIN_OPERATOR, where or None))
+    rows = run(conn, engine,
+               "SELECT id FROM quest_tasks WHERE title=%s ORDER BY id DESC LIMIT 1"
+               if engine == "POSTGRESQL" else
+               "SELECT id FROM quest_tasks WHERE title=? ORDER BY id DESC LIMIT 1", (title[:255],))
+    if not rows:
+        return False, "baris tidak terbalik setelah ditulis — dilaporkan gagal", None
+    return True, f"perintah antre sebagai item {rows[0]['id']} untuk {target}", int(rows[0]["id"])
+
+
+def semi_status(conn, engine) -> dict:
+    """Yang SEMI butuhkan untuk melaporkan dirinya sendiri — semuanya turunan, tidak ada angka karangan."""
+    listed = list_workspaces(conn, engine)
+    pend = run(conn, engine,
+               "SELECT COUNT(*) AS n FROM quest_tasks WHERE origin=%s AND status IN ('PENDING','CLAIMED')"
+               if engine == "POSTGRESQL" else
+               "SELECT COUNT(*) AS n FROM quest_tasks WHERE origin=? AND status IN ('PENDING','CLAIMED')",
+               (ORIGIN_OPERATOR,))
+    working = run(conn, engine,
+                  "SELECT id, title, cli_engine, claimed_by FROM quest_tasks "
+                  "WHERE origin=%s AND status IN ('WORKING','CLAIMED') ORDER BY id"
+                  if engine == "POSTGRESQL" else
+                  "SELECT id, title, cli_engine, claimed_by FROM quest_tasks "
+                  "WHERE origin=? AND status IN ('WORKING','CLAIMED') ORDER BY id",
+                  (ORIGIN_OPERATOR,))
+    return {"operator_pending": int(pend[0]["n"]) if pend else 0,
+            "operator_working": working,
+            "engines_with_a_claim": sorted({r["cli_engine"] for r in working if r.get("cli_engine")}),
+            "focus": listed["focus"], "focus_readable": listed["focus_readable"],
+            "workspaces": listed["workspaces"],
+            "guidelines_available": detect_guidelines(focused_workspace())[:GUIDE_MAX_FILES],
+            "known_engines": known_engines()}
 
 
 # --- selftest ---------------------------------------------------------------
@@ -1545,6 +1864,97 @@ def selftest():
         check("tidak ada gerbang ROADMAP yang dibuktikan oleh prosa action_log", not prose, str(prose))
         no_gate = [title for _k, title, _p, _d, gate in ROADMAP_ITEMS if not (gate or "").strip()]
         check("setiap butir ROADMAP yang di-seed membawa gerbang", not no_gate, str(no_gate))
+
+        # --- Dashboard: SEMI, asal baris, dan identitas proyek ----------------
+        # Kegagalan yang diincar blok ini bukan crash, melainkan DUA laporan yang berbeda: mode
+        # yang tersimpan sebagai OFF padahal tombolnya SEMI, antrean roadmap yang ikut dikerjakan
+        # "karena toh sudah antri", dan dua tempat yang boleh menyatakan proyek mana yang aktif.
+        # Ketiganya tidak kelihatan dari layar — karena itu ketiganya diuji di sini.
+        conn.execute("UPDATE quest_tasks SET completed_at=datetime('now','-2 days') "
+                     "WHERE status IN ('FAILED','PARKED')")
+        conn.commit()
+
+        ap = autopilot(conn, "SQLITE", "SEMI", minutes=30, who="selftest")
+        check("SEMI tersimpan sebagai SEMI, tidak jatuh ke cabang OFF",
+              ap["mode"] == "SEMI" and ap["level"] == "observe", str(ap))
+        ap = autopilot(conn, "SQLITE", "semii", who="selftest")
+        check("nilai mode yang tidak dikenal mendarat di OFF (invarian 6: mati tetap mati)",
+              ap["mode"] == "OFF" and ap["level"] == "observe", str(ap))
+        autopilot(conn, "SQLITE", "SEMI", minutes=30, who="selftest")
+
+        seed(conn, "SQLITE", [("kRM", "RM-only", "build", None, "true")])
+        rm_id = int(run(conn, "SQLITE", "SELECT id FROM quest_tasks WHERE title='RM-only'")[0]["id"])
+        ok, msg, op_id = queue_command(conn, "SQLITE", "perintah bro", "qoder", "", str(REPO))
+        check("queue menulis perintah operator ke antrean yang sama", ok and op_id, msg)
+        pick = next_item(conn, "SQLITE", origin=ORIGIN_OPERATOR)
+        check("SEMI hanya melihat perintah operator di antrean",
+              pick and pick["origin"] == ORIGIN_OPERATOR and int(pick["id"]) == op_id, str(pick))
+        check("tanpa origin antrean tetap apa pun — tidak ada pemanggil lama yang berubah",
+              next_item(conn, "SQLITE") is not None)
+        ok, msg = claim(conn, "SQLITE", rm_id, "drainer", dirty=False)
+        check("SEMI menolak mengklaim item roadmap di pintu, bukan hanya di penyaring",
+              not ok and "SEMI" in msg, msg)
+        ok, msg = claim(conn, "SQLITE", op_id, "drainer", dirty=False)
+        check("SEMI boleh mengklaim perintah operator", ok, msg)
+        ok, msg = claim(conn, "SQLITE", op_id, "drainer", dirty=True)
+        check("working tree kotor menutup SEMI juga — §6 tidak punya mode pengecualian",
+              not ok and "working tree kotor" in msg, msg)
+        for i in range(NIGHT_MAX_FAILURES):
+            conn.execute("INSERT INTO quest_tasks (title,status,completed_at) "
+                         "VALUES (?,?,datetime('now'))", (f"semi-fail-{i}", "FAILED"))
+        conn.commit()
+        ok, msg, op2 = queue_command(conn, "SQLITE", "perintah setelah pemutus", "qoder")
+        # `dirty=False` di sini bukan kenyamanan: tanpa itu pesan penolakan bisa berasal dari tree
+        # yang sedang disunting dan ceknya tetap hijau karena kata "circuit breaker" muncul.
+        # Yang sedang dibuktikan adalah bahwa TIGA BARIS GAGAL menutup SEMI, jadi hanya itu yang
+        # boleh menutupnya.
+        blocked = claim(conn, "SQLITE", op2, "drainer", dirty=False)
+        check("pemutus malam menutup SEMI persis seperti menutup ON",
+              not blocked[0] and "kegagalan berturut-turut" in blocked[1], str(blocked))
+
+        ok, msg, _ = queue_command(conn, "SQLITE", "tanpa engine", "")
+        check("queue menolak baris tanpa cli_engine alih-alih memilih favorit",
+              not ok and "cli_engine" in msg, msg)
+        ok, msg, _ = queue_command(conn, "SQLITE", "engine hantu", "engine-yang-tidak-ada")
+        check("queue menolak engine yang tidak terdaftar dan menyebut yang ada",
+              not ok and "qoder" in msg, msg)
+        ok, msg, _ = queue_command(conn, "SQLITE", "proyek hantu", "qoder", "", "/tmp/tidak-ada-x")
+        check("queue menolak direktori proyek yang tidak ada", not ok, msg)
+
+        check("baris tanpa ws_path mengerjakan REPO persis seperti dulu",
+              resolve_workspace({"ws_path": None}) == REPO and resolve_workspace({}) == REPO)
+        check("baris dengan ws_path mengerjakan direktorinya sendiri — gerbang dan engine di tree "
+              "yang sama, bukan laporan tentang orang lain",
+              resolve_workspace({"ws_path": "/tmp"}) == Path("/tmp").resolve(),
+              str(resolve_workspace({"ws_path": "/tmp"})))
+
+        ok, msg, ws_id = create_workspace(conn, "SQLITE", "Proyek Uji", "/tmp")
+        check("proyek didaftarkan", ok and ws_id, msg)
+        listed = list_workspaces(conn, "SQLITE")
+        planted = next((w for w in listed["workspaces"] if w["id"] == ws_id), None)
+        check("baris registry tidak menciptakan fakta fokus: is_focus mengikuti symlink, apa pun "
+              "isyarat di tabel",
+              planted is not None
+              and planted["is_focus"] == (Path("/tmp").resolve() == focused_workspace()),
+              str(planted))
+        cols = [r[1] for r in conn.execute("PRAGMA table_info(workspaces)")]
+        check("workspaces tidak punya kolom active — satu definisi fokus, bukan dua",
+              "active" not in cols, str(cols))
+        ok, msg, _ = create_workspace(conn, "SQLITE", "Nama Lain", "/tmp")
+        same = run(conn, "SQLITE", "SELECT id FROM workspaces WHERE path=?",
+                   (str(Path("/tmp").resolve()),))
+        check("path UNIQUE: proyek yang sama tidak terdaftar dua kali di bawah dua nama",
+              ok and len(same) == 1, f"{msg} rows={len(same)}")
+        ok, msg = focus_workspace(conn, "SQLITE", "proyek-yang-tidak-ada")
+        check("focus menolak nama tak terdaftar sebelum menyentuh symlink", not ok, msg)
+        ok, msg = set_guidelines(conn, "SQLITE", ws_id, ["ROADMAP.md", "rahasia.md"])
+        check("pedoman hanya menerima yang terdeteksi dan menyebut yang dibuang",
+              ok and msg.startswith("1 pedoman tersimpan") and "rahasia.md" in msg, msg)
+        semi = semi_status(conn, "SQLITE")
+        check("semi_status menurunkan antrean operator, daftar proyek, dan tab terdaftar",
+              semi["operator_pending"] >= 1 and isinstance(semi["workspaces"], list)
+              and semi["known_engines"],
+              str({k: semi[k] for k in ("operator_pending", "known_engines")}))
     finally:
         conn.close()
         tmp.unlink(missing_ok=True)
@@ -1773,6 +2183,10 @@ def status(conn, engine, older_than=180):
         "decisions_answered": dec_done,
         "stalled": stalled(conn, engine, older_than),
         "next": nxt,
+        # Dashboard butuh wajah proyek, bukan hanya wajah antrean. Isinya diturunkan oleh satu
+        # fungsi di atas supaya `/api/autopilot` tetap jalan tipis: menambah angka di handler Rust
+        # adalah cara membuat dua laporan yang boleh berbeda (§12.2).
+        "workspace": semi_status(conn, engine),
     }
 
 
@@ -1792,12 +2206,30 @@ def main(argv=None):
     p = sub.add_parser("complete"); p.add_argument("id", type=int); p.add_argument("--evidence", default="")
     p = sub.add_parser("block"); p.add_argument("id", type=int); p.add_argument("--reason", required=True)
     p = sub.add_parser("human"); p.add_argument("id", type=int); p.add_argument("--reason", required=True)
-    sub.add_parser("next")
+    p = sub.add_parser("next"); p.add_argument("--origin", default=None,
+                                               choices=[ORIGIN_OPERATOR, ORIGIN_ROADMAP,
+                                                        ORIGIN_LEGACY],
+                                               help="batasi pada satu asal baris; kosong = apa pun")
     sub.add_parser("list")
     sub.add_parser("stalled")
-    p = sub.add_parser("autopilot"); p.add_argument("mode", nargs="?", choices=["on", "off", "show"])
+    p = sub.add_parser("autopilot"); p.add_argument("mode", nargs="?",
+                                                   choices=["on", "semi", "off", "show"])
     p.add_argument("--minutes", type=int); p.add_argument("--budget", type=int)
     p.add_argument("--reason", default=None); p.add_argument("--by", default="operator")
+    p = sub.add_parser("queue", help="satu perintah operator masuk antrean quest_tasks "
+                                     "(origin='operator' — hanya SEMI/ON yang mengambilnya)")
+    p.add_argument("title"); p.add_argument("--engine", required=True,
+                                            help="nama tab yang akan mengerjakannya; tidak pernah ditebak")
+    p.add_argument("--gate", default="", help="perintah gerbang penerimaan, boleh kosong")
+    p.add_argument("--ws", default="", help="direktori proyek; kosong = seperti dulu (REPO)")
+    p.add_argument("--by", default="operator")
+    p = sub.add_parser("ws", help="daftar / buat / fokus proyek, dan pilih pedoman MD-nya")
+    p.add_argument("action", choices=["list", "create", "focus", "guides", "detect"])
+    p.add_argument("first", nargs="?", default="", help="nama untuk create, id/nama/path untuk focus")
+    p.add_argument("--path", default="", help="direktori proyek (create)")
+    p.add_argument("--name", default="", help="nama tampilan (create)")
+    p.add_argument("--files", default="", help="daftar pedoman terpisah koma (guides)")
+    p.add_argument("--by", default="operator-gui")
     p = sub.add_parser("arm"); p.add_argument("level", choices=list(LEVELS))
     p.add_argument("--minutes", type=int, default=ARM_DEFAULT_MINUTES)
     p.add_argument("--by", default="operator")
@@ -1864,12 +2296,40 @@ def main(argv=None):
         print(msg)
         return 0 if ok else 1
     elif a.cmd == "next":
-        nxt = next_item(conn, engine)
+        nxt = next_item(conn, engine, origin=a.origin)
         print(json.dumps(nxt, default=str) if nxt else '{"item": null, "why": "antrean kosong"}')
     elif a.cmd == "list":
-        for r in run(conn, engine, "SELECT id, title, status, claimed_by, phase FROM quest_tasks ORDER BY id"):
+        for r in run(conn, engine, "SELECT id, title, status, claimed_by, phase, origin, "
+                                   "ws_path, cli_engine FROM quest_tasks ORDER BY id"):
             print(f"{r['id']:>4}  {norm(r['status']):<10}  {(r['claimed_by'] or '-'):<12}  "
-                  f"{(r['phase'] or '-'):<7}  {r['title'][:74]}")
+                  f"{(r['phase'] or '-'):<7}  {(r['origin'] or ORIGIN_LEGACY):<8}  "
+                  f"{(r['cli_engine'] or '-'):<11}  {r['title'][:60]}")
+    elif a.cmd == "queue":
+        ok, msg, item_id = queue_command(conn, engine, a.title, a.engine, a.gate, a.ws, a.by)
+        print(json.dumps({"ok": ok, "item": item_id, "why": msg}))
+        return 0 if ok else 1
+    elif a.cmd == "ws":
+        if a.action == "list":
+            print(json.dumps(list_workspaces(conn, engine), default=str, indent=2))
+        elif a.action == "detect":
+            root = Path(a.first).expanduser() if a.first else focused_workspace()
+            print(json.dumps({"focus": str(root) if root else None,
+                              "guidelines": detect_guidelines(root)}, default=str, indent=2))
+        elif a.action == "create":
+            ok, msg, ws_id = create_workspace(conn, engine, a.name, a.path)
+            print(json.dumps({"ok": ok, "workspace": ws_id, "why": msg}))
+            return 0 if ok else 1
+        elif a.action == "focus":
+            ok, msg = focus_workspace(conn, engine, a.first or a.path, a.by)
+            print(json.dumps({"ok": ok, "why": msg, "focus": str(focused_workspace() or "")}))
+            return 0 if ok else 1
+        else:  # guides
+            rows = run(conn, engine, "SELECT id FROM workspaces ORDER BY id")
+            target = a.first or ((rows[0] if rows else {}).get("id"))
+            ok, msg = set_guidelines(conn, engine, int(target),
+                                     [x.strip() for x in a.files.split(",") if x.strip()])
+            print(json.dumps({"ok": ok, "why": msg}))
+            return 0 if ok else 1
     elif a.cmd == "stalled":
         print(json.dumps(stalled(conn, engine), default=str, indent=2))
     elif a.cmd == "autopilot":

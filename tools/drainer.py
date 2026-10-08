@@ -270,17 +270,19 @@ def _release_claim(conn, engine, item_id):
            f"WHERE id={wo_p(engine)}", (int(item_id),))
 
 
-def effective_gap(gap, injected):
-    """Berapa lama benar-benar harus menunggu antara dua pembacaan pane.
+def effective_gap(gap):
+    """Berapa lama benar-benar menunggu antara dua pembacaan pane. Tidak bisa dinegosiasi.
 
-    Terpisah dan murni karena alasan yang menyakitkan: versi pertama ditulis sebagai
-    `wait = gap if capture is not None else max(...)` di DALAM `pane_is_quiet`, tepat setelah
-    `capture = capture or cv.capture_pane` — sehingga `capture` tidak pernah None lagi, cabang
-    `max(...)` tidak pernah berjalan, dan `gap=0` tetap lolos. Selftest-nya lolos karena hanya
-    mencari teks "max(gap, MIN_PANE_GAP)" di sumber: tes yang membuktikan keberadaan string,
-    bukan keberadaan perilaku.
+    Lantai ini pernah ditulis sebagai `gap if capture is not None else max(...)` dan jadi kode
+    mati: `capture` sudah diisi default beberapa baris di atasnya, sehingga selalu bukan-None.
+    Ceknya lolos karena hanya mencari string-nya di sumber. Versi kedua memakai "pembacanya
+    disuntik?" sebagai syarat bebas tidur — dan audit putaran tiga menunjuk itu sebagai pencampuran
+    dua hal: pemanggil produksi yang menyuntik pembaca sendiri bisa meminta gap=0 lagi.
+
+    Jadi lantainya unconditional. Selftest tidak melambat karena yang disuntik adalah SLEEPER-nya,
+    bukan aturan jeda-nya.
     """
-    return gap if injected else max(gap, MIN_PANE_GAP)
+    return max(gap, MIN_PANE_GAP)
 
 
 def pane_is_quiet(target, capture=None, busy=None, gap=MIN_PANE_GAP, sleeper=None):
@@ -296,7 +298,6 @@ def pane_is_quiet(target, capture=None, busy=None, gap=MIN_PANE_GAP, sleeper=Non
     juga ditolak: di sana "tidak berubah" adalah tautologi, bukan pengamatan.
     """
     import cross_verify as cv
-    injected = capture is not None          # dicatat SEBELUM default dipasang
     capture = capture or cv.capture_pane
     busy = busy or cv.pane_is_busy
     sleeper = sleeper or time.sleep
@@ -308,7 +309,7 @@ def pane_is_quiet(target, capture=None, busy=None, gap=MIN_PANE_GAP, sleeper=Non
     # `gap=0` hanya dihormati kalau pembacanya disuntik (selftest tidak boleh tidur). Dengan
     # pembacaan nyata, dua frame yang diambil berbarengan SELALU sama, dan menyebut itu "diam"
     # adalah mengarang pengamatan — persis yang dilarang invarian 5.
-    wait = effective_gap(gap, injected)
+    wait = effective_gap(gap)
     if wait > 0:
         sleeper(wait)
     second = capture(target)
@@ -352,7 +353,15 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
     # mengambil baris roadmap dan mengirimnya dengan SEMI_PROMPT — satu-satunya penahan adalah
     # `claim()` yang membaca mode dari database, dan itu pagar yang bisa dilewati pemanggil yang
     # tidak tahu. Satu sumber kebenaran, tidak ada pasangan yang bisa tidak cocok.
-    origin = wo.ORIGIN_OPERATOR if mode == "SEMI" else None
+    # Dinormalisasi dan gagal-TERTUTUP. `mode` dari pemanggil bisa "semi", "SEMI", "OFF", atau
+    # salah tulis; selama branch-nya "else = keranjang penuh", mode yang tidak dikenal memberi
+    # akses ke antrean roadmap. Yang tidak dikenal bukan "ON", melainkan "tidak mengirim apa pun".
+    wanted = (mode or "").upper()
+    if wanted not in ("ON", "SEMI"):
+        emit("MODE_UNKNOWN", mode=str(mode), why="bukan ON/SEMI — tidak ada yang diambil, "
+             "tidak ada yang diketik")
+        return None
+    origin = wo.ORIGIN_OPERATOR if wanted == "SEMI" else None
     item = next_ready(conn, engine, origin=origin)
     if not item:
         emit("QUEUE_EMPTY", origin=origin or "apa pun")
@@ -418,9 +427,14 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
         cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
         return None
     if mode == "SEMI":
+        # Lease yang masih hidup. Tanpa syarat ini, satu klaim roadmap yang tertinggal dari ON —
+        # yang di SEMI justru ditahan `HELD_BY_MODE` dan tidak pernah diselesaikan siapa pun —
+        # memblokir SETIAP perintah operator untuk engine itu selamanya: kemacetan total yang
+        # terlihat seperti antrean yang sabar.
         held = [r for r in open_claims(conn, engine)
                 if (r.get("cli_engine") or "").strip() == target
-                and int(r["id"]) != int(item["id"])]
+                and int(r["id"]) != int(item["id"])
+                and int(r.get("lease_epoch") or 0) > wo.now()]
         if held:
             _release_claim(conn, engine, item["id"])
             cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
@@ -1215,29 +1229,58 @@ def selftest():
 
         # Cek perilaku, bukan cek teks. Versi sebelumnya mencari string "max(gap, MIN_PANE_GAP)"
         # di sumber dan LULUS pada kode mati — persis kelas bug yang kuburu sejak kemarin.
-        check("pembaca asli tidak boleh dinolkan jeda-nya lewat parameter",
-              effective_gap(0, False) == MIN_PANE_GAP and effective_gap(0, True) == 0
-              and effective_gap(5, False) == 5,
-              f"asli:{effective_gap(0, False)} suntik:{effective_gap(0, True)}")
+        # (B) Kemacetan yang ditemukan audit putaran tiga: klaim roadmap sisa ON, yang di SEMI
+        #     justru ditahan HELD_BY_MODE dan tidak pernah diselesaikan siapa pun, dulu memblokir
+        #     SETIAP perintah operator untuk engine itu selamanya.
+        # Engine harus benar-benar bebas dulu, kalau tidak yang terukur adalah aturan
+        # satu-perintah-aktif (yang sudah punya tesnya sendiri), bukan umur lease.
+        wo.finish(conn, "SQLITE", op3, "COMPLETED",
+                  evidence="selftest: membebaskan engine sebelum uji lease mati")
+        stale = make("selftest-stale-roadmap", status="WORKING", gate="false", engine_key="qoder",
+                     holder=HOLDER, lease=wo.now() - 10, origin="roadmap")
+        op4 = make("selftest-semi-after-stale", gate="false", engine_key="qoder", origin="operator",
+                   ws=str(REPO))
+        sent.clear(); out = []
+        hand_new_work(conn, "SQLITE", "SEMI", runner=runner, sender=sender, emit=sink(out),
+                      capture=quiet_pane, busy=not_busy, tab_project=cwd_of,
+                      pane_cwd=cwd_of, gap=0)
+        check("klaim roadmap yang lease-nya sudah mati tidak membekukan antrean operator selamanya",
+              sent and out[-1]["action"] == "WORK_DISPATCHED", str(out[-1:]))
+
+        # (D) mode yang tidak dikenal harus gagal-TERTUTUP, bukan jatuh ke keranjang FULL AUTO.
+        for bad in ("semi", "OFF", "", "ngawur"):
+            sent.clear(); out = []
+            hand_new_work(conn, "SQLITE", bad, runner=runner, sender=sender, emit=sink(out),
+                          capture=quiet_pane, busy=not_busy, tab_project=cwd_of,
+                          pane_cwd=cwd_of, gap=0)
+            if bad == "semi":
+                ok_case = out and out[-1]["action"] in ("WORK_DISPATCHED", "ENGINE_BUSY",
+                                                        "QUEUE_EMPTY")
+                check("mode huruf kecil dikenali dan tetap memakai keranjang SEMI", ok_case,
+                      str(out[-1:]))
+            else:
+                check(f"mode {bad!r} tidak mengirim apa pun dan tidak mengambil keranjang penuh",
+                      not sent and any(e["action"] == "MODE_UNKNOWN" for e in out), str(out))
+
+        check("jeda tidak bisa dinolkan oleh pemanggil mana pun, termasuk yang menyuntik pembaca",
+              effective_gap(0) == MIN_PANE_GAP and effective_gap(5) == 5
+              and effective_gap(-1) == MIN_PANE_GAP,
+              f"0->{effective_gap(0)} 5->{effective_gap(5)} -1->{effective_gap(-1)}")
+        # Yang disuntik adalah SLEEPER-nya, jadi tes tidak tidur dan tetap membuktikan jeda nyata
+        # benar-benar diminta. Versi sebelumnya memanggil pane_asli(capture=None) dan membaca
+        # tmux operator — melanggar aturan yang ditulis modul ini sendiri.
         _waits = []
         pane_is_quiet("qoder", capture=lambda _t: "prompt siap", busy=lambda _s: False,
                       gap=0, sleeper=lambda sec: _waits.append(sec))
-        check("jalur suntikan benar-benar tidak tidur (tes tidak menahan produksi)",
-              _waits == [], str(_waits))
-        _real = []
-        try:
-            pane_is_quiet("qoder", capture=None, busy=lambda _s: False, gap=0,
-                          sleeper=lambda sec: _real.append(sec))
-        except Exception:  # noqa: BLE001 — pembaca asli boleh gagal di fixture, jeda tidak boleh
-            pass
-        check("jalur pembaca asli benar-benar meminta jeda nyata, bukan nol",
-              _real and _real[0] >= MIN_PANE_GAP, str(_real))
-        check("cwd pane dicatat untuk diagnostik tetapi tidak lagi menjadi pagar",
-              "pane_now=str(live) if live else None" in segments.get("hand_new_work", "")
-              and "or Path(live)" not in segments.get("hand_new_work", ""),
-              "masih menuntut cwd pane sama")
-        check("path `~` diperluas sebelum dibandingkan, tidak selalu ditolak",
-              "_as_path(where) != want" in segments.get("hand_new_work", ""))
+        check("dua pembacaan sungguhan dipisahkan jeda lantai walau pemanggil minta nol",
+              _waits == [MIN_PANE_GAP], str(_waits))
+        # Keduanya dulu cek teks. Yang pertama sudah digantikan cek perilaku WORK_DISPATCHED di
+        # bawah (ia menuntut `pane_now` terisi padahal pengiriman tetap jalan); yang kedua diganti
+        # uji langsung pada fungsi pembentuk path-nya.
+        check("`~` diperluas sebelum dibandingkan, bukan ditolak sebagai proyek lain",
+              _as_path("~") == Path.home().resolve(strict=False)
+              and _as_path("~/Documents") == (Path.home() / "Documents").resolve(strict=False),
+              str(_as_path("~")))
 
         # Beda mode diukur pada ANTREAN YANG SAMA, bukan dengan dua fixture berbeda: satu baris yang
         # bukan perintah operator harus terlihat oleh FULL AUTO dan tidak terlihat oleh SEMI.

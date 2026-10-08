@@ -96,20 +96,37 @@ def build_note(cwd: str) -> str | None:
                       "WHERE origin=? AND status='PENDING' ORDER BY id",
                       (wo.ORIGIN_OPERATOR,))
     mine = select_rows(mine_all, cwd)
-    other = [r for r in mine_all if r not in mine]
+    # Dua alasan berbeda tidak boleh dapat satu label. Baris milik MESIN lain dan baris milik
+  # mesin ini tapi milik PROYEK lain adalah dua hal yang berbeda, dan menyebut keduanya
+  # "MESIN LAIN" membuat operator mengira mesin yang salah yang menahan perintahnya.
+    other_engine = [r for r in mine_all if (r.get("cli_engine") or "").strip() != THIS_ENGINE]
+    other_project = [r for r in mine_all
+                     if (r.get("cli_engine") or "").strip() == THIS_ENGINE and r not in mine]
     if not mine_all:
         return None
-    lines = [f"ANTREAN OPERATOR untuk {THIS_ENGINE} (mode {ap.get('mode')}, tangan {ap.get('level')}):"]
+    mode = (ap.get("mode") or "OFF").upper()
+    lines = [f"ANTREAN OPERATOR untuk {THIS_ENGINE} (mode {mode}, tangan {ap.get('level')}):"]
     if not mine:
         lines.append("  tidak ada yang untukmu")
     for r in mine[:MAX_LISTED]:
         lines.append(f"  #{r['id']} {str(r['title'])[:90]}")
     if len(mine) > MAX_LISTED:
         lines.append(f"  ... {len(mine) - MAX_LISTED} lagi untuk {THIS_ENGINE}")
-    if other:
-        lines.append(f"  ({len(other)} baris lain menunggu untuk MESIN LAIN — jangan diambil)")
-    lines.append("Kerjakan yang untukmu lewat SEMI; jangan ambil item roadmap saat mode SEMI. "
-                 "Untuk keputusan level preferensi: `work_order.py decide` lalu `route` — "
+    if other_engine:
+        lines.append(f"  ({len(other_engine)} baris menunggu untuk MESIN LAIN — jangan diambil)")
+    if other_project:
+        lines.append(f"  ({len(other_project)} baris milik mesin ini tapi PROYEK LAIN — "
+                     "akan ditolak hook, bukan hilang)")
+    # Nasihat harus sesuai mode. Versi pertama selalu bilang "kerjakan lewat SEMI" bahkan ketika
+    # sakelarnya OFF — dan menaati itu berarti mengerjakan pekerjaan yang sedang dimatikan.
+    if mode == "SEMI":
+        lines.append("Mode SEMI: kerjakan yang untukmu; JANGAN ambil item roadmap.")
+    elif mode == "ON":
+        lines.append("Mode ON: antrean roadmap juga terbuka; perintahmu tetap punya prioritas.")
+    else:
+        lines.append("Mode OFF: jangan kerjakan apa pun dari sini — ini hanya laporan, dan "
+                     "yang menyalakan mesin adalah manusia.")
+    lines.append("Untuk keputusan level preferensi: `work_order.py decide` lalu `route` — "
                  "jangan tanyakan ke operator.")
     return "\n".join(lines)
 

@@ -206,35 +206,58 @@ def main() -> int:
             reason="perintah itu bukan untuk proyek sesi ini — ia tetap antre, tidak dibatalkan")
         return 0
 
-    ok, msg = wo.claim(conn, engine, int(item["id"]), SESSION_ENGINE)
-    if not ok:
-        # claim() sudah memuat pemutus malam dan aturan tree kotor, jadi penolakan di sini adalah
-        # keputusan yang tercatat, bukan kegagalan jalur ini.
-        log("SEMI_CLAIM_REFUSED", item=int(item["id"]), reason=msg,
-            stop_hook_active=bool(data.get("stop_hook_active")))
+    # Klaim DITAHAN sampai prompt sudah utuh. Urutan ini bukan kerapian: versi pertama mengklaim
+    # lebih dulu, lalu `get_item`, `guides_for`, `SEMI_PROMPT.format` dan `import drainer` bisa
+    # melempar setelahnya — `__main__` menelannya sebagai SEMI_BROKE dengan exit 0, dan barisnya
+    # tinggal WORKING tanpa ada yang menyuntik. Itulah persis kegagalan yang temuan (f) minta
+    # dihapus, dan memperbaiki salah satu cabangnya saja tidak menghapus akarnya.
+    try:
+        import drainer
+        full = wo.get_item(conn, engine, int(item["id"])) or item
+        body, notes, nguides = guides_for(conn, engine)
+        prompt = drainer.SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=cwd,
+                                            gate=(full.get("check_command") or "tanpa gerbang"))
+    except Exception as exc:  # noqa: BLE001 — sebelum ada klaim, gagal berarti diam
+        log("SEMI_PREPARE_FAILED", item=int(item["id"]), engine=SESSION_ENGINE,
+            reason=f"{type(exc).__name__}: {exc}",
+            note="belum ada yang diklaim — barisnya tetap PENDING dan akan dicoba lagi")
         return 0
 
-    import drainer
-    full = wo.get_item(conn, engine, int(item["id"])) or item
-    body, notes, nguides = guides_for(conn, engine)
-    prompt = drainer.SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=cwd,
-                                        gate=(full.get("check_command") or "tanpa gerbang"))
     if body:
         prompt += "\n\nPedoman yang mengikat (TERKUNCI oleh kontrak):\n" + body
     if notes:
         prompt += "\n\nCatatan pedoman: " + "; ".join(notes)
     # SEMI_PROMPT ditulis untuk jalur timer, di mana drainer memegang lease sampai engine mulai.
-    # Di jalur hook ini klaimnya sudah atas nama mesin ini sendiri, jadi kalimat itu harus
-    # dikoreksi — instruksi yang salah tentang siapa yang memegang lease membuat engine membuang
-    # satu giliran untuk mencari tahu.
-    prompt += (f"\n\nCatatan jalur: hook ini sudah mengklaim item {item['id']} atas nama "
+    # Di jalur hook ini klaimnya atas nama mesin ini sendiri, jadi kalimat itu dikoreksi —
+    # instruksi yang salah tentang siapa yang memegang lease membuat engine membuang giliran
+    # untuk mencari tahu.
+    prompt += (f"\n\nCatatan jalur: hook ini akan mengklaim item {item['id']} atas nama "
                f"{SESSION_ENGINE} (bukan drainer). Perpanjang lease dengan "
                f"`python3 tools/work_order.py lease {item['id']}`.")
+
+    ok, msg = wo.claim(conn, engine, int(item["id"]), SESSION_ENGINE)
+    if not ok:
+        # claim() sudah memuat pemutus malam dan aturan tree kotor, jadi penolakan di sini adalah
+        # keputusan yang tercatat, bukan kegagalan jalur ini.
+        log("SEMI_CLAIM_REFUSED", item=int(item["id"]), reason=msg, engine=SESSION_ENGINE,
+            stop_hook_active=bool(data.get("stop_hook_active")))
+        return 0
+
+    # Satu-satunya hal yang tersisa setelah klaim adalah menulis satu baris ke stdout. Kalau itu
+    # pun gagal, klaimnya dilepas — tidak ada jendela lagi tempat baris bisa tertinggal WORKING
+    # tanpa ada yang menyuntik.
+    try:
+        print(json.dumps({"decision": BLOCK_DECISION, "reason": prompt}, ensure_ascii=False))
+    except Exception as exc:  # noqa: BLE001
+        wo.finish(conn, engine, int(item["id"]), "PENDING",
+                  reason=f"stdout gagal: {type(exc).__name__}")
+        log("SEMI_EMIT_FAILED", item=int(item["id"]), engine=SESSION_ENGINE,
+            reason=f"{type(exc).__name__}: {exc}", note="klaim dilepas, baris kembali PENDING")
+        return 0
     log("SEMI_INJECTED", item=int(item["id"]), title=str(item["title"])[:80],
         engine=SESSION_ENGINE, decision=BLOCK_DECISION,
         claim=msg, guides=nguides,
         stop_hook_active=bool(data.get("stop_hook_active")))
-    print(json.dumps({"decision": BLOCK_DECISION, "reason": prompt}, ensure_ascii=False))
     return 0
 
 

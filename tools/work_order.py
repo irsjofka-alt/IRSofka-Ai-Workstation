@@ -1580,6 +1580,7 @@ def semi_status(conn, engine) -> dict:
 
 # --- selftest ---------------------------------------------------------------
 def selftest():
+    globals()["_push_src"] = __import__("inspect").getsource(push_state)
     """Jalankan di SQLite sementara. Tes tidak boleh menyentuh produksi: satu selftest yang
     menulis ke DB bersama akan mengacaukan antrean yang sedang dibaca engine lain."""
     tmp = Path(f"/tmp/work_order_selftest_{now()}.db")
@@ -2177,6 +2178,27 @@ def selftest():
         ok, msg = guidelines_are_locked()
         check("permintaan mengubah pedoman ditolak dengan alasan, bukan diam",
               not ok and "TERKUNCI" in msg and "LOCKED_GUIDES" in msg, msg)
+        # --- push tertunda harus menjadi keadaan yang tercatat ---
+        # §6 menjanjikan "commit lokal + push masuk digest pagi" bila verifier tidak tercapai.
+        # F10.9 dibuka justru karena janji seperti itu mengikat sejauh engine mengingatnya, jadi
+        # yang diuji di sini adalah bahwa laporan itu ADA dan ANGKANYA TURUNAN.
+        ps = push_state()
+        check("digest melaporkan push tertunda sebagai angka dari git, bukan dari ingatan",
+              ps["readable"] is True and isinstance(ps["unpushed"], int)
+              and isinstance(ps["verifier_verdicts"], int), str(ps))
+        check("daftar commit ikut dilaporkan, supaya 'belum ter-push' bisa diperiksa satu per satu",
+              ps["unpushed"] == 0 or len(ps["commits"]) == min(ps["unpushed"], 20), str(ps["commits"][:3]))
+        # Hanya baris KODE yang boleh diperiksa. Versi pertama memindai seluruh sumber dan
+        # gagal karena komentarnya sendiri menyebut "action_log" untuk menolaknya — kelas
+        # false positive yang sama seperti `claim(` di kalimat penasihat, untuk ketiga kalinya
+        # hari ini. Sebuah pagar yang bisa dipicu oleh prosa bukan pagar, itu kebisingan.
+        code_lines = [ln for ln in globals()["_push_src"].splitlines()
+                      if not ln.strip().startswith("#")]
+        code_only = "\n".join(code_lines)
+        check("verdict hanya diterima dari peristiwa push_verified, bukan dari prosa laporan",
+              '"kind": "push_verified"' in code_only and "action_log" not in code_only,
+              "push_state membaca sumber yang salah")
+
         # --- jebakan yang membuat baris tak bisa diklaim selamanya ---
         # Premisnya harus dinyatakan: kegagalan dari blok sebelumnya masih di jendela 12 jam dan
         # akan membuka pemutus, jadi klaim ini akan ditolak karena alasan yang bukan diuji di sini.
@@ -2394,6 +2416,55 @@ def selftest_live():
               + (f" — {detail}" if detail and not okval else ""))
     print(f"\nwork_order selftest live: {len(checks) - len(bad)}/{len(checks)} sesuai")
     return 1 if bad else 0
+
+
+def push_state() -> dict:
+    """Push yang tertunda adalah keadaan, bukan ingatan salah satu engine.
+
+    §6 berjanji bahwa run yang tidak bisa mencapai verifier "meng-commit lokal dan meninggalkan
+    push di digest pagi". Janji itu tidak cukup — F10.9 justru dibuka karena aturan yang hanya
+    hidup di prosa mengikat sejauh engine mengingatnya. Kalau tidak ada baris di digest yang
+    menyebut commit yang belum berangkat, janji itu hilang bersama sesi yang menulisnya, dan
+    seseorang bangun tanpa tahu ada pekerjaan yang belum sampai ke origin.
+
+    Semua angkanya dari git dan dari berkas peristiwa. Tidak ada yang ditulis tangan, dan git
+    yang tidak terbaca dilaporkan UNKNOWN — bukan nol.
+    """
+    import subprocess
+    out = {"unpushed": None, "commits": [], "verifier_verdicts": 0, "readable": False}
+    try:
+        r = subprocess.run(["git", "-C", str(REPO), "rev-list", "--count", "@{u}..HEAD"],
+                           capture_output=True, text=True, timeout=15)
+        if r.returncode != 0:
+            out["why"] = (r.stderr or r.stdout or "git menolak").strip()[:160]
+            return out
+        out["unpushed"] = int(r.stdout.strip() or 0)
+        out["readable"] = True
+    except Exception as exc:  # noqa: BLE001
+        out["why"] = f"{type(exc).__name__}: {exc}"
+        return out
+    if not out["unpushed"]:
+        return out
+    shas: list[str] = []
+    try:
+        r = subprocess.run(["git", "-C", str(REPO), "log", "--format=%h", "@{u}..HEAD"],
+                           capture_output=True, text=True, timeout=15)
+        shas = [x for x in r.stdout.split() if x]
+        out["commits"] = shas[:20]
+    except Exception:  # noqa: BLE001
+        pass
+    # Verdict yang sah adalah peristiwa `push_verified` yang menyebut sha commit ini — bukan
+    # kalimat laporan di action_log. Versi pertama gerbang f109 membaca prosa dan lolos karena
+    # engine menulis sendiri kata "push" dan "verifier".
+    try:
+        ev = REPO / "logs" / "station_events.jsonl"
+        if ev.is_file():
+            for line in ev.read_text(encoding="utf-8", errors="replace").splitlines():
+                if '"kind": "push_verified"' in line and any(sha in line for sha in shas):
+                    out["verifier_verdicts"] += 1
+    except Exception:  # noqa: BLE001 — berkas tidak terbaca bukan berarti nol verdict
+        out["verdicts_readable"] = False
+    return out
 
 
 # --- muka untuk GUI ---------------------------------------------------------
@@ -2681,9 +2752,17 @@ def main(argv=None):
     elif a.cmd == "digest":
         rows = run(conn, engine, "SELECT status, COUNT(*) AS n FROM quest_tasks GROUP BY status ORDER BY 2 DESC")
         open_dec = run(conn, engine, "SELECT COUNT(*) AS n FROM decisions WHERE state='OPEN'")
+        push = push_state()
+        if push["readable"]:
+            note = (f"{push['unpushed']} commit belum ke origin; "
+                    + (f"{push['verifier_verdicts']} di antaranya punya verdict push_verified"
+                       if push["unpushed"] else "tidak ada yang tertunda"))
+        else:
+            note = "git tidak terbaca — UNKNOWN, bukan 'bersih'"
         print(json.dumps({"engine": engine, "per_status": rows,
                           "decisions_open": open_dec[0]["n"] if open_dec else 0,
-                          "autopilot": autopilot(conn, engine)}, default=str, indent=2))
+                          "autopilot": autopilot(conn, engine),
+                          "push_pending": push, "note": note}, default=str, indent=2))
     elif a.cmd == "status":
         print(json.dumps(status(conn, engine), default=str, indent=2))
     return 0

@@ -742,6 +742,19 @@ that skips the order cannot claim.
   match the CLI verb `guides`, so the first real write failed with argparse exit 2. All three fixed at
   the source, not papered over — the last by renaming the verb rather than adding a mapping table,
   because a mapping is where two words for one thing hide. Selftests: work_order 110 → 135, drainer 59 → 83.
+  **The loop was proven on Antigravity first, at the operator's instruction, and it needed neither
+  the timer nor a raised hand.** The recipe is documented by the CLI itself, in
+  `engines/antigravity-cli/builtin/skills/agy-customizations/docs/hooks.md`: a `Stop` hook returning
+  `{"decision":"continue","reason":…}` "blocks the stop and re-enters the loop". Same mechanism as
+  qodercli's `block`, different keyword — and writing the wrong keyword produces a hook that runs,
+  returns something, and continues nothing, which is a failure that looks like success. Antigravity
+  also *reports* two things that used to be inferred from pane text, and both are now used:
+  `fullyIdle` (honours "if it is Working, wait until it finishes" in the agent's own words) and
+  `workspacePaths` (the project the agent is in, which is not the same as the shell's cwd).
+  Measured 2026-10-08 11:27 with one real `agy -p` turn through `run_grouped`: the CLI fired the hook
+  twice — first `SEMI_NOT_IDLE`, then `SEMI_INJECTED` for item 87 with `decision=continue` and 62
+  lines of locked guidelines — while item 88, addressed to qoder, correctly stayed `PENDING`. Engine
+  isolation is `next_item(for_engine=…)`, in the module that owns "what is next".
 - ⬜ **F10.9 Push gate — the answer to decision 6 has to stop being a sentence.** The operator allowed an
   unattended run to commit and push *on condition* that a verifier clears the work first. That condition
   currently lives only in §6 prose, which means it binds exactly as far as an engine remembers it — and

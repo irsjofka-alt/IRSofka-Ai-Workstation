@@ -650,8 +650,12 @@ that skips the order cannot claim.
   Shipped 2026-10-08 01:30 (`a7726cf`, `35f0c80`), split the way F8.3 split: `work_order.py` owns the
   vocabulary and every breaker number, `api/autopilot.rs` owns HTTP and the process boundary and copies
   no policy, and neither HTML page restates a rule — each figure on screen is read from
-  `work_order.py status`. The Station's Human Decide tab has **no buttons on purpose**: it is the record
-  of what waits for a person, not a control surface (F8's two-surfaces rule).
+  `work_order.py status`. The Station's Human Decide tab shipped read-only at first, on the argument that
+  F8's two-surfaces rule forbids controls there. That argument was retired the same night, because it was
+  wrong in a specific way: a queue that shows a question with no answer column is not a record of a
+  decision, it is a transcript of one nobody can make. The tab now carries the option list, the answer
+  column and the switch as control, and each of them writes through `work_order.py`, which stays the only
+  owner of every number and every rule — the boundary is now stated as §12.3.
   Remaining, and named so nobody mistakes the switch for the loop:
   - **Self-expiry is checked at claim time, not by a timer.** A window that lapses at 02:00 stops
     nothing until the next `claim`. Tolerable while no drainer exists to make claims unattended;
@@ -666,6 +670,27 @@ that skips the order cannot claim.
   undocumented); endpoint round-trip ON→OFF with both 400 paths refused; the 503 body forced by hiding
   `work_order.py` names only routes proven to exist; `ai-station autopilot` verified without the daemon;
   4 `autopilot_switch` rows reached `action_log`; both surfaces confirmed by screenshot.
+  Later the same night, the answer path — where F10.1's queue and F10.3's hand meet. `decisions.item_id`
+  links a question to the quest waiting on it and `decisions.answered_by` names the person who answered;
+  `work_order.py answer` writes `ANSWERED` with `rung_used='human'` and refuses to overwrite an answer
+  already given; and `finish()` on a `HUMAN` escalation now poses a linked question of its own, so an item
+  that crosses a threshold arrives with something to answer rather than only a title. `POST /api/decide`
+  runs that command and then `drainer.py deliver --decision N`, recording **before** sending: the answer
+  survives any failure of the keystroke, and the reply carries the drainer's reason verbatim.
+  `deliver_answer` is the only function on this machine allowed to type a person's answer into an engine's
+  pane, it is reachable only from a click, and the drainer selftest enforces that by scanning the module
+  function by function instead of banning tokens file-wide.
+  Measured: `work_order.py selftest` 109/109 offline and 31/31 on `POSTGRESQL`, `drainer.py selftest`
+  59/59; a live `POST /api/decide` returned 200 with the row read back `ANSWERED` / `answered_by`, and its
+  delivery stage reported honestly that it was deferred because the target claim still read `WORKING`
+  ("jawaban sudah tercatat, pengiriman ditunda — bukan digagalkan"); a second save on the same row
+  returned 409 quoting the first answer's timestamp; an empty answer returned 400 and left the question
+  open; `POST /api/autopilot` with `mode:"maybe"` and with `minutes:0` each returned 400 and left
+  `mode OFF` untouched, while `mode:"off"` returned 200 and wrote `changed_by=operator-gui` plus the
+  reason into the ledger. **A real mouse click on the page was not measured.** This workstation has no
+  input hand installed (`ydotool`, `ydotoold` and `grim` are absent; only `cosmic-screenshot` exists) and
+  Firefox's BiDi socket refuses a client that did not arrive from a WebDriver session, so the render is
+  verified by screenshot and the click layer is not verified at all. The first click is the operator's.
 
 ## Known Boundaries & Constraints
 

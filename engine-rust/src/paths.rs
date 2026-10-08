@@ -85,6 +85,12 @@ pub(crate) fn work_order_path() -> PathBuf {
     station_dir().join("tools").join("work_order.py")
 }
 
+/// Tangan drainer (F10.3). Jawabannya tinggal di `work_order.py`; yang di sini cuma jalurnya,
+/// karena mengirim teks ke pane punya satu pemilik dan itu bukan modul HTTP.
+pub(crate) fn drainer_path() -> PathBuf {
+    station_dir().join("tools").join("drainer.py")
+}
+
 /// Interpreter untuk setiap proses anak daemon.
 ///
 /// Unit systemd tidak mewarisi PATH selebar shell, jadi nama telanjang `python3` bisa tidak

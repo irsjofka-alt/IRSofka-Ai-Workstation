@@ -139,7 +139,8 @@ CREATE_PG = [
         id SERIAL PRIMARY KEY, question TEXT NOT NULL, options TEXT,
         weight VARCHAR(20) DEFAULT 'heavy', rung_used VARCHAR(50), engine_key VARCHAR(50),
         model_id VARCHAR(120), answer TEXT, state VARCHAR(20) DEFAULT 'OPEN',
-        note TEXT, created_epoch BIGINT, resolved_epoch BIGINT)""",
+        note TEXT, created_epoch BIGINT, resolved_epoch BIGINT,
+        item_id BIGINT, answered_by VARCHAR(60))""",
     """CREATE TABLE IF NOT EXISTS autopilot_state (
         id SMALLINT PRIMARY KEY DEFAULT 1, mode VARCHAR(10) DEFAULT 'OFF',
         on_epoch BIGINT, until_epoch BIGINT, item_budget INT DEFAULT 12,
@@ -155,7 +156,7 @@ CREATE_SQLITE = [
         id INTEGER PRIMARY KEY AUTOINCREMENT, question TEXT NOT NULL, options TEXT,
         weight TEXT DEFAULT 'heavy', rung_used TEXT, engine_key TEXT, model_id TEXT,
         answer TEXT, state TEXT DEFAULT 'OPEN', note TEXT,
-        created_epoch INTEGER, resolved_epoch INTEGER)""",
+        created_epoch INTEGER, resolved_epoch INTEGER, item_id INTEGER, answered_by TEXT)""",
     """CREATE TABLE IF NOT EXISTS autopilot_state (
         id INTEGER PRIMARY KEY CHECK (id = 1), mode TEXT DEFAULT 'OFF',
         on_epoch INTEGER, until_epoch INTEGER, item_budget INTEGER DEFAULT 12,
@@ -176,6 +177,11 @@ NEW_COLUMNS = [
     # bergerak. Dua tabel untuk satu sakelar adalah dua laporan yang boleh berbeda (§12).
     ("autopilot_state", "level", "VARCHAR(16)", "TEXT"),
     ("autopilot_state", "level_until", "BIGINT", "INTEGER"),
+    # Sebuah pertanyaan harus bisa ditelusuri ke PEKERJAAN yang menunggunya, bukan ke sesi yang
+    # kebetulan sedang terbuka. `item_id` adalah penghubung itu: pertanyaan tanpa item tidak bisa
+    # membangunkan apa pun, dan jawaban tanpa `answered_by` tidak bisa dibedakan dari jawaban mesin.
+    ("decisions", "item_id", "BIGINT", "INTEGER"),
+    ("decisions", "answered_by", "VARCHAR(60)", "TEXT"),
 ]
 
 # Lebar kolom yang ditumbuhkan, bukan diganti isinya. `weight` lahir sebagai VARCHAR(10) pada
@@ -358,6 +364,15 @@ def finish(conn, engine, item_id, status, evidence=None, reason=None):
         f"UPDATE quest_tasks SET status={ph}, evidence={ph}, escalation_reason={ph}, "
         f"completed_at=CURRENT_TIMESTAMP WHERE id={ph}",
         (status, (evidence or "")[:EVIDENCE_LIMIT], reason, item_id))
+    if status == "HUMAN" and not open_decision_for(conn, engine, item_id):
+        # Item yang naik ke antrean orang tanpa pertanyaan hanyalah sebuah judul: operator membaca
+        # "#33 — F10.3" dan tidak punya apa pun untuk dipilih. Pertanyaan ini ditulis oleh pemilik
+        # kosakata yang sama dan ditautkan ke itemnya, dengan pilihan KOSONG — mesin yang mengarang
+        # opsi untuk ambang yang baru saja ia lewati sedang menebak, dan tebakannya akan dibaca
+        # sebagai opsi yang sudah kita pertimbangkan.
+        decide(conn, engine,
+               f"Item «{item['title']}» berhenti di ambang: {reason or 'alasan tidak tercatat'}",
+               [], "heavy", item_id)
     return True, f"{item['title']} -> {status}"
 
 
@@ -413,6 +428,77 @@ def resolve_decision(conn, engine, decision_id, rung, engine_key, model_id, answ
         (state, rung, engine_key, model_id, answer[:4000] if answer else None,
          note, now(), decision_id))
     return True, f"decision {decision_id} -> {state}"
+
+
+def _decision_row(conn, engine, decision_id):
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    rows = run(conn, engine, f"SELECT * FROM decisions WHERE id={ph}", (decision_id,))
+    return rows[0] if rows else None
+
+
+def answer_decision(conn, engine, decision_id, answer, by="operator", note=None):
+    """Rekam jawaban MANUSIA atas satu pertanyaan. `(diterima, pesan, baris terbaru)`.
+
+    Fungsi ini satu-satunya jalur tulis untuk operator, dan ia sengaja menyerupai `resolve_decision`
+    alih-alih memforknya: kosakata `state`/`answer`/`resolved_epoch` punya satu pemilik (§12), dan
+    dua jalur tulis untuk satu kolom adalah dua laporan yang boleh berbeda.
+
+    Yang membedakan adalah siapa yang dicatat. `answered_by` mengisi tempat yang untuk mesin diisi
+    `model_id`, supaya jawaban orang tidak pernah bisa disalahartikan sebagai jawaban resolver —
+    kontrak §4 menegakkan pembedaan itu, dan laporan yang tidak bisa membedakannya tidak bisa
+    dipakai membela diri nanti.
+
+    Baris yang sudah dijawab DITOLAK, bukan ditimpa. Menimpa keputusan tercatat berarti menghapus
+    bukti siapa yang memutuskan; kalau operator berubah pikiran, jalurnya adalah pertanyaan baru
+    yang menunjuk item yang sama, bukan editing sejarah.
+    """
+    if not (answer or "").strip():
+        return False, "jawaban kosong ditolak: pertanyaan tetap " + str(decision_id), None
+    row = _decision_row(conn, engine, decision_id)
+    if not row:
+        return False, f"decision {decision_id} tidak ada — tidak ada yang dijawab, tidak ada yang ditulis", None
+    if row.get("state") not in ("OPEN", "ESCALATED"):
+        who = row.get("answered_by") or row.get("model_id") or "tidak tercatat"
+        when = datetime.fromtimestamp(int(row.get("resolved_epoch") or 0)).strftime("%Y-%m-%d %H:%M")
+        return False, (f"decision {decision_id} sudah {row['state']} oleh {who} sejak {when}; "
+                       "ditolak — buat pertanyaan baru kalau pilihan berubah"), row
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    who = (by or "operator").strip()[:60]
+    run(conn, engine,
+        f"UPDATE decisions SET state={ph}, answer={ph}, rung_used={ph}, engine_key={ph}, "
+        f"model_id={ph}, answered_by={ph}, note={ph}, resolved_epoch={ph} WHERE id={ph}",
+        ("ANSWERED", answer.strip()[:4000], "human", "operator", who, who,
+         (note or "")[:2000] or None, now(), decision_id))
+    fresh = _decision_row(conn, engine, decision_id)
+    return True, f"decision {decision_id} ANSWERED oleh {who}", fresh
+
+
+def decisions_for_item(conn, engine, item_id):
+    """Semua pertanyaan yang menunjuk satu item, terbuka maupun terjawab.
+
+    Pembacanya yang menyaring `state`, bukan fungsi ini: "apa yang masih menunggu" dan "apa yang
+    sudah diputuskan" adalah dua pertanyaan berbeda, dan menyatukan filternya di sini akan memaksa
+    tiap pemanggil memanggil dua kali begitu salah satu berubah kebutuhan.
+    """
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    return run(conn, engine,
+               f"SELECT id, question, options, weight, state, answer, model_id, answered_by, "
+               f"created_epoch, resolved_epoch FROM decisions WHERE item_id={ph} ORDER BY id",
+               (item_id,))
+
+
+def open_decision_for(conn, engine, item_id):
+    """Pertanyaan yang masih menunggu untuk satu item — atau None.
+
+    Ini yang ditanya drainer sebelum ia mengirim apa pun ke sebuah pane: menjawab dirinya sendiri
+    dengan `CONTINUE` padahal yang ditunggu adalah keputusan orang adalah cara paling sopan untuk
+    membakar lease orang lain.
+    """
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    rows = run(conn, engine,
+               f"SELECT * FROM decisions WHERE item_id={ph} AND state IN ('OPEN','ESCALATED') "
+               f"ORDER BY id", (item_id,))
+    return rows[0] if rows else None
 
 
 def _last_action(conn, engine, who):
@@ -681,7 +767,7 @@ def set_level(conn, engine, level, minutes=ARM_DEFAULT_MINUTES, who="operator", 
     return True, json.dumps(drain_level(conn, engine), default=str)
 
 
-def decide(conn, engine, question, options=None, weight="heavy"):
+def decide(conn, engine, question, options=None, weight="heavy", item_id=None):
     """Catat satu pertanyaan. `options` boleh label polos atau objek dengan bukti + biaya.
 
     Bentuknya {label, evidence, cost} karena kontrak F10.1 menuntut resolver melihat bukti
@@ -690,17 +776,21 @@ def decide(conn, engine, question, options=None, weight="heavy"):
 
     `weight='irreversible'` tidak pernah dikirim ke resolver — invarian 3 outranks the broker,
     dan gerbangnya ada di sini supaya pemanggil mana pun mendapatinya, bukan hanya yang ingat.
+
+    `item_id` menghubungkan pertanyaan ke pekerjaan yang menunggu. Tanpanya, pertanyaan yang
+    terjawab tidak membangunkan siapa-siapa — ia hanya menjadi arsip.
     """
     ph = "%s" if engine == "POSTGRESQL" else "?"
     state = "ESCALATED" if weight == "irreversible" else "OPEN"
     run(conn, engine,
-        f"INSERT INTO decisions (question, options, weight, state, rung_used, note, created_epoch) "
-        f"VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})",
+        f"INSERT INTO decisions (question, options, weight, state, rung_used, note, created_epoch, "
+        f"item_id) "
+        f"VALUES ({ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph}, {ph})",
         (question, json.dumps(normalise_options(options))[:4000], weight, state,
          "human-only" if state == "ESCALATED" else None,
          "invarian 3: pilihan yang tidak bisa dibatalkan tidak didelegasikan ke mesin mana pun"
          if state == "ESCALATED" else None,
-         now()))
+         now(), item_id))
     return run(conn, engine, "SELECT * FROM decisions ORDER BY id DESC LIMIT 1")
 
 
@@ -1004,6 +1094,16 @@ def selftest():
         ok, msg = finish(conn, "SQLITE", ids["B"], "HUMAN", reason="ambang: disk < 10G")
         check("eskalasi menyimpan alasan", ok and get_item(conn, "SQLITE", ids["B"])["escalation_reason"])
         check("item HUMAN dilewati", next_item(conn, "SQLITE") is None)
+        # Eskalasi harus menghasilkan sesuatu yang bisa DIJAWAB, bukan hanya judul untuk dibaca.
+        esc_q = open_decision_for(conn, "SQLITE", ids["B"])
+        check("naik ke antrean orang sekaligus mengajukan pertanyaan yang tertaut",
+              esc_q is not None and int(esc_q["item_id"]) == ids["B"]
+              and esc_q["state"] == "OPEN", str(esc_q))
+        finish(conn, "SQLITE", ids["B"], "HUMAN", reason="ambang: disk < 10G")
+        check("eskalasi kedua atas item yang sama tidak mengajukan pertanyaan kedua",
+              len([d for d in decisions_for_item(conn, "SQLITE", ids["B"])
+                   if d["state"] in ("OPEN", "ESCALATED")]) == 1,
+              str(decisions_for_item(conn, "SQLITE", ids["B"])))
 
         conn.execute("INSERT INTO quest_tasks (title, status) VALUES ('unavail','UNAVAILABLE')")
         conn.commit()
@@ -1275,10 +1375,54 @@ def selftest():
         # Tab Human Decide membaca kolom ini satu per satu. Kalau query di status() berhenti
         # menyertainya, halaman tidak error — ia cuma menampilkan baris kosong, dan yang
         # dilihat operator adalah pertanyaan tanpa alasan. Jadi kolomnya diassert.
-        need = {"id", "question", "options", "weight", "state", "rung_used", "model_id", "note"}
+        need = {"id", "question", "options", "weight", "state", "rung_used", "model_id", "note",
+                "item_id"}
         sample = next((x for x in stt_irr["decisions_open"] if x["state"] != "OPEN"), None)
         check("setiap kolom yang dibaca tab Human Decide ikut terkirim",
               sample is not None and need <= set(sample), str(sorted(set(sample or {}))))
+
+        # Jalur TULIS operator. Antrean yang hanya bisa dibaca adalah pajangan: kontrak menuntut
+        # manusia menjawab, jadi penjawab manusia harus punya kolomnya sendiri di baris yang sama.
+        # Item khusus dipakai supaya pertanyaan tes tidak menumpang pada B, yang sudah punya
+        # pertanyaannya sendiri dari eskalasi di atas.
+        conn.execute("INSERT INTO quest_tasks (title, status) VALUES ('answer-host','HUMAN')")
+        conn.commit()
+        host = int(run(conn, "SQLITE",
+                        "SELECT id FROM quest_tasks WHERE title='answer-host'")[0]["id"])
+        q_b = decide(conn, "SQLITE", "Timer dinyalakan malam ini?",
+                     [{"label": "ya", "evidence": "log satu malam", "cost": "kuota"},
+                      {"label": "nanti", "evidence": "belum ada yang mengawasi", "cost": "—"}],
+                     "heavy", host)[0]["id"]
+        check("pertanyaan bisa ditautkan ke item yang menunggunya",
+              _decision_row(conn, "SQLITE", q_b).get("item_id") == host,
+              str(_decision_row(conn, "SQLITE", q_b).get("item_id")))
+        check("item dengan pertanyaan terbuka terdeteksi sebelum ada yang mengetik",
+              (open_decision_for(conn, "SQLITE", host) or {}).get("id") == q_b,
+              str((open_decision_for(conn, "SQLITE", host) or {}).get("id")))
+        ok_a, msg_a, row_a = answer_decision(conn, "SQLITE", q_b, "ya, nyalakan", "operator-selftest")
+        check("jawaban orang tercatat sebagai jawaban orang",
+              ok_a and row_a["state"] == "ANSWERED" and row_a["answered_by"] == "operator-selftest"
+              and row_a["rung_used"] == "human", msg_a)
+        check("setelah dijawab, itemnya tidak lagi menunggu",
+              open_decision_for(conn, "SQLITE", host) is None,
+              str(open_decision_for(conn, "SQLITE", host)))
+        ok_a2, msg_a2, _ = answer_decision(conn, "SQLITE", q_b, "nanti saja")
+        check("jawaban kedua ditolak tanpa menimpa yang pertama",
+              not ok_a2 and "sudah" in msg_a2
+              and _decision_row(conn, "SQLITE", q_b)["answer"] == "ya, nyalakan", msg_a2)
+        check("jawaban kosong tidak menulis apa pun",
+              not answer_decision(conn, "SQLITE", q_b, "   ")[0])
+        ok_a3, msg_a3, _ = answer_decision(conn, "SQLITE", 9_999_999, "x")
+        check("id asing ditolak sebelum ada UPDATE", not ok_a3 and "tidak ada" in msg_a3, msg_a3)
+        check("jawaban dapat dibaca balik dari itemnya",
+              any(d["id"] == q_b and d["state"] == "ANSWERED" for d in
+                  decisions_for_item(conn, "SQLITE", host)),
+              str(len(decisions_for_item(conn, "SQLITE", host))))
+        stt_ans = status(conn, "SQLITE")
+        check("yang sudah dijawab dilaporkan sebagai riwayat, bukan hilang",
+              any(d["id"] == q_b for d in stt_ans["decisions_answered"])
+              and not any(d["id"] == q_b for d in stt_ans["decisions_open"]),
+              str([d["id"] for d in stt_ans["decisions_answered"]]))
 
         item = get_item(conn, "SQLITE", ids["A"])
         check("resume_count ada", "resume_count" in item)
@@ -1295,7 +1439,8 @@ def selftest():
         stt = status(conn, "SQLITE")
         check("status punya semua bagian yang dibaca GUI",
               all(k in stt for k in ("autopilot", "drain", "night", "limits", "per_status",
-                                     "human_queue", "decisions_open", "stalled", "next")),
+                                     "human_queue", "decisions_open", "decisions_answered",
+                                     "stalled", "next")),
               str(sorted(stt)))
         check("laporan GUI turunan, bukan karangan: tree kotor berarti night.ok false",
               tree_dirty() is not True or not stt["night"]["ok"], str(stt["night"]))
@@ -1580,9 +1725,17 @@ def status(conn, engine, older_than=180):
     human = run(conn, engine,
                 "SELECT id, title, status, escalation_reason, phase FROM quest_tasks "
                 "WHERE status='HUMAN' ORDER BY id")
+    # `ANSWERED` tidak ikut antrean yang menunggu: baris yang sudah dijawab bukan lagi sesuatu yang
+    # menahan mesin. Ia dilaporkan terpisah sebagai riwayat — "sudah dijawab" tidak boleh berarti
+    # "hilang dari laporan", karena operator yang tidak melihat jawabannya sendiri akan menjawab dua kali.
     dec = run(conn, engine,
               "SELECT id, question, options, weight, state, rung_used, engine_key, model_id, "
-              "note, created_epoch FROM decisions WHERE state <> 'RESOLVED' ORDER BY id")
+              "note, created_epoch, item_id FROM decisions "
+              "WHERE state IN ('OPEN','ESCALATED') ORDER BY id")
+    dec_done = run(conn, engine,
+                   "SELECT id, question, state, answer, rung_used, model_id, answered_by, "
+                   "resolved_epoch, item_id FROM decisions "
+                   "WHERE state IN ('ANSWERED','RESOLVED') ORDER BY id DESC LIMIT 8")
     nxt = next_item(conn, engine)
     return {
         "engine": engine,
@@ -1596,6 +1749,7 @@ def status(conn, engine, older_than=180):
         "per_status": per_status,
         "human_queue": human,
         "decisions_open": dec,
+        "decisions_answered": dec_done,
         "stalled": stalled(conn, engine, older_than),
         "next": nxt,
     }
@@ -1630,8 +1784,14 @@ def main(argv=None):
     sub.add_parser("drain")
     p = sub.add_parser("decide"); p.add_argument("question"); p.add_argument("--options", default="")
     p.add_argument("--weight", default="heavy", choices=["heavy", "light", "irreversible"])
+    p.add_argument("--item", type=int, default=None,
+                   help="quest id yang menunggu jawaban ini; tanpa ini pertanyaan tidak membangunkan siapa-siapa")
     p.add_argument("--route", action="store_true", help="langsung kiratkan ke tangga resolver")
     p.add_argument("--timeout", type=int, default=240)
+    p = sub.add_parser("answer"); p.add_argument("id", type=int)
+    p.add_argument("--choice", required=True, help="isi jawaban; label pilihan, kalimat bebas, apa pun yang operator tulis")
+    p.add_argument("--by", default="operator")
+    p.add_argument("--note", default=None)
     p = sub.add_parser("route"); p.add_argument("id", type=int)
     p.add_argument("--timeout", type=int, default=240)
     p.add_argument("--dry-run", action="store_true",
@@ -1708,7 +1868,7 @@ def main(argv=None):
     elif a.cmd == "drain":
         print(json.dumps(drain_level(conn, engine), default=str, indent=2))
     elif a.cmd == "decide":
-        rows = decide(conn, engine, a.question, parse_options_arg(a.options), a.weight)
+        rows = decide(conn, engine, a.question, parse_options_arg(a.options), a.weight, a.item)
         row = rows[0]
         print(json.dumps(row, default=str, indent=2))
         if a.weight == "irreversible":
@@ -1717,6 +1877,19 @@ def main(argv=None):
             ok, msg = broker(conn, engine, row["id"], a.timeout)
             print(msg)
             return 0 if ok else 1
+    elif a.cmd == "answer":
+        # Jawaban orang dicatat lebih dulu, baru disampaikan: kalau pengiriman ke pane gagal,
+        # keputusannya tetap utuh di ledger. Urutan ini bukan gaya — kebalikannya akan membuat
+        # satu pane yang sedang penuh menghapus keputusan operator.
+        ok, msg, row = answer_decision(conn, engine, a.id, a.choice, a.by, a.note)
+        target = None
+        if ok and row and row.get("item_id"):
+            item = get_item(conn, engine, int(row["item_id"])) or {}
+            target = {"item": int(row["item_id"]), "cli_engine": item.get("cli_engine"),
+                      "claimed_by": item.get("claimed_by"), "status": item.get("status")}
+        print(json.dumps({"ok": ok, "message": msg, "decision": row, "target": target},
+                         default=str, indent=2))
+        return 0 if ok else 1
     elif a.cmd == "route":
         if a.dry_run:
             import cross_verify as cv

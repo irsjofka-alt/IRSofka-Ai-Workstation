@@ -286,6 +286,88 @@ def nudge_resting(conn, engine, beats=None, sender=None, emit=None):
                  why=f"{type(exc).__name__}: {exc}")
 
 
+ANSWER_PROMPT = (
+    "JAWABAN OPERATOR untuk keputusan #{decision}, item #{item}:\n"
+    "  {answer}\n"
+    "Jawaban ini tercatat di tabel decisions sebagai state=ANSWERED, answered_by={by} — datang dari "
+    "manusia di meja, bukan dari resolver. Kerjakan sekarang. Jangan ajukan pertanyaan yang sama "
+    "untuk kedua kalinya; kalau pilihannya berubah, itu pertanyaan baru, bukan suntingan sejarah."
+)
+
+
+def deliver_answer(conn, engine, decision_id, sender=None, beats=None, capture=None, busy=None):
+    """Antar satu jawaban yang barusan ditulis ke mesin yang menunggunya — atau laporkan mengapa tidak.
+
+    Ini tangan, dan pembedanya dari `nudge_resting` bukan kecil: `nudge_resting` dipanggil timer dan
+    mengetik `CONTINUE` atas nama mesin, sementara fungsi ini hanya dipanggil dari satu klik manusia
+    (`POST /api/decide`) dan mengetik jawaban manusia atas nama manusia. Sakelar OFF melindungi orang
+    yang tidur dari mesin yang mempersenjatai dirinya sendiri — bukan dari jawabannya sendiri.
+    `tick()` tidak pernah menyebut fungsi ini, dan selftest menegakkan dua-duanya: token kirim tidak
+    ada di jalur timer, dan nama fungsi ini tidak ada di badan `tick`.
+
+    `AT_REST` tetap diminta walau yang menekan tombol adalah operator. Alasannya bukan izin, tapi
+    keselamatan pekerjaan: teks yang masuk ke pane yang sedang di tengah kalimat mengacaukan giliran
+    mesin itu, dan yang hilang adalah pekerjaannya, bukan cuma lognya. Untuk item tanpa klaim terbuka
+    — kasus normal, karena item berhenti di `HUMAN` justru sambil menunggu ini — buktinya satu
+    pembacaan pane: tidak sedang menampilkan spinner, dan terbaca.
+
+    Yang tidak dilakukan: memilih engine. Tujuannya `cli_engine` pada baris item, atau tidak ada
+    tujuan sama sekali (§12).
+    """
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    rows = wo.run(conn, engine, f"SELECT * FROM decisions WHERE id={ph}", (decision_id,))
+    decision = rows[0] if rows else None
+    if not decision:
+        return {"ok": False, "sent": False, "why": f"decision {decision_id} tidak ada"}
+    if decision.get("state") != "ANSWERED":
+        return {"ok": False, "sent": False,
+                "why": f"decision {decision_id} berstatus {decision.get('state')}: "
+                       "yang diantar hanya jawaban yang sudah tercatat"}
+    item_id = decision.get("item_id")
+    if not item_id:
+        return {"ok": False, "sent": False,
+                "why": f"decision {decision_id} tidak menautkan item: jawabannya ada di ledger, "
+                       "tapi tidak ada pekerjaan yang bisa dibangunkan"}
+    item = wo.get_item(conn, engine, int(item_id)) or {}
+    target = (item.get("cli_engine") or "").strip()
+    if not target:
+        return {"ok": False, "sent": False, "why": f"item {item_id} tidak punya cli_engine; "
+                                                  "tujuan tidak dipilih dari kebiasaan"}
+    if beats is None:
+        beats = wo.heartbeat(conn, engine)
+    held = next((b for b in beats if int(b["id"]) == int(item_id)), None)
+    if held is not None:
+        if held["state"] != "AT_REST":
+            return {"ok": False, "sent": False, "target": target, "item": int(item_id),
+                    "why": f"klaim masih {held['state']} ({held['why']}): jawaban sudah tercatat, "
+                           "pengiriman ditunda — bukan digagalkan"}
+        proof = f"heartbeat AT_REST ({held['why']})"
+    else:
+        import cross_verify as cv
+        capture = capture or cv.capture_pane
+        busy = busy or cv.pane_is_busy
+        text = capture(target)
+        if not text:
+            return {"ok": False, "sent": False, "target": target, "item": int(item_id),
+                    "why": f"pane {target} tidak terbaca: UNKNOWN bukan berarti diam"}
+        if busy(text):
+            return {"ok": False, "sent": False, "target": target, "item": int(item_id),
+                    "why": f"pane {target} sedang bekerja: jawaban tercatat, diantar nanti"}
+        proof = f"tidak ada klaim terbuka; pane {target} terbaca tanpa pekerjaan berjalan"
+    prompt = ANSWER_PROMPT.format(
+        decision=decision_id, item=int(item_id),
+        answer=(decision.get("answer") or "").strip()[:1500],
+        by=decision.get("answered_by") or decision.get("model_id") or "operator")
+    sender = sender or default_sender
+    try:
+        reply = (sender(target, prompt) or "")
+    except Exception as exc:  # noqa: BLE001 — pengiriman gagal bukan berarti jawaban hilang
+        return {"ok": True, "sent": False, "target": target, "item": int(item_id),
+                "why": f"tersimpan, pengiriman gagal: {type(exc).__name__}: {exc}"}
+    return {"ok": True, "sent": True, "target": target, "item": int(item_id),
+            "proof": proof, "reply": str(reply)[:300]}
+
+
 # --- satu tick ----------------------------------------------------------------
 def tick(conn, engine, gate=None, beats=None, runner=None, sender=None, log=None):
     """Satu putaran timer. Mengembalikan kejadian yang juga dituliskan ke log malam.
@@ -360,21 +442,36 @@ def selftest():
         print(f"[{'ok    ' if cond else 'FAIL  '}] {name}" + ("" if cond else f"  <- {detail}"))
 
     src = Path(__file__).read_text()
+    code = src.partition("def selftest(")[0]
     # Sumber modul adalah bagian dari klaim. Ini tangan: ia tidak boleh bisa menyimpulkan
     # "istirahat" sendiri (dua definisi = dua laporan yang boleh berbeda) dan tidak boleh punya
     # jalur kirim kedua di luar API daemon.
     #
     # Yang dipindai hanya kode, bukan selftest-nya sendiri: daftar token terlarang di bawah ini
     # menyebut token-token itu secara literal, jadi memindai seluruh berkas akan menemukan daftarnya
-    # sendiri dan gagal. Klaimnya adalah "tidak ada satu pun jalur eksekusi di modul ini yang
-    # memakai itu", dan jalur eksekusi semuanya berada sebelum fungsi test.
-    code = src.partition("def selftest(")[0]
+    # sendiri dan gagal.
+    #
+    # Klaimnya juga sudah bukan "modul ini tidak pernah menyentuh pane". Yang benar, dan yang bisa
+    # ditegakkan, adalah SIAPA yang boleh mengetik: jalur timer (`tick` dan seluruh yang dipanggilnya)
+    # tidak punya tangan, sementara `deliver_answer` adalah tangan manusia yang hanya dipanggil satu
+    # klik. Karena itu pemindaian per fungsi, dan badan fungsi manusia dibuang dari pemindaian jalur
+    # timer secara terbuka — token-nya tidak diizinkan diam-diam, ia memang bukan bagian timer.
+    import ast as _ast
+    segments = {n.name: (_ast.get_source_segment(code, n) or "")
+                for n in _ast.parse(code).body if isinstance(n, _ast.FunctionDef)}
+    hand = segments.get("deliver_answer") or ""
+    timer_code = code.replace(hand, "") if hand else code
+    check("tangan manusia ada satu fungsi, bukan tersebar", bool(hand) and hand != code,
+          str(sorted(segments)))
     for banned in ("capture_pane", "pane_is_busy", "action_log", "ydotool", "send-keys",
                    "set_level(", "subprocess.run", "check_output", "Popen", "tmux"):
-        check(f"kode tidak memakai {banned!r}", banned not in code)
+        check(f"jalur timer tidak memakai {banned!r}", banned not in timer_code)
+    for name in ("tick", "reconcile", "hand_new_work", "nudge_resting", "gate_item", "read_gate"):
+        check(f"{name}() tidak pernah memanggil tangan manusia",
+              "deliver_answer" not in segments.get(name, ""), name)
     for needed in ("wo.heartbeat", "wo.drain_level", "wo.nudge", "wo.next_item", "cw.run_grouped",
                    "cv.daemon_post"):
-        check(f"memakai {needed}, bukan menduakalinya", needed.split(".", 1)[1] in code)
+        check(f"memakai {needed}, bukan menduakalinya", needed.split(".", 1)[1] in timer_code)
 
     tmp = Path(f"/tmp/drainer_selftest_{wo.now()}.db")
     conn = sqlite3.connect(str(tmp))
@@ -602,6 +699,56 @@ def selftest():
               any(b["id"] == dr for b in mine) and all(b["state"] == "UNKNOWN" for b in mine),
               str([(b["id"], b["state"]) for b in mine]))
 
+        # --- tangan manusia: satu klik yang mengantar jawaban ----------------------
+        # Beda dari `nudge_resting` di atas dan bedanya bukan kosakata: yang itu diketik timer atas
+        # nama mesin, yang ini diketik karena operator menekan Save. Sakelar OFF melindungi orang yang
+        # tidur dari mesin yang mempersenjatai dirinya sendiri — bukan dari jawabannya sendiri.
+        tgt = make("selftest-answer-target", status="HUMAN", gate="true", engine_key="qoder")
+        lonely = make("selftest-answer-notarget", status="HUMAN", gate="true", engine_key=None)
+        q_open = wo.decide(conn, "SQLITE", "A atau B?", ["A", "B"], "heavy", tgt)[0]["id"]
+        q_alone = wo.decide(conn, "SQLITE", "pertanyaan tanpa pekerjaan", ["A"], "heavy")[0]["id"]
+        wo.answer_decision(conn, "SQLITE", q_alone, "A", "selftest-operator")
+        d_nolink = deliver_answer(conn, "SQLITE", q_alone, sender=sender, beats=[])
+        check("jawaban yang tidak menautkan item tidak membangunkan apa pun",
+              not d_nolink["sent"] and "tidak menautkan" in d_nolink["why"], str(d_nolink))
+        check("yang belum dijawab tidak diantar",
+              not deliver_answer(conn, "SQLITE", q_open, sender=sender, beats=[])["sent"],
+              str(deliver_answer(conn, "SQLITE", q_open, sender=sender, beats=[])))
+        wo.answer_decision(conn, "SQLITE", q_open, "A, lebih hemat", "selftest-operator")
+        sent.clear()
+        d_work = deliver_answer(conn, "SQLITE", q_open, sender=sender,
+                                beats=[{"id": tgt, "state": "WORKING", "claimed_by": "qoder",
+                                        "why": "spinner"}])
+        check("pane yang sedang bekerja tidak diketuki walau jawabannya sudah ada",
+              not sent and not d_work["sent"] and "ditunda" in d_work["why"], str(d_work))
+        d_rest = deliver_answer(conn, "SQLITE", q_open, sender=sender,
+                                beats=[{"id": tgt, "state": "AT_REST", "claimed_by": "qoder",
+                                        "why": "dua sinyal setuju"}])
+        check("jawaban diantar ke engine yang tertulis di baris itemnya, bukan yang sedang disukai",
+              d_rest["sent"] and [t for t, _ in sent] == ["qoder"], str(sent))
+        check("isi kiriman membawa jawaban orang apa adanya",
+              bool(sent) and "lebih hemat" in sent[0][1] and str(q_open) in sent[0][1], str(sent[:1]))
+        # Item yang berhenti justru karena menunggu tidak memegang klaim: di sana buktinya satu
+        # pembacaan pane, dan pane yang tidak terbaca tetap UNKNOWN.
+        sent.clear()
+        d_blind = deliver_answer(conn, "SQLITE", q_open, sender=sender, beats=[],
+                                 capture=lambda t: "", busy=lambda t: False)
+        check("pane yang tidak terbaca bukan berarti diam",
+              not d_blind["sent"] and "tidak terbaca" in d_blind["why"], str(d_blind))
+        check("pane yang sedang menampilkan pekerjaan tidak diketuki",
+              not deliver_answer(conn, "SQLITE", q_open, sender=sender, beats=[],
+                                 capture=lambda t: "esc to cancel",
+                                 busy=lambda t: True)["sent"])
+        d_clear = deliver_answer(conn, "SQLITE", q_open, sender=sender, beats=[],
+                                 capture=lambda t: "prompt siap", busy=lambda t: False)
+        check("tanpa klaim terbuka, satu pembacaan pane yang bersih cukup untuk menjawab",
+              d_clear["sent"], str(d_clear))
+        wo.run(conn, "SQLITE", "UPDATE decisions SET item_id=? WHERE id=?", (lonely, q_open))
+        check("tanpa cli_engine pengiriman ditolak, bukan ditebak",
+              not deliver_answer(conn, "SQLITE", q_open, sender=sender,
+                                 beats=[{"id": lonely, "state": "AT_REST", "claimed_by": "qoder",
+                                         "why": "x"}])["sent"])
+
         path = write_events([{"ts": 1, "action": "SELFTEST"}],
                             path=Path("/tmp/drainer_selftest.jsonl"))
         check("log malam ditulis sebagai JSONL yang dibaca baris per baris",
@@ -623,6 +770,8 @@ def main(argv=None):
     sub = p.add_subparsers(dest="cmd", required=True)
     sub.add_parser("tick")
     sub.add_parser("gate")
+    p_del = sub.add_parser("deliver", help="antar jawaban yang barusan ditulis operator ke pane-nya")
+    p_del.add_argument("--decision", type=int, required=True)
     sub.add_parser("selftest")
     a = p.parse_args(argv)
 
@@ -630,6 +779,13 @@ def main(argv=None):
         return selftest()
     conn, engine = wo.connect()
     wo.ensure_schema(conn, engine)
+    if a.cmd == "deliver":
+        out = deliver_answer(conn, engine, a.decision)
+        events = [{"ts": wo.now(), "action": "ANSWER_SENT" if out.get("sent") else
+                   ("ANSWER_NOT_SENT" if out.get("ok") else "ANSWER_DELIVER_REFUSED"), **out}]
+        path = write_events(events)
+        print(json.dumps({"result": out, "log": str(path)}, default=str, indent=2))
+        return 0 if out.get("sent") or out.get("ok") else 1
     if a.cmd == "gate":
         print(json.dumps(read_gate(conn, engine), default=str, indent=2))
         return 0

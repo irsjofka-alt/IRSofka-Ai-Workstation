@@ -165,6 +165,17 @@
     color: var(--ink); font-family: var(--mono); font-size: 12.5px; padding: 6px 8px; border-radius: 7px;
   }
   .field input:focus, .field select:focus { outline: none; border-color: var(--accent); }
+  /* Antrean yang bisa dijawab. Pilihan adalah radio karena bentuknya memang satu keputusan;
+     kolom teks dibiarkan bebas karena jawaban manusia tidak selalu salah satu label kita. */
+  .field textarea {
+    width: 100%; box-sizing: border-box; background: #0d141d; border: 1px solid var(--line);
+    color: var(--ink); font-family: var(--mono); font-size: 12.5px; padding: 6px 8px;
+    border-radius: 7px; min-height: 54px; resize: vertical;
+  }
+  .field textarea:focus { outline: none; border-color: var(--accent); }
+  .opts { display: flex; flex-direction: column; gap: 4px; margin: 6px 0 2px; }
+  .opts label { font-family: var(--mono); font-size: 12px; color: var(--ink); display: flex;
+                gap: 7px; align-items: baseline; }
   .wins { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; padding-top: 3px; }
   .wins label { font-family: var(--mono); font-size: 11.5px; color: var(--ink-dim); display: flex; gap: 5px; align-items: center; }
   .savebar { display: flex; gap: 10px; align-items: center; margin: 4px 0 2px; flex-wrap: wrap; }
@@ -750,13 +761,59 @@
 
   /* Human Decide — muka dari tools/work_order.py.
    *
-   * Halaman ini tidak punya tombol apa pun. Itu pilihan, bukan kelalaian: kontrak §12 membagi
-   * workstation menjadi kokpit (tempat perintah diberikan) dan station (tempat catatan dibaca),
-   * dan F10.8 menaruh sakelar Autopilot di kokpit. Angka pemutus, batas lease dan isi antrean
-   * dibaca dari /api/autopilot, yang meneruskan byte work_order.py apa adanya — tidak ada satu
-   * pun angka di halaman ini yang dihitung di JavaScript.
+   * Bagiannya: Python memegang kosakata (siapa yang menjawab, apa statusnya, apakah baris ini
+   * boleh ditimpa), Rust memegang HTTP, dan halaman ini hanya mengirim bentuk yang diminta dan
+   * menampilkan balasannya apa adanya. Angka pemutus, batas lease dan isi antrean datang dari
+   * /api/autopilot tanpa satu pun dihitung di JavaScript.
+   *
+   * Halaman ini dulu tidak punya tombol, dan itu salah baca atas kontrak §12: kokpit/station
+   * membagi *perintah* dan *catatan*, tapi antrean yang tidak bisa dijawab dari tempat ia dilihat
+   * bukan catatan — ia kemacetan yang rapi. Karena itu di sini ada dua hal: sakelar, dan kolom
+   * jawaban. Yang tetap tidak ada di sini adalah tombol "kerjakan apa pun atas namaku": menaiki
+   * tangga tangan (`arm`) hanya bisa dari terminal manusia.
    */
   var ap = null, apBusy = false;
+  var drafts = {};      /* draf jawaban per decision, supaya render ulang tidak menghapus ketikan */
+
+  function postJson(url, body) {
+    return fetch(url, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body)
+    }).then(function (r) {
+      return r.text().then(function (t) {
+        var json;
+        try { json = JSON.parse(t); } catch (e) { json = { raw: t }; }
+        return { status: r.status, json: json };
+      });
+    });
+  }
+
+  /* Balasan daemon dicetak seperti adanya. Yang ditulis ulang di sini bukan laporan:
+     "dikirim" dan "tercatat, pengiriman ditunda" adalah dua keadaan berbeda, dan menyatukannya
+     menjadi satu pesan sukses adalah cara halaman ini berbohong. */
+  function showReply(box, res) {
+    box.textContent = "";
+    var pre = el("pre");
+    pre.style.whiteSpace = "pre-wrap";
+    pre.textContent = "HTTP " + res.status + "\n" + JSON.stringify(res.json, null, 1);
+    box.appendChild(pre);
+  }
+
+  /* Satu bidang angka berlabel. Rentangnya dijaga di sini HANYA supaya nilai yang dikirim tidak
+     kosong/non-dasar; kerja keras validasi bentuk ada di Rust dan keputusannya ada di Python. */
+  function numField(labelText, value, min, max) {
+    var box = el("div", "field");
+    var input = el("input");
+    input.type = "number";
+    input.value = value;
+    input.min = min;
+    input.max = max;
+    var lab = el("label", null, labelText);
+    box.appendChild(lab);
+    box.appendChild(input);
+    return { box: box, input: input };
+  }
 
   function loadAutopilot() {
     if (apBusy) return;
@@ -792,6 +849,12 @@
   }
 
   function renderDecideView() {
+    /* Poll 10 detik tidak boleh merebut formulir yang sedang diketik: operator yang kehilangan
+       jawabannya di tengah kalimat akan menulisnya dua kali, dan yang kedua masuk ke baris yang
+       sudah dijawab — menolak itu benar, tapi penyebabnya tidak perlu ada di sini. */
+    if (document.querySelector("#feed input:focus, #feed textarea:focus, #feed select:focus")) {
+      return;
+    }
     document.getElementById("title").textContent = "What waits for a person";
     document.getElementById("crumb").textContent = "Human Decide";
     document.getElementById("tabs").style.display = "none";
@@ -818,6 +881,7 @@
     }
 
     var state = ap.autopilot || {}, night = ap.night || {}, limits = ap.limits || {};
+    var drain = ap.drain || {};
     var waiting = (ap.decisions_open || []).length + (ap.human_queue || []).length;
     var on = state.mode === "ON";
 
@@ -855,10 +919,65 @@
       p.appendChild(document.createTextNode(r[1]));
       switchCard.appendChild(p);
     });
-    switchCard.appendChild(el("p", "note",
-      "this page is the record, not the control: the toggle lives in the console (Open console, top left). " +
-      "Three paths turn it off and none of them needs the AI's cooperation."));
     feed.appendChild(switchCard);
+
+    /* Kontrol sakelar. `mode` menjawab siapa yang memegang mesin dan boleh diklik dari sini;
+       `level` menjawab seberapa jauh tangan boleh bergerak dan tidak punya tombol di sini —
+       menaiki tangga butuh terminal manusia (`arm` menolak tanpa /dev/tty, itu diukur, bukan
+       gaya). Menulis CONTINUE ke pane karena seseorang menekan Save adalah jalur lain, dan ia
+       hanya lahir dari satu klik, bukan dari timer. */
+    feed.appendChild(head("The switch, as control"));
+    var ctl = el("div", "card");
+    ctl.appendChild(el("h3", null,
+      "mode " + (state.mode || "UNKNOWN") + " · hand at " + (drain.level || "UNKNOWN")));
+    var win = numField("window minutes", 240, 1, 1440);
+    var bud = numField("item budget", Number(state.item_budget) || 12, 1, 200);
+    var whyIn = el("input");
+    whyIn.type = "text";
+    whyIn.placeholder = "reason (written into the ledger, optional)";
+    var whyField = el("div", "field");
+    whyField.appendChild(el("label", null, "reason"));
+    whyField.appendChild(whyIn);
+    [win.box, bud.box, whyField].forEach(function (f) { ctl.appendChild(f); });
+    var reply = el("div");
+    var btnOn = el("button", "btn primary", state.mode === "ON" ? "Renew the window" : "Turn ON");
+    var btnOff = el("button", "btn", "Turn OFF");
+    function sendSwitch(mode, button) {
+      button.disabled = true;
+      var body = { mode: mode, by: "operator-gui", reason: whyIn.value || null };
+      if (mode === "on") {
+        body.minutes = Number(win.input.value);
+        body.budget = Number(bud.input.value);
+      }
+      postJson("/api/autopilot", body).then(function (res) {
+        button.disabled = false;
+        showReply(reply, res);
+        ap = null;
+        loadAutopilot();
+      }).catch(function (e) {
+        button.disabled = false;
+        reply.textContent = "tidak ada balasan dari daemon: " + e;
+      });
+    }
+    btnOn.addEventListener("click", function () { sendSwitch("on", btnOn); });
+    btnOff.addEventListener("click", function () { sendSwitch("off", btnOff); });
+    var row = el("div", "row");
+    row.appendChild(btnOn);
+    row.appendChild(btnOff);
+    ctl.appendChild(row);
+    ctl.appendChild(reply);
+    ctl.appendChild(el("p", "note",
+      "OFF works without the AI's cooperation, and so does this button: " +
+      (ap.off_paths || ["tombol ini",
+        "ai-station autopilot off",
+        "systemctl --user stop irsofka-autopilot.timer",
+        "python3 ~/.ai-station/tools/work_order.py disarm"]).join(" · ")));
+    ctl.appendChild(el("p", "note",
+      "ON does not raise the hand. Nothing types CONTINUE into a pane until the ladder is armed from " +
+      "a terminal — `ai-station drain arm resume`, which refuses to run without a controlling TTY, and " +
+      "this page has no button for it on purpose. Answering a question below is the one keystroke that " +
+      "comes from you, not from the loop."));
+    feed.appendChild(ctl);
 
     if (!night.ok && (night.why || []).length) {
       feed.appendChild(head("Why the breaker is open"));
@@ -881,32 +1000,100 @@
       feed.appendChild(whyCard);
     }
 
-    feed.appendChild(head("Decisions no rung could answer"));
+    feed.appendChild(head("Decisions waiting on you"));
     listOrNull(feed, ap.decisions_open, function (d) {
       var c = el("div", "card");
       var esc = d.state !== "OPEN";
-      var h = el("h3", null, d.question || "untitled question");
-      c.appendChild(h);
+      c.appendChild(el("h3", null, d.question || "untitled question"));
       c.appendChild(el("p", esc ? "note" : null,
         esc ? "every resolver rung was tried and none of them settled this — it is here because "
               + "the machines could not, not because someone chose to skip you"
             : "no engine has dispatched this yet"));
       var opts = [];
       try { opts = JSON.parse(d.options || "[]"); } catch (e) { opts = []; }
-      opts.forEach(function (o) {
-        var label = (o && typeof o === "object") ? (o.label || "(no label)") : String(o);
-        c.appendChild(el("p", null, "— " + label));
-        if (o && typeof o === "object") {
-          c.appendChild(el("p", "note", "  evidence: " + (o.evidence || "not measured")));
-          c.appendChild(el("p", "note", "  cost: " + (o.cost || "not measured")));
+      var draft = drafts[d.id] || (drafts[d.id] = { choice: null, text: "" });
+      var group = "dec" + d.id;
+      if (opts.length) {
+        var optBox = el("div", "opts");
+        opts.forEach(function (o) {
+          var label = (o && typeof o === "object") ? (o.label || "(no label)") : String(o);
+          var lab = el("label");
+          var rb = el("input");
+          rb.type = "radio";
+          rb.name = group;
+          rb.value = label;
+          rb.checked = draft.choice === label;
+          rb.addEventListener("change", function () { draft.choice = label; });
+          lab.appendChild(rb);
+          lab.appendChild(document.createTextNode(label));
+          optBox.appendChild(lab);
+          if (o && typeof o === "object") {
+            optBox.appendChild(el("p", "note", "   evidence: " + (o.evidence || "not measured") +
+                                  " · cost: " + (o.cost || "not measured")));
+          }
+        });
+        c.appendChild(optBox);
+      } else {
+        c.appendChild(el("p", "note", "no options were recorded — answer in the box below"));
+      }
+      var ansField = el("div", "field");
+      ansField.appendChild(el("label", null, "your answer"));
+      var ta = el("textarea");
+      ta.placeholder = draft.choice ? "chosen: " + draft.choice + " — or write your own"
+                                   : "what you decide, in your own words";
+      ta.value = draft.text;
+      ta.addEventListener("input", function () { draft.text = ta.value; });
+      ansField.appendChild(ta);
+      c.appendChild(ansField);
+      var aReply = el("div");
+      var save = el("button", "btn primary", "Save answer");
+      save.addEventListener("click", function () {
+        var answer = (ta.value || "").trim() || (draft.choice || "");
+        if (!answer) {
+          aReply.textContent = "nothing sent: pick an option or write the answer";
+          return;
         }
+        save.disabled = true;
+        postJson("/api/decide", { id: d.id, answer: answer, by: "operator-gui" })
+          .then(function (res) {
+            save.disabled = false;
+            showReply(aReply, res);
+            if (res.json && res.json.ok) {
+              delete drafts[d.id];
+              ap = null;
+              loadAutopilot();
+            }
+          })
+          .catch(function (e) { save.disabled = false; aReply.textContent = "tidak ada balasan: " + e; });
       });
-      if (esc && d.note) c.appendChild(el("p", "note", "why: " + d.note));
+      var bar = el("div", "savebar");
+      bar.appendChild(save);
+      bar.appendChild(el("span", "note",
+        d.item_id ? ("unblocks item #" + d.item_id + " · delivered to its own engine when that pane is provably resting")
+                  : "this question names no item · answering it records the decision but wakes nothing"));
+      c.appendChild(bar);
+      c.appendChild(aReply);
       c.appendChild(el("p", "note",
         "weight " + (d.weight || "—") + " · state " + d.state +
         (d.rung_used ? " · rung " + d.rung_used : "") + " · opened " +
         new Date(Number(d.created_epoch) * 1000).toLocaleString() +
         " · nothing was answered by a substitute engine"));
+      return c;
+    });
+
+    /* Riwayat jawaban. Baris yang sudah dijawab memang keluar dari antrean menunggu — tapi kalau
+       ia hilang sama sekali, operator tidak bisa membedakan "sudah saya jawab" dari "tidak pernah
+       ada", dan itu mengundang jawaban kedua pada pertanyaan yang sama. */
+    feed.appendChild(head("Answered — and by whom"));
+    listOrNull(feed, ap.decisions_answered, function (d) {
+      var c = el("div", "card");
+      c.appendChild(el("h3", null, d.question || "untitled question"));
+      c.appendChild(el("p", null, "→ " + (d.answer || "(no answer recorded)")));
+      c.appendChild(el("p", "note",
+        (d.state || "—") + " by " + (d.answered_by || d.model_id || "—") +
+        (d.rung_used ? " · rung " + d.rung_used : "") +
+        (d.item_id ? " · item #" + d.item_id : "") +
+        " · " + new Date(Number(d.resolved_epoch) * 1000).toLocaleString()));
       return c;
     });
 

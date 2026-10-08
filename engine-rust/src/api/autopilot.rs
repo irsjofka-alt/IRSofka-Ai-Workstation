@@ -25,7 +25,7 @@ use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::{json, Value};
 
-use crate::paths::{python_bin, work_order_path};
+use crate::paths::{drainer_path, python_bin, work_order_path};
 use crate::probe::PROBE_TIMEOUT;
 use crate::spool::spool_event;
 
@@ -42,10 +42,12 @@ fn raw_json(status: StatusCode, text: String) -> Response {
 }
 
 /// Satu-satunya tempat proses anak diberangkatkan: batas waktu keras + grup proses sendiri.
-fn run_tool(args: &[String]) -> Result<String, String> {
-    let script = work_order_path();
+///
+/// Dipakai dua skrip (`work_order.py` dan `drainer.py`) lewat satu fungsi, bukan dua salinan:
+/// dua tempat berangkat berarti dua tempat yang boleh lupa memotong grup prosesnya.
+fn run_script(script: &std::path::Path, args: &[String]) -> Result<String, String> {
     if !script.exists() {
-        return Err(format!("work_order.py tidak ada di {}", script.display()));
+        return Err(format!("{} tidak ada", script.display()));
     }
     let script_arg = script.display().to_string();
     let python = python_bin().display().to_string();
@@ -57,14 +59,16 @@ fn run_tool(args: &[String]) -> Result<String, String> {
     let probe = crate::probe::run_bounded(&python, &argv, None, PROBE_TIMEOUT);
     if probe.timed_out {
         return Err(format!(
-            "work_order.py tidak selesai dalam {}s dan seluruh grup prosesnya sudah dipotong",
+            "{} tidak selesai dalam {}s dan seluruh grup prosesnya sudah dipotong",
+            script.file_name().unwrap_or_default().to_string_lossy(),
             PROBE_TIMEOUT.as_secs()
         ));
     }
     match probe.stdout.find('{') {
         Some(i) => Ok(probe.stdout[i..].to_string()),
         None => Err(format!(
-            "work_order.py tidak mengembalikan JSON: rc={:?}; ok={}; stdout={}; stderr={}",
+            "{} tidak mengembalikan JSON: rc={:?}; ok={}; stdout={}; stderr={}",
+            script.file_name().unwrap_or_default().to_string_lossy(),
             probe.code,
             probe.ok,
             probe.stdout.chars().take(300).collect::<String>(),
@@ -73,12 +77,28 @@ fn run_tool(args: &[String]) -> Result<String, String> {
     }
 }
 
+fn run_tool(args: &[String]) -> Result<String, String> {
+    run_script(&work_order_path(), args)
+}
+
+/// Tangan drainer, dipanggil dari satu klik manusia. Kosakata jawaban tetap milik
+/// `work_order.py`; yang lewat jalur ini hanya pengantarannya.
+fn run_drainer(args: &[String]) -> Result<String, String> {
+    run_script(&drainer_path(), args)
+}
+
 /// `run_tool` menunggu database — bisa mencapai detik. Di dalam handler async itu berarti satu
 /// worker tokio tidak melayani apa pun, jadi prosesnya dijalankan di luar runtime.
 async fn run_tool_async(args: Vec<String>) -> Result<String, String> {
     tokio::task::spawn_blocking(move || run_tool(&args))
         .await
         .map_err(|e| format!("task work_order berhenti: {e}"))?
+}
+
+async fn run_drainer_async(args: Vec<String>) -> Result<String, String> {
+    tokio::task::spawn_blocking(move || run_drainer(&args))
+        .await
+        .map_err(|e| format!("task drainer berhenti: {e}"))?
 }
 
 /// Jalan keluar ketika memanggil sakelar justru yang gagal.
@@ -201,4 +221,128 @@ pub(crate) async fn post_state(Json(body): Json<Value>) -> Response {
         Some("work_order"),
     );
     raw_json(status, text)
+}
+
+/// POST /api/decide — satu jawaban manusia untuk satu pertanyaan yang tercatat.
+///
+/// Urutan kerjanya bagian yang tidak boleh tertukar: **tulis, baru antar**. Kalau pane target
+/// sedang bekerja, keputusan operator tetap utuh di database dan yang gagal hanya pengirimannya.
+/// Kebalikannya — antar lalu tulis — membuat satu pane yang sedang sibuk menghapus jawaban
+/// manusia, dan itu kegagalan yang tidak terlihat dari muka halaman.
+///
+/// Rust tidak memutuskan apa pun di sini. Yang diperiksa cuma bentuk masukan (id bilangan bulat
+/// positif, jawaban tidak kosong, string dipotong), lalu `work_order.py answer` yang menulis dan
+/// `drainer.py deliver` yang mengetik. Menyalin aturan itu ke file ini berarti workstation punya
+/// dua aturan untuk satu kata (§12).
+///
+/// Handler ini adalah satu-satunya tempat jawaban manusia berubah menjadi ketikan, dan ia hanya
+/// bisa dicapai dari klik di halaman. `irsofka-autopilot.timer` tidak pernah memanggilnya —
+/// sakelar OFF tetap melindungi orang yang tidur, dari mesin, bukan dari jawabannya sendiri.
+pub(crate) async fn post_decide(Json(body): Json<Value>) -> Response {
+    let id = match body.get("id").and_then(Value::as_u64) {
+        Some(n) if n > 0 => n,
+        _ => {
+            return envelope(
+                StatusCode::BAD_REQUEST,
+                json!({"ok": false, "stage": "validate",
+                       "error": "id wajib bilangan bulat positif; tidak ada yang ditulis"}),
+            )
+        }
+    };
+    let answer = match body.get("answer").and_then(Value::as_str).map(str::trim) {
+        Some(a) if !a.is_empty() => a.chars().take(4000).collect::<String>(),
+        _ => {
+            return envelope(
+                StatusCode::BAD_REQUEST,
+                json!({"ok": false, "stage": "validate",
+                       "error": "jawaban kosong ditolak; pertanyaannya tetap menunggu"}),
+            )
+        }
+    };
+    let by = body
+        .get("by")
+        .and_then(Value::as_str)
+        .map(|s| s.chars().take(60).collect::<String>())
+        .filter(|s| !s.trim().is_empty())
+        .unwrap_or_else(|| "operator-gui".to_string());
+
+    let mut args: Vec<String> = vec![
+        "answer".to_string(),
+        id.to_string(),
+        "--choice".to_string(),
+        answer,
+        "--by".to_string(),
+        by.clone(),
+    ];
+    if let Some(note) = body
+        .get("note")
+        .and_then(Value::as_str)
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        args.extend(["--note".to_string(), note.chars().take(2000).collect::<String>()]);
+    }
+
+    let recorded = match run_tool_async(args).await {
+        Ok(out) => out,
+        Err(e) => {
+            spool_event(
+                "decision_answer_failed",
+                "station",
+                format!(
+                    "pencatatan jawaban decision {id} gagal: {}",
+                    e.chars().take(200).collect::<String>()
+                ),
+                None,
+                Some("work_order"),
+            );
+            return envelope(
+                StatusCode::SERVICE_UNAVAILABLE,
+                json!({"ok": false, "stage": "record", "error": e,
+                       "note": "pertanyaannya masih OPEN; tidak ada yang diantar"}),
+            );
+        }
+    };
+    let parsed: Value = serde_json::from_str(&recorded).unwrap_or(Value::Null);
+    if parsed.get("ok").and_then(Value::as_bool) != Some(true) {
+        // Ditolak oleh pemilik kosakata: barisnya sudah dijawab, atau tidak pernah ada. Bukan
+        // kegagalan HTTP yang perlu dicoba lagi — menimpanya berarti menghapus bukti siapa yang
+        // memutuskan, jadi bentuk balasannya penolakan, bukan suntingan.
+        let msg = parsed
+            .get("message")
+            .and_then(Value::as_str)
+            .unwrap_or("ditolak work_order.py")
+            .to_string();
+        return envelope(
+            StatusCode::CONFLICT,
+            json!({"ok": false, "stage": "record", "error": msg, "raw": recorded}),
+        );
+    }
+
+    let delivery = match run_drainer_async(vec![
+        "deliver".to_string(),
+        "--decision".to_string(),
+        id.to_string(),
+    ])
+    .await
+    {
+        Ok(out) => serde_json::from_str::<Value>(&out).unwrap_or(json!({"raw": out})),
+        Err(e) => json!({"result": {"sent": false, "why": e}}),
+    };
+    let sent = delivery
+        .pointer("/result/sent")
+        .and_then(Value::as_bool)
+        .map(|b| if b { "dikirim" } else { "tidak dikirim" })
+        .unwrap_or("tidak diketahui");
+    spool_event(
+        "decision_answered",
+        "station",
+        format!("decision {id} dijawab oleh {by}; ke pane: {sent}"),
+        None,
+        Some("work_order"),
+    );
+    envelope(
+        StatusCode::OK,
+        json!({"ok": true, "recorded": parsed, "delivery": delivery}),
+    )
 }

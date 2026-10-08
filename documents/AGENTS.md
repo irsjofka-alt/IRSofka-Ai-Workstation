@@ -128,6 +128,19 @@ own worked example (10 GB disk left against a 14B model download) did **not** ap
 **Human Decide**. It is an exception queue, and an empty one is the normal state; a tab that fills up is
 reporting that the thresholds are wrong, not that the engines are diligent.
 
+An exception queue nobody can answer is a display, not a queue, so the tab carries the answer column and
+the write path behind it. `POST /api/decide` is the only surface that records a human answer; it runs
+`tools/work_order.py answer`, which sets `state='ANSWERED'`, `rung_used='human'` and `answered_by`, and
+refuses to overwrite a row already answered — a second save returns the first answer's timestamp rather
+than replacing it. Every question keeps an `item_id`, the quest it unblocks; without that link an answer is
+an archive entry that wakes nobody. Recording happens **before** delivery, and delivery is a separate call
+(`tools/drainer.py deliver`), so a failed keystroke cannot destroy a decision: the answer stays in
+PostgreSQL and the reply reports the deferral as written. That hand is the human hand, and it is reachable
+only from a click — `deliver_answer` is the one function in the drainer allowed to send, and the selftest
+scans the module function by function so no timer path can name it. Delivery refuses, without discarding
+the answer, while the target claim still reads `WORKING`, when the pane cannot be read, and when the row
+carries no `cli_engine`: the engine woken is the one written on the item, never the one a tick likes.
+
 **Routing is by weight, not only by exhaustion.** The operator named three tiers: the primary worker (the
 engine doing the task), a **heavy reviewer** for anything that would otherwise be a human decision, and a
 **light reviewer** for quick secondary checks. Those map onto registry tiers that already exist — `gemini`
@@ -334,6 +347,13 @@ Two rules apply to everything in F8, and they are not negotiable at implementati
    which one is true.
 2. **Reports are derived.** Nothing shown as a report may be written by hand. One manual
    correction is enough to destroy the ledger's authority.
+3. **A control may sit on the Station only where the record and the decision are the same object.** The
+   exception queue is that case: a page showing a question with no answer column is a museum placard, and
+   an operator who must open a console to unblock one item will not unblock it. Such a control writes
+   through the module that already owns the word — `POST /api/decide` runs `work_order.py answer`,
+   `POST /api/autopilot` runs `work_order.py autopilot` — so the page holds no policy, no threshold and no
+   second definition. What stays forbidden is a control that *computes*: a button whose JavaScript decides
+   what is allowed has become a second copy of the rule, and two copies will disagree.
 
 Related rule for engines: never select a model, verifier or teammate from memory. Resolve the role
 from `config/slots.yaml` and `config/engines.json` at the moment of use — those files are the

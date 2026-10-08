@@ -34,12 +34,45 @@ from pathlib import Path
 TOOLS = Path.home() / ".ai-station" / "tools"
 sys.path.insert(0, str(TOOLS))
 
-# Mesin milik sesi yang memanggil hook ini. Bukan tebakan: berkas ini terdaftar di
-# engines/qoder/settings.json, jadi setiap tembakan datang dari sesi Qoder. Baris perintah untuk
-# mesin lain TIDAK diambil di sini — itu jalur timer, dan memilih engine dari ingatan dilarang §12.
-SESSION_ENGINE = "qoder"
+# Mesin milik sesi yang memanggil hook ini. Bukan tebakan dan bukan hiasan: hook yang sama
+# terdaftar di dua CLI berbeda, dan sebuah baris perintah hanya boleh diambil oleh mesin yang
+# namanya tertulis padanya. Dibaca dari argv[1] supaya yang menentukan adalah pendaftarannya.
+SESSION_ENGINE = (sys.argv[1] if len(sys.argv) > 1 else "qoder")
+# Kata keputusannya berbeda di tiap CLI dan keduanya terdokumentasi di tempatnya sendiri:
+# qodercli menolak penghentian dengan `decision:"block"`, Antigravity dengan `"continue"`.
+# Salah satu kata ini membuat hook berjalan, mengembalikan sesuatu, dan tidak ada yang lanjut —
+# kegagalan yang dari luar terlihat sukses.
+BLOCK_DECISION = {"qoder": "block", "antigravity": "continue"}.get(SESSION_ENGINE, "block")
 NIGHT_LOG = Path.home() / ".ai-station" / "logs" / "semi_wake.jsonl"
 GUIDE_MAX_CHARS = 3200          # plafon yang sama dengan yang sudah dipakai auto_restore.py
+
+
+def session_cwd(data: dict):
+    """Direktori proyek sesi ini, dari bentuk payload CLI yang memanggil.
+
+    qodercli mengirim `cwd` (satu string); Antigravity mengirim `workspacePaths` (array), dan itu
+    justru lebih benar — yang menentukan "proyek siapa yang dikerjakan" adalah workspace yang
+    dilaporkan agent sendiri, bukan cwd shell tempat ia diluncurkan.
+    """
+    raw = data.get("cwd")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    paths = data.get("workspacePaths")
+    if isinstance(paths, list) and paths and isinstance(paths[0], str) and paths[0].strip():
+        return paths[0].strip()
+    return None
+
+
+def is_really_idle(data: dict) -> bool:
+    """`fullyIdle` milik Antigravity: ia MELAPORKAN dirinya, bukan disimpulkan dari teks pane.
+
+    Kalau field itu tidak ada (qodercli), kembali ke aturan lama: hook ini hanya dipanggil pada
+    batas giliran, jadi penghentian yang sedang terjadi memang akhir pekerjaannya. Kalau ada dan
+    False, masih ada tugas latar berjalan — dan menyuntik perintah di sana berarti melanggar
+    "kalau Working, tunggu sampai selesai" yang diminta operator.
+    """
+    flag = data.get("fullyIdle")
+    return True if flag is None else bool(flag)
 
 
 def log(action: str, **rest) -> None:
@@ -110,7 +143,7 @@ def guides_for(conn, engine) -> tuple[str, list[str]]:
 
 def main() -> int:
     data = read_input()
-    cwd_raw = data.get("cwd") or ""
+    cwd_raw = session_cwd(data)
     try:
         cwd = Path(cwd_raw).expanduser().resolve(strict=False) if cwd_raw else None
     except OSError:
@@ -122,12 +155,22 @@ def main() -> int:
     if (ap.get("mode") or "").upper() != "SEMI":
         return 0                      # OFF/ON: jalur ini tidak pernah ikut campur, tanpa jejak
 
-    item = wo.next_item(conn, engine, respect_due=True, origin=wo.ORIGIN_OPERATOR)
+    if not is_really_idle(data):
+        # Yang diminta operator: "kalau melihat kamu Working, nunggu sampai selesai". Antigravity
+        # mengirim fullyIdle=false ketika masih ada tugas latar — di sini jawabannya adalah diam,
+        # dan batas giliran berikutnya yang akan memanggil kita lagi.
+        log("SEMI_NOT_IDLE", engine=SESSION_ENGINE,
+            reason="laporan sesi: masih ada pekerjaan latar — penghentian ini bukan akhirnya")
+        return 0
+
+    item = wo.next_item(conn, engine, respect_due=True, origin=wo.ORIGIN_OPERATOR,
+                        for_engine=SESSION_ENGINE)
     if not item:
-        return 0                      # antrean operator kosong: diam adalah jawaban yang benar
+        return 0                      # antrean untuk mesin ini kosong: diam adalah jawaban yang benar
 
     if not cwd:
-        log("SEMI_REFUSED", reason="hook dipanggil tanpa cwd sesi — tidak ada proyek yang bisa dicocokkan",
+        log("SEMI_REFUSED", engine=SESSION_ENGINE,
+            reason="hook dipanggil tanpa cwd/workspacePaths — tidak ada proyek yang bisa dicocokkan",
             stop_hook_active=bool(data.get("stop_hook_active")))
         return 0
 
@@ -137,6 +180,7 @@ def main() -> int:
         # sesi yang sedang berdiri di direktori A adalah persis kebingungan identitas yang
         # dikhawatirkan operator, dan hasilnya pekerjaan yang dilaporkan di tree yang salah.
         log("SEMI_OTHER_PROJECT", item=int(item["id"]), row_ws=str(where), session_cwd=str(cwd),
+            engine=SESSION_ENGINE,
             reason="perintah itu bukan untuk proyek sesi ini — ia tetap antre, tidak dibatalkan")
         return 0
 
@@ -154,13 +198,21 @@ def main() -> int:
     prompt = drainer.SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=cwd,
                                         gate=(full.get("check_command") or "tanpa gerbang"))
     if body:
-        prompt += "\n\nPedoman proyek yang harus dipatuhi item ini:\n" + body
+        prompt += "\n\nPedoman yang mengikat (TERKUNCI oleh kontrak):\n" + body
     if notes:
         prompt += "\n\nCatatan pedoman: " + "; ".join(notes)
+    # SEMI_PROMPT ditulis untuk jalur timer, di mana drainer memegang lease sampai engine mulai.
+    # Di jalur hook ini klaimnya sudah atas nama mesin ini sendiri, jadi kalimat itu harus
+    # dikoreksi — instruksi yang salah tentang siapa yang memegang lease membuat engine membuang
+    # satu giliran untuk mencari tahu.
+    prompt += (f"\n\nCatatan jalur: hook ini sudah mengklaim item {item['id']} atas nama "
+               f"{SESSION_ENGINE} (bukan drainer). Perpanjang lease dengan "
+               f"`python3 tools/work_order.py lease {item['id']}`.")
     log("SEMI_INJECTED", item=int(item["id"]), title=str(item["title"])[:80],
+        engine=SESSION_ENGINE, decision=BLOCK_DECISION,
         claim=msg, guides=len(body.splitlines()),
         stop_hook_active=bool(data.get("stop_hook_active")))
-    print(json.dumps({"decision": "block", "reason": prompt}, ensure_ascii=False))
+    print(json.dumps({"decision": BLOCK_DECISION, "reason": prompt}, ensure_ascii=False))
     return 0
 
 

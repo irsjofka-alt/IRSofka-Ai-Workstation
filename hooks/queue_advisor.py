@@ -24,6 +24,10 @@ from pathlib import Path
 sys.path.insert(0, str(Path.home() / ".ai-station" / "tools"))
 
 MAX_LISTED = 5
+# Mesin milik sesi yang memanggil, dibaca dari argv supaya satu berkas bisa terdaftar di dua CLI.
+# Dipakai untuk MEMILAH laporan, bukan untuk memilih pekerjaan: menampilkan antrean milik mesin lain
+# membuat engine ini seolah-olah punya sesuatu untuk dikerjakan.
+THIS_ENGINE = (sys.argv[1] if len(sys.argv) > 1 else "qoder")
 
 
 def read_input() -> dict:
@@ -35,29 +39,45 @@ def read_input() -> dict:
         return {}
 
 
+def session_cwd(data: dict):
+    raw = data.get("cwd")
+    if isinstance(raw, str) and raw.strip():
+        return raw.strip()
+    paths = data.get("workspacePaths")
+    if isinstance(paths, list) and paths and isinstance(paths[0], str) and paths[0].strip():
+        return paths[0].strip()
+    return None
+
+
 def build_note(cwd: str) -> str | None:
     """Satu kalimat laporan antrean, atau None kalau memang tidak ada yang perlu dilaporkan."""
     import work_order as wo
     conn, engine = wo.connect()
     ap = wo.autopilot(conn, engine) or {}
-    rows = wo.run(conn, engine,
-                  "SELECT id, title, cli_engine, ws_path, origin FROM quest_tasks "
-                  "WHERE origin=%s AND status='PENDING' ORDER BY id"
-                  if engine == "POSTGRESQL" else
-                  "SELECT id, title, cli_engine, ws_path, origin FROM quest_tasks "
-                  "WHERE origin=? AND status='PENDING' ORDER BY id",
-                  (wo.ORIGIN_OPERATOR,))
-    mine = [r for r in rows if not (r.get("ws_path") or "") or cwd and Path(r["ws_path"]) == Path(cwd)]
-    other = [r for r in rows if r not in mine]
-    if not rows:
+    rows = wo.next_item(conn, engine, respect_due=False, origin=wo.ORIGIN_OPERATOR,
+                        for_engine=THIS_ENGINE)
+    # `next_item` mengembalikan satu baris; layar butuh daftar, jadi dibaca sebagai baris juga.
+    mine_all = wo.run(conn, engine,
+                      "SELECT id, title, cli_engine, ws_path, status FROM quest_tasks "
+                      "WHERE origin=%s AND status='PENDING' ORDER BY id"
+                      if engine == "POSTGRESQL" else
+                      "SELECT id, title, cli_engine, ws_path, status FROM quest_tasks "
+                      "WHERE origin=? AND status='PENDING' ORDER BY id",
+                      (wo.ORIGIN_OPERATOR,))
+    mine = [r for r in mine_all if (r.get("cli_engine") or "") == THIS_ENGINE]
+    other = [r for r in mine_all if (r.get("cli_engine") or "") != THIS_ENGINE]
+    if not mine_all:
         return None
-    lines = [f"ANTREAN OPERATOR (mode {ap.get('mode')}, tangan {ap.get('level')}):"]
-    for r in (mine[:MAX_LISTED]):
-        lines.append(f"  #{r['id']} {str(r['title'])[:90]} → {r.get('cli_engine') or 'tanpa mesin'}")
+    lines = [f"ANTREAN OPERATOR untuk {THIS_ENGINE} (mode {ap.get('mode')}, tangan {ap.get('level')}):"]
+    if not mine:
+        lines.append("  tidak ada yang untukmu")
+    for r in mine[:MAX_LISTED]:
+        mark = "" if not cwd or not r.get("ws_path") or Path(r["ws_path"]) == Path(cwd) else " [proyek lain]"
+        lines.append(f"  #{r['id']} {str(r['title'])[:90]}{mark}")
     if len(mine) > MAX_LISTED:
-        lines.append(f"  ... {len(mine) - MAX_LISTED} lagi di proyek ini")
+        lines.append(f"  ... {len(mine) - MAX_LISTED} lagi untuk {THIS_ENGINE}")
     if other:
-        lines.append(f"  ({len(other)} baris lain menunggu untuk PROYEK LAIN — jangan dikerjakan di sini)")
+        lines.append(f"  ({len(other)} baris lain menunggu untuk MESIN LAIN — jangan diambil)")
     lines.append("Kerjakan yang untukmu lewat SEMI; jangan ambil item roadmap saat mode SEMI. "
                  "Untuk keputusan level preferensi: `work_order.py decide` lalu `route` — "
                  "jangan tanyakan ke operator.")
@@ -66,7 +86,7 @@ def build_note(cwd: str) -> str | None:
 
 def main() -> int:
     data = read_input()
-    cwd = data.get("cwd") or ""
+    cwd = session_cwd(data) or ""
     try:
         note = build_note(cwd)
     except Exception:  # noqa: BLE001 — nasihat yang gagal tidak boleh menghentikan seseorang

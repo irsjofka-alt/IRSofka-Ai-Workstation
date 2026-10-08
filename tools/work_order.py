@@ -432,7 +432,7 @@ def finish(conn, engine, item_id, status, evidence=None, reason=None):
     return True, f"{item['title']} -> {status}"
 
 
-def next_item(conn, engine, skip_blocked=True, respect_due=False, origin=None):
+def next_item(conn, engine, skip_blocked=True, respect_due=False, origin=None, for_engine=None):
     """Item berikutnya yang siap: semua dependensinya COMPLETED, dan lease-nya tidak dipegang orang.
 
     `UNAVAILABLE` tidak pernah ditawarkan, sama seperti `FAILED`: keduanya adalah kesimpulan yang
@@ -462,6 +462,12 @@ def next_item(conn, engine, skip_blocked=True, respect_due=False, origin=None):
         if state in ("BLOCKED", "HUMAN", "PARKED") and skip_blocked:
             continue
         if origin is not None and (r.get("origin") or ORIGIN_LEGACY) != origin:
+            continue
+        # `for_engine` ada di sini karena pemicu yang hidup DI DALAM satu sesi tidak boleh mengambil
+        # baris milik sesi lain: Stop hook Antigravity yang mengambil perintah bertarget qoder akan
+        # mengerjakan pekerjaan orang lain sambil meninggalkan yang sebenarnya menunggu. Sama seperti
+        # `origin`, filternya tinggal di pemilik kata "berikutnya", bukan di pemanggilnya.
+        if for_engine is not None and (r.get("cli_engine") or "").strip() != for_engine:
             continue
         if respect_due and int(r.get("due_epoch") or 0) > now():
             continue

@@ -220,44 +220,44 @@ def main() -> int:
     # item yang belum di-complete — persis yang dilarang kalimat "kalau Working, tunggu sampai
     # selesai". Yang menunggu tidak hilang: ia tetap PENDING dan diambil pada batas giliran
     # berikutnya setelah yang ini selesai.
-    held = wo.run(conn, engine,
-                  "SELECT id, lease_epoch FROM quest_tasks WHERE cli_engine=%s "
-                  "AND status IN ('WORKING','CLAIMED') AND lease_epoch > %s ORDER BY id"
-                  if engine == "POSTGRESQL" else
-                  "SELECT id, lease_epoch FROM quest_tasks WHERE cli_engine=? "
-                  "AND status IN ('WORKING','CLAIMED') AND lease_epoch > ? ORDER BY id",
-                  (SESSION_ENGINE, wo.now()))
-    if held:
-        log("SEMI_ENGINE_BUSY", engine=SESSION_ENGINE, waiting=[int(r["id"]) for r in held],
-            reason="mesin ini masih memegang item yang lease-nya hidup — antrean menunggu, "
-                   "tidak ditumpuk")
-        return 0
-
-    item = wo.next_item(conn, engine, respect_due=True, origin=wo.ORIGIN_OPERATOR,
-                        for_engine=SESSION_ENGINE)
-    if not item:
-        return 0                      # antrean untuk mesin ini kosong: diam adalah jawaban yang benar
-
-    if not cwd:
+    # Pilih baris yang cocok dengan MESIN dan PROYEK sesi ini, dari daftar yang benar-benar siap.
+    # Dua hal yang dulu salah di sini: (1) hook mengambil baris pertama lalu menolak seluruh tick
+    # kalau baris itu milik proyek lain — tanpa cooldown, sehingga satu item proyek B di kepala
+    # antrean membekukan selamanya setiap item proyek A; (2) aturannya dibandingkan dengan
+    # `ws_path` mentah, sementara drainer memakai `resolve_workspace`. Sekarang keduanya memakai
+    # `ready_items` + `resolve_workspace`, dan yang dilewati diberi jeda, bukan diabaikan diam-diam.
+    #
+    # Aturan "satu perintah aktif per mesin" TIDAK diperiksa di sini lagi — ia milik `claim()`,
+    # yang menegakkannya pada saat penulisan. Dua salinan di dua tempat (hook memeriksa SEBELUM
+    # klaim, drainer SESUDAH) justru celah yang dipakai audit putaran lima untuk menunjukkan dua
+    # perintah bisa masuk ke satu mesin.
+    if cwd is None:
+        # Tanpa proyek yang diketahui, setiap baris akan "cocok" dan itu justru bocornya: sesi di
+        # proyek A bisa menerima perintah proyek B hanya karena tidak ada yang memeriksa. Diam.
         log("SEMI_REFUSED", engine=SESSION_ENGINE,
             reason="hook dipanggil tanpa cwd/workspacePaths — tidak ada proyek yang bisa dicocokkan",
             stop_hook_active=bool(data.get("stop_hook_active")))
         return 0
 
-    # Satu resolver untuk dua jalur. Audit peer 2026-10-08 menemukan bahwa hook ini memperlakukan
-    # `ws_path` KOSONG sebagai "boleh di proyek mana pun", sementara drainer memperlakukan kosong
-    # sebagai REPO dan menuntut pane berada di REPO. Dua definisi untuk satu kata, dan yang longgar
-    # adalah milik jalur yang menyuntik ke dalam sesi. Sekarang keduanya memanggil
-    # `resolve_workspace`, jadi baris tanpa proyek hanya bisa jalan di REPO — tidak di mana saja.
-    want = wo.resolve_workspace(item)
-    if cwd != want:
-        # Baris milik proyek lain TIDAK pernah disuntik ke sesi ini. Menyuntik perintah proyek B ke
-        # sesi yang sedang berdiri di direktori A adalah persis kebingungan identitas yang
-        # dikhawatirkan operator, dan hasilnya pekerjaan yang dilaporkan di tree yang salah.
-        log("SEMI_OTHER_PROJECT", item=int(item["id"]), row_ws=str(want), session_cwd=str(cwd),
-            engine=SESSION_ENGINE,
-            reason="perintah itu bukan untuk proyek sesi ini — ia tetap antre, tidak dibatalkan")
-        return 0
+    ready = wo.ready_items(conn, engine, respect_due=True, origin=wo.ORIGIN_OPERATOR,
+                           for_engine=SESSION_ENGINE)
+    item = None
+    skipped = []
+    for r in ready:
+        r_ws = wo.resolve_workspace(r)
+        if cwd is not None and r_ws != cwd:
+            skipped.append(int(r["id"]))
+            continue
+        item = r
+        break
+    if item is None:
+        if skipped:
+            import drainer
+            for sid in skipped:
+                drainer.cooldown(conn, engine, sid, drainer.CLAIM_COOLDOWN)
+            log("SEMI_OTHER_PROJECT", items=skipped, session_cwd=str(cwd), engine=SESSION_ENGINE,
+                reason="bukan untuk proyek sesi ini — diberi jeda, tidak dibatalkan")
+        return 0                      # tidak ada yang untuk mesin+proyek ini: diam itu benar
 
     # Klaim DITAHAN sampai prompt sudah utuh. Urutan ini bukan kerapian: versi pertama mengklaim
     # lebih dulu, lalu `get_item`, `guides_for`, `SEMI_PROMPT.format` dan `import drainer` bisa
@@ -268,7 +268,7 @@ def main() -> int:
     if prompt is None:
         return 0
 
-    ok, msg = wo.claim(conn, engine, int(item["id"]), SESSION_ENGINE)
+    ok, msg = wo.claim(conn, engine, int(item["id"]), SESSION_ENGINE, mode="SEMI")
     if not ok:
         # claim() sudah memuat pemutus malam dan aturan tree kotor, jadi penolakan di sini adalah
         # keputusan yang tercatat, bukan kegagalan jalur ini.

@@ -236,6 +236,7 @@ def ensure_schema(conn, engine: str) -> list[str]:
             log.append("ok " + stmt.split("(")[0].strip().split()[-1])
         except Exception as exc:  # noqa: BLE001
             log.append(f"skip {exc}")
+    added = set()
     for table, column, pgtype, sqtype in NEW_COLUMNS:
         if engine == "POSTGRESQL":
             stmt = f"ALTER TABLE {table} ADD COLUMN IF NOT EXISTS {column} {pgtype}"
@@ -246,6 +247,7 @@ def ensure_schema(conn, engine: str) -> list[str]:
             stmt = f"ALTER TABLE {table} ADD COLUMN {column} {sqtype}"
         try:
             cur.execute(stmt)
+            added.add((table, column))
             log.append(f"col {table}.{column}")
         except Exception as exc:  # noqa: BLE001
             log.append(f"skip {table}.{column}: {exc}")
@@ -271,12 +273,19 @@ def ensure_schema(conn, engine: str) -> list[str]:
     # 'roadmap' pada semuanya membuat SEMI mengaku mengerjakan perintah orang, dan menandai
     # semuanya 'legacy' membuat enam butir ROADMAP yang sudah hidup di sini kehilangan asalnya.
     # 'legacy' tetap ditawarkan ke ON persis seperti sebelumnya, dan tetap tidak pernah diambil SEMI.
-    for label, clause in ((ORIGIN_ROADMAP, "phase IS NOT NULL"), (ORIGIN_LEGACY, "phase IS NULL")):
-        try:
-            cur.execute(f"UPDATE quest_tasks SET origin='{label}' "
-                        f"WHERE origin IS NULL AND {clause}")
-        except Exception as exc:  # noqa: BLE001
-            log.append(f"skip backfill origin: {exc}")
+    # Backfill adalah bagian dari PERPINDAHAN, bukan keadaan yang ditegakkan setiap start.
+    # Dijalankan terus-menerus berarti setiap baris baru yang lahir tanpa `origin` — ditulis
+    # pemanggil lain, skrip lama, atau selftest — diberi label "sudah ada sebelum kolomnya ada",
+    # yaitu sejarah yang salah. Dan premis lama ("seed satu-satunya penulis phase") sudah
+    # dipatahkan modul ini sendiri: queue_command menulis phase='operator'.
+    if ("quest_tasks", "origin") in added:
+        for label, clause in ((ORIGIN_ROADMAP, "phase IS NOT NULL"),
+                              (ORIGIN_LEGACY, "phase IS NULL")):
+            try:
+                cur.execute(f"UPDATE quest_tasks SET origin='{label}' "
+                            f"WHERE origin IS NULL AND {clause}")
+            except Exception as exc:  # noqa: BLE001
+                log.append(f"skip backfill origin: {exc}")
     conn.commit() if engine != "POSTGRESQL" else None
     cur.close()
     return log
@@ -324,7 +333,7 @@ def get_item(conn, engine, item_id):
 
 
 # --- mesin kerja ------------------------------------------------------------
-def claim(conn, engine, item_id, who, dirty=_MEASURE):
+def claim(conn, engine, item_id, who, dirty=_MEASURE, mode=None):
     """Ambil satu item. Gagal dengan alasan, bukan dengan kerja ganda.
 
     PostgreSQL punya UPDATE ... RETURNING; SQLite tidak. Keduanya harus menghasilkan keputusan
@@ -345,8 +354,17 @@ def claim(conn, engine, item_id, who, dirty=_MEASURE):
         return False, f"status {state} tidak bisa diklaim"
     if holder and holder != who and lease > now():
         return False, f"dipegang {holder} sampai lease berakhir ({lease - now()}s lagi)"
-    ap = autopilot(conn, engine) or {}
+    # `mode` boleh dibawa dari pemanggil yang SUDAH membacanya. Membaca dua kali berarti ada
+    # jendela: tick memutuskan "SEMI" pada detik X dan claim membaca lagi pada detik Y, dan
+    # seseorang yang memindahkan sakelar di antaranya membuat satu baris diambil dengan keranjang
+    # yang bukan milik keputusan tadi. Kalau tidak dibawa, barulah dibaca di sini.
+    ap = ({"mode": (mode or "").upper()} if mode is not None else (autopilot(conn, engine) or {}))
     if ap.get("mode") in ("ON", "SEMI"):
+        # Hanya pembacaan git yang boleh dibawa naik (lihat `dirty` di docstring); jendela,
+        # anggaran kegagalan, dan batas item dihitung DI SINI. Audit putaran lima menuntut dua hal
+        # yang tampak bertentangan: jangan ukur dua kali, dan jangan percaya kedaluwarsa dari
+        # awal tick. Keduanya cocok lewat satu pembedaan — yang mahal dan bergantung lingkungan
+        # boleh diwarisi, yang merupakan keputusan tidak.
         st = night_state(conn, engine, dirty=dirty)
         if st["why"]:
             return False, "circuit breaker: " + "; ".join(st["why"])
@@ -358,13 +376,53 @@ def claim(conn, engine, item_id, who, dirty=_MEASURE):
         return False, (f"SEMI hanya mengerjakan perintah operator, dan item {item_id} asalnya "
                        f"{item.get('origin') or ORIGIN_LEGACY!r} — naikkan ke ON untuk antrean "
                        "roadmap")
+    # Satu perintah aktif per MESIN, di bawah SEMI. Aturannya tinggal di sini, bukan di pemanggil,
+    # karena audit putaran lima menemukan dua salinan yang berbeda: hook memeriksa SEBELUM mengklaim
+    # dan drainer memeriksa SESUDAH lalu melepas — selisih itu cukup untuk dua perintah masuk ke
+    # satu mesin. Di tempat yang sama aturan itu juga bisa melihat baris yang sedang ditulis.
+    if ap.get("mode") == "SEMI":
+        engine_of = (item.get("cli_engine") or "").strip()
+        if engine_of:
+            busy = run(conn, engine,
+                       "SELECT id FROM quest_tasks WHERE cli_engine=%s AND id<>%s "
+                       "AND status IN ('WORKING','CLAIMED') AND lease_epoch > %s ORDER BY id LIMIT 3"
+                       if engine == "POSTGRESQL" else
+                       "SELECT id FROM quest_tasks WHERE cli_engine=? AND id<>? "
+                       "AND status IN ('WORKING','CLAIMED') AND lease_epoch > ? ORDER BY id LIMIT 3",
+                       (engine_of, item_id, now()))
+            if busy:
+                return False, (f"ENGINE_BUSY: {engine_of} masih memegang "
+                               f"{', '.join('#' + str(r['id']) for r in busy)} — SEMI menunggu "
+                               "yang ini selesai sebelum memberi perintah kedua")
+
     ph = "%s" if engine == "POSTGRESQL" else "?"
+    # UPDATE bersyarat. Versi lama `WHERE id=?` saja: dua pengklaim bisa sama-sama menang, karena
+    # masing-masing menulis lalu membaca kembali NAMANYA SENDIRI — A menulis, A baca (A), B menulis,
+    # B baca (B) — dan keduanya pulang membawa True. Sekarang klaim hanya menembus kalau barisnya
+    # masih bisa diklaim pada detik penulisan, dan yang kalah kena nol baris.
     q = (f"UPDATE quest_tasks SET status='WORKING', claimed_by={ph}, lease_epoch={ph}, "
-         f"model_assigned={ph} WHERE id={ph}")
-    run(conn, engine, q, (who, now() + LEASE_SECONDS, who, item_id))
+         f"model_assigned={ph} WHERE id={ph} "
+         f"AND (claimed_by IS NULL OR claimed_by={ph} OR lease_epoch <= {ph}) "
+         f"AND status IN ('PENDING','CLAIMED','WORKING')")
+    run(conn, engine, q, (who, now() + LEASE_SECONDS, who, item_id, who, now()))
     after = get_item(conn, engine, item_id)
     ok = after and after.get("claimed_by") == who and norm(after.get("status")) == "WORKING"
-    return (True, f"claimed by {who}") if ok else (False, "klaim tidak terbaca di baris")
+    return (True, f"claimed by {who}") if ok else (False, "klaim tidak menembus — barisnya sudah "
+                                                          "dipegang orang lain")
+
+
+def release_claim(conn, engine, item_id, who):
+    """Lepaskan klaim HANYA kalau masih milik kita.
+
+    Dipindah ke modul pemilik kosakata karena dua jalur butuh pelepasan yang sama dan audit
+    menemukan `_release_claim` milik drainer menulis `WHERE id=?` tanpa syarat — cukup untuk
+    menghapus klaim orang lain yang baru saja menang.
+    """
+    ph = "%s" if engine == "POSTGRESQL" else "?"
+    run(conn, engine,
+        f"UPDATE quest_tasks SET status='PENDING', claimed_by=NULL, lease_epoch=0 "
+        f"WHERE id={ph} AND claimed_by={ph}", (item_id, who))
+    return get_item(conn, engine, item_id)
 
 
 def renew_lease(conn, engine, item_id):
@@ -451,9 +509,24 @@ def next_item(conn, engine, skip_blocked=True, respect_due=False, origin=None, f
     boleh muncul — dan itulah seluruh isi kata "semi": mesinnya tetap otomatis, tetapi yang ia
     kerjakan adalah perintah orang, bukan apa pun yang kebetulan tersedia.
     """
+    return next(iter(ready_items(conn, engine, skip_blocked=skip_blocked,
+                                 respect_due=respect_due, origin=origin,
+                                 for_engine=for_engine)), None)
+
+
+def ready_items(conn, engine, skip_blocked=True, respect_due=False, origin=None, for_engine=None):
+    """SEMUA baris yang siap, dengan aturan yang sama persis dengan `next_item`.
+
+    Dipisah supaya pelaporan bisa memakai daftar ini. Sebelumnya `semi_status` menyusun
+    `operator_queue`-nya sendiri dengan SQL mentah `status='PENDING'` — tanpa `norm()`, tanpa
+    dependensi, tanpa lease, tanpa `due_epoch` — sehingga Dashboard bisa bilang "3 menunggu"
+    sementara `next_item` tidak menawarkan satu pun. Dua definisi untuk satu kata, dan yang
+    dibaca operator adalah yang salah.
+    """
     rows = run(conn, engine,
                "SELECT id, title, status, depends_on, claimed_by, lease_epoch, phase, due_epoch, "
                "origin, ws_path, cli_engine FROM quest_tasks ORDER BY id")
+    out = []
     done = {int(r["id"]) for r in rows if norm(r["status"]) == "COMPLETED"}
     for r in rows:
         state = norm(r["status"])
@@ -477,8 +550,8 @@ def next_item(conn, engine, skip_blocked=True, respect_due=False, origin=None, f
             continue
         if r.get("claimed_by") and int(r.get("lease_epoch") or 0) > now() and state == "WORKING":
             continue
-        return r
-    return None
+        out.append(r)
+    return out
 
 
 def resolve_decision(conn, engine, decision_id, rung, engine_key, model_id, answer,
@@ -740,9 +813,14 @@ def autopilot(conn, engine, mode=None, minutes=None, budget=None, who="operator"
     until = now() + int(minutes) * 60 if minutes else None
     wanted = (mode or "").upper()
     if wanted == "ON":
+        # `level` ikut direset, sama seperti cabang SEMI dan OFF. Tanpa ini, tangan yang diangkat
+        # dari TTY saat keranjang masih SEMI (hanya perintah operator) otomatis berlaku untuk
+        # keranjang ON (seluruh roadmap) tanpa ada satu pun tindakan TTY baru — dan alasan yang
+        # sudah tertulis untuk cabang OFF berlaku persis sama di sini.
         run(conn, engine,
             f"UPDATE autopilot_state SET mode='ON', on_epoch={ph}, until_epoch={ph}, "
-            f"item_budget={ph}, items_done=0, off_reason=NULL, changed_by={ph} WHERE id=1",
+            f"item_budget={ph}, items_done=0, off_reason=NULL, changed_by={ph}, "
+            f"level='observe', level_until=NULL WHERE id=1",
             (now(), until, budget or 12, who))
     elif wanted == "SEMI":
         # SEMI = otomatis dengan manusia di meja. Bedanya dengan ON bukan derajat otonomi tangan
@@ -1368,8 +1446,15 @@ def queue_command(conn, engine, title: str, cli_engine: str, gate: str = "",
     target = (cli_engine or "").strip()
     known = known_engines()
     if not target:
-        return False, f"cli_engine wajib diisi dan tidak boleh ditebak (terdaftar: {', '.join(known)})", None
-    if known and target not in known:
+        listed = ", ".join(known) or "registri tidak terbaca"
+        return False, f"cli_engine wajib diisi dan tidak boleh ditebak (terdaftar: {listed})", None
+    if not known:
+        # §4: "Unknown is never treated as empty". Registri yang tidak terbaca BUKAN daftar kosong
+        # yang meloloskan nama apa pun — itu menerima "qoderr" hari ini dan menolaknya besok,
+        # tergantung apakah sebuah berkas bisa dibaca.
+        return False, ("cli_profiles.json tidak terbaca — mesin tujuan tidak bisa divalidasi, "
+                       "jadi tidak ada yang diantrekan"), None
+    if target not in known:
         return False, f"{target!r} bukan tab terdaftar (terdaftar: {', '.join(known)})", None
     where = (ws_path or "").strip()
     if not where:
@@ -1378,38 +1463,55 @@ def queue_command(conn, engine, title: str, cli_engine: str, gate: str = "",
         # hook menolaknya (SEMI_OTHER_PROJECT). Yang ditolak secara senyap akan dibaca operator
         # sebagai "perintahku hilang". Kalau fokus terbaca, ia jadi default; kalau tidak, kata
         # kosong tetap kata kosong dan alasannya ikut dilaporkan.
-        focus = focused_workspace()
-        where = str(focus) if focus else ""
+        # Sumber yang benar adalah workspace TAB milik mesin tujuan — karena itulah yang
+        # diperiksa drainer (PANE_WRONG_DIR) dan tidak ada gunanya mengisi dari symlink fokus
+        # global kalau fokus itu sendiri belum tentu sama dengan tab-nya.
+        try:
+            import cross_verify as cv
+            tab_ws = cv.tab_project(target)
+        except Exception:  # noqa: BLE001 — tidak terbaca bukan berarti kosong
+            tab_ws = None
+        where = tab_ws or str(focused_workspace() or "")
     if where:
         p = Path(where).expanduser()
         if not p.is_dir():
             return False, f"{where} bukan direktori — perintah ditolak, tidak ada yang antre", None
         where = str(p.resolve(strict=False))
-    ph = "%s" if engine == "POSTGRESQL" else "?"
-    run(conn, engine,
-        f"INSERT INTO quest_tasks (title, status, phase, check_command, summary, cli_engine, "
-        f"origin, ws_path) VALUES ({ph}, 'PENDING', 'operator', {ph}, {ph}, {ph}, {ph}, {ph})",
-        (title[:255], (gate or "").strip()[:2000],
-         f"perintah operator lewat Dashboard ({who})", target, ORIGIN_OPERATOR, where or None))
-    rows = run(conn, engine,
-               "SELECT id FROM quest_tasks WHERE title=%s ORDER BY id DESC LIMIT 1"
-               if engine == "POSTGRESQL" else
-               "SELECT id FROM quest_tasks WHERE title=? ORDER BY id DESC LIMIT 1", (title[:255],))
-    if not rows:
-        return False, "baris tidak terbalik setelah ditulis — dilaporkan gagal", None
-    return True, f"perintah antre sebagai item {rows[0]['id']} untuk {target}", int(rows[0]["id"])
+    # `RETURNING id` / `lastrowid`, bukan `WHERE title=? ORDER BY id DESC`: judul bukan kunci, dan
+    # membaca balik lewat judul bisa mengambil id baris LAIN yang judulnya kebetulan sama —
+    # termasuk butir roadmap, atau antrean yang ditulis sesi lain pada detik yang sama.
+    if engine == "POSTGRESQL":
+        rows = run(conn, engine,
+                   "INSERT INTO quest_tasks (title, status, phase, check_command, summary, "
+                   "cli_engine, origin, ws_path) VALUES (%s, 'PENDING', 'operator', %s, %s, %s, "
+                   "%s, %s) RETURNING id",
+                   (title[:255], (gate or "").strip()[:2000],
+                    f"perintah operator lewat Dashboard ({who})", target, ORIGIN_OPERATOR,
+                    where or None))
+        new_id = int(rows[0]["id"]) if rows else None
+    else:
+        cur = conn.cursor()
+        cur.execute("INSERT INTO quest_tasks (title, status, phase, check_command, summary, "
+                    "cli_engine, origin, ws_path) VALUES (?, 'PENDING', 'operator', ?, ?, ?, ?, ?)",
+                    (title[:255], (gate or "").strip()[:2000],
+                     f"perintah operator lewat Dashboard ({who})", target, ORIGIN_OPERATOR,
+                     where or None))
+        conn.commit()
+        new_id = cur.lastrowid
+        cur.close()
+    if not new_id:
+        return False, "id tidak kembali setelah INSERT — dilaporkan gagal, bukan dikira berhasil", None
+    return True, (f"perintah antre sebagai item {new_id} untuk {target}"
+                  + (f" di {where}" if where else " (tanpa proyek → REPO)")), int(new_id)
 
 
 def semi_status(conn, engine) -> dict:
     """Yang SEMI butuhkan untuk melaporkan dirinya sendiri — semuanya turunan, tidak ada angka karangan."""
     listed = list_workspaces(conn, engine)
-    pend = run(conn, engine,
-               "SELECT id, title, cli_engine, ws_path, status, due_epoch FROM quest_tasks "
-               "WHERE origin=%s AND status='PENDING' ORDER BY id"
-               if engine == "POSTGRESQL" else
-               "SELECT id, title, cli_engine, ws_path, status, due_epoch FROM quest_tasks "
-               "WHERE origin=? AND status='PENDING' ORDER BY id",
-               (ORIGIN_OPERATOR,))
+    # Satu sumber: apa yang benar-benar siap ditawarkan. Baris yang tertahan dependensi, lease,
+    # atau cooldown tidak dihitung sebagai "menunggu" karena memang tidak akan jalan.
+    pend = [r for r in ready_items(conn, engine, respect_due=True, origin=ORIGIN_OPERATOR)
+            if norm(r["status"]) == "PENDING"]
     working = run(conn, engine,
                   "SELECT id, title, cli_engine, claimed_by FROM quest_tasks "
                   "WHERE origin=%s AND status IN ('WORKING','CLAIMED') ORDER BY id"
@@ -2310,7 +2412,9 @@ def main(argv=None):
     p.add_argument("title"); p.add_argument("--engine", required=True,
                                             help="nama tab yang akan mengerjakannya; tidak pernah ditebak")
     p.add_argument("--gate", default="", help="perintah gerbang penerimaan, boleh kosong")
-    p.add_argument("--ws", default="", help="direktori proyek; kosong = seperti dulu (REPO)")
+    p.add_argument("--ws", default="",
+                   help="direktori proyek; kosong = workspace tab mesin tujuan "
+                        "(BUKAN REPO — REPO hanya untuk baris lama yang kolomnya NULL)")
     p.add_argument("--by", default="operator")
     p = sub.add_parser("ws", help="daftar / buat / fokus proyek, dan pilih pedoman MD-nya")
     p.add_argument("action", choices=["list", "create", "focus", "guidelines", "detect"])

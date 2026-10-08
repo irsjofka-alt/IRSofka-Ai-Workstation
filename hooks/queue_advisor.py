@@ -80,7 +80,7 @@ def select_rows(rows, cwd):
 
 
 def build_note(cwd: str) -> str | None:
-    """Satu kalimat laporan antrean, atau None kalau memang tidak ada yang perlu dilaporkan."""
+    """Baca antrean dan rendahkan menjadi catatan. None berarti tidak ada yang perlu dikatakan."""
     if not cwd:
         # Bukan "tidak ada yang untukmu" — itu pernyataan tentang proyek yang tidak kita ketahui.
         # Yang jujur adalah tidak berkata apa pun.
@@ -90,44 +90,51 @@ def build_note(cwd: str) -> str | None:
     ap = wo.autopilot(conn, engine) or {}
     mine_all = wo.run(conn, engine,
                       "SELECT id, title, cli_engine, ws_path, status FROM quest_tasks "
-                      "WHERE origin=%s AND status='PENDING' ORDER BY id"
-                      if engine == "POSTGRESQL" else
+                      "WHERE origin=%s ORDER BY id" if engine == "POSTGRESQL" else
                       "SELECT id, title, cli_engine, ws_path, status FROM quest_tasks "
-                      "WHERE origin=? AND status='PENDING' ORDER BY id",
+                      "WHERE origin=? ORDER BY id",
                       (wo.ORIGIN_OPERATOR,))
+    if not mine_all:
+        return None
     mine = select_rows(mine_all, cwd)
-    # Dua alasan berbeda tidak boleh dapat satu label. Baris milik MESIN lain dan baris milik
-  # mesin ini tapi milik PROYEK lain adalah dua hal yang berbeda, dan menyebut keduanya
-  # "MESIN LAIN" membuat operator mengira mesin yang salah yang menahan perintahnya.
     other_engine = [r for r in mine_all if (r.get("cli_engine") or "").strip() != THIS_ENGINE]
     other_project = [r for r in mine_all
                      if (r.get("cli_engine") or "").strip() == THIS_ENGINE and r not in mine]
-    if not mine_all:
-        return None
-    mode = (ap.get("mode") or "OFF").upper()
-    lines = [f"ANTREAN OPERATOR untuk {THIS_ENGINE} (mode {mode}, tangan {ap.get('level')}):"]
+    return render_note((ap.get("mode") or "OFF").upper(), ap.get("level"),
+                       mine, other_engine, other_project)
+
+
+def render_note(mode, level, mine, other_engine, other_project):
+    """Bentuk kalimatnya. Terpisah dan murni supaya bisa diuji tanpa menyentuh database.
+
+    `build_note` membuka koneksi sungguhan; mengujinya dari selftest berarti hasilnya bergantung
+    pada apa yang kebetulan ada di antrean produksi hari ini.
+    """
+    lines = [f"ANTREAN OPERATOR untuk {THIS_ENGINE} (mode {mode}, tangan {level}):"]
     if not mine:
         lines.append("  tidak ada yang untukmu")
-    for r in mine[:MAX_LISTED]:
-        lines.append(f"  #{r['id']} {str(r['title'])[:90]}")
+    for row in mine[:MAX_LISTED]:
+        lines.append(f"  #{row['id']} {str(row['title'])[:90]}")
     if len(mine) > MAX_LISTED:
         lines.append(f"  ... {len(mine) - MAX_LISTED} lagi untuk {THIS_ENGINE}")
+    # Dua alasan berbeda tidak boleh dapat satu label: baris milik MESIN lain dan baris milik
+    # mesin ini tapi PROYEK lain adalah dua hal berbeda, dan menyebut keduanya "MESIN LAIN"
+    # membuat operator menyalahkan mesin yang salah.
     if other_engine:
         lines.append(f"  ({len(other_engine)} baris menunggu untuk MESIN LAIN — jangan diambil)")
     if other_project:
         lines.append(f"  ({len(other_project)} baris milik mesin ini tapi PROYEK LAIN — "
                      "akan ditolak hook, bukan hilang)")
-    # Nasihat harus sesuai mode. Versi pertama selalu bilang "kerjakan lewat SEMI" bahkan ketika
-    # sakelarnya OFF — dan menaati itu berarti mengerjakan pekerjaan yang sedang dimatikan.
-    if mode == "SEMI":
-        lines.append("Mode SEMI: kerjakan yang untukmu; JANGAN ambil item roadmap.")
-    elif mode == "ON":
-        lines.append("Mode ON: antrean roadmap juga terbuka; perintahmu tetap punya prioritas.")
-    else:
-        lines.append("Mode OFF: jangan kerjakan apa pun dari sini — ini hanya laporan, dan "
-                     "yang menyalakan mesin adalah manusia.")
-    lines.append("Untuk keputusan level preferensi: `work_order.py decide` lalu `route` — "
-                 "jangan tanyakan ke operator.")
+    # LAPORAN, bukan perintah. Versi sebelumnya menyuruh "kerjakan yang untukmu" untuk baris yang
+    # belum diklaim siapa pun — jalur samping di luar disiplin: tidak ada lease, tidak ada cek
+    # pemutus, tidak ada cek working-tree kotor. Yang menyalurkan pekerjaan adalah klaim.
+    lines.append("Ini LAPORAN, bukan perintah: jangan mulai mengerjakan baris mana pun dari sini. "
+                 "Yang menyalurkan pekerjaan adalah hook pada batas giliran, dan itu hanya lewat "
+                 "jalur klaim — pemutus malam, aturan tree kotor, dan satu-perintah-aktif "
+                 "ditegakkan di sana, bukan di catatan ini.")
+    if mode == "OFF":
+        lines.append("Mode OFF: tidak ada yang akan disalurkan sampai sakelar dipindahkan "
+                     "oleh manusia dari Dashboard.")
     return "\n".join(lines)
 
 

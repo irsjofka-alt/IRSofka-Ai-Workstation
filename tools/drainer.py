@@ -270,11 +270,14 @@ def reconcile(conn, engine, mode, runner=None, emit=None):
 
 
 def _release_claim(conn, engine, item_id):
-    """Tarik kembali klaim drainer: baris tanpa pemegang adalah laporan bahwa ada yang mengerjakan
-    padahal tidak ada — kembalikan persis seperti keadaan sebelum tick ini menyentuhnya."""
-    wo.run(conn, engine,
-           f"UPDATE quest_tasks SET status='PENDING', claimed_by=NULL, lease_epoch=0 "
-           f"WHERE id={wo_p(engine)}", (int(item_id),))
+    """Tarik kembali klaim drainer lewat pemilik kosakatanya, dan hanya kalau masih miliknya.
+
+    `WHERE id=?` saja pernah cukup di sini. Audit putaran lima menunjuk yang sebaliknya: pelepasan
+    tanpa syarat `claimed_by` bisa menghapus klaim pihak lain yang baru saja menang, dan itu
+    membuat dua engine mengerjakan satu baris sambil keduanya punya bukti bahwa mereka yang pegang.
+    `resume_count` sengaja TIDAK direset — itu anggaran seumur hidup baris, bukan anggaran tick.
+    """
+    wo.release_claim(conn, engine, int(item_id), HOLDER)
 
 
 def effective_gap(gap):
@@ -337,7 +340,7 @@ def _as_path(text):
 
 def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
                   capture=None, busy=None, tab_project=None, pane_cwd=None, gap=MIN_PANE_GAP,
-                  sleeper=None):
+                  sleeper=None, dirty=wo._MEASURE):
     """Serahkan satu item baru ke engine yang ditunjuk barisnya. Tidak pernah menebak tujuan.
 
     Mesin mana yang mengerjakan adalah milik kolom `cli_engine` pada baris itu — operator menyuntingnya
@@ -430,28 +433,19 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
                  "bukan miliknya")
         return None
 
-    ok, msg = wo.claim(conn, engine, int(item["id"]), HOLDER)
+    ok, msg = wo.claim(conn, engine, int(item["id"]), HOLDER, mode=wanted, dirty=dirty)
     if not ok:
-        emit("CLAIM_REFUSED", item=int(item["id"]), why=msg)
+        # `claim()` yang memutuskan; di sini hasilnya hanya diterjemahkan menjadi nama kejadian,
+        # supaya "engine masih mengerjakan satu perintah" terbaca berbeda dari "pemutus terbuka".
+        emit("ENGINE_BUSY" if msg.startswith("ENGINE_BUSY") else "CLAIM_REFUSED",
+             item=int(item["id"]), target=target, why=msg)
         cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
         return None
-    if wanted == "SEMI":
-        # Lease yang masih hidup. Tanpa syarat ini, satu klaim roadmap yang tertinggal dari ON —
-        # yang di SEMI justru ditahan `HELD_BY_MODE` dan tidak pernah diselesaikan siapa pun —
-        # memblokir SETIAP perintah operator untuk engine itu selamanya: kemacetan total yang
-        # terlihat seperti antrean yang sabar.
-        held = [r for r in open_claims(conn, engine)
-                if (r.get("cli_engine") or "").strip() == target
-                and int(r["id"]) != int(item["id"])
-                and int(r.get("lease_epoch") or 0) > wo.now()]
-        if held:
-            _release_claim(conn, engine, item["id"])
-            cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
-            emit("ENGINE_BUSY", item=int(item["id"]), target=target,
-                 waiting=[int(r["id"]) for r in held],
-                 why="SEMI menunggu engine ini selesai lebih dulu — bekerja berarti menunggu, "
-                     "bukan menumpuki pane")
-            return None
+    # Salinan aturan "satu perintah aktif" yang dulu ada di sini sudah dihapus. Ia memeriksa
+    # SEBELUM menulis di satu jalur dan SESUDAH menulis di jalur lain (hook), dan selisih itu
+    # cukup untuk dua perintah masuk ke satu mesin. Aturannya sekarang milik `wo.claim()` —
+    # satu tempat, ditegakkan pada saat penulisan — dan yang terjadi di sini hanyalah
+    # menerjemahkan penolakannya menjadi kejadian yang terbaca di log malam.
     if wanted == "SEMI":
         prompt = SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=want,
                                     gate=(full.get("check_command") or "tanpa gerbang"))
@@ -466,9 +460,16 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
              tab_project=str(where), pane_now=str(live) if live else None,
              reply=str(reply)[:200])
     except Exception as exc:  # noqa: BLE001 — kegagalan kirim dicatat, tidak dikarang ulang
-        emit("SEND_FAILED", item=int(item["id"]), target=target,
+        # Klaim DILEPAS. Versi lama meninggalkan baris WORKING tanpa ada yang mengerjakan dan
+        # tetap mengembalikan bentuk seperti sukses — dari luar terlihat terdistribusi, dan engine
+        # itu terkunci ENGINE_BUSY sampai lease habis. Persis kelas bug yang diklaim sudah dihapus.
+        _release_claim(conn, engine, item["id"])
+        cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
+        emit("SEND_FAILED", item=int(item["id"]), target=target, released=True,
              why=f"{type(exc).__name__}: {exc}")
-    return {"item": int(item["id"]), "target": target}
+        return {"item": int(item["id"]), "target": target, "sent": False,
+                "why": f"{type(exc).__name__}: {exc}"}
+    return {"item": int(item["id"]), "target": target, "sent": True}
 
 
 def nudge_resting(conn, engine, mode, beats=None, sender=None, emit=None):
@@ -599,7 +600,7 @@ def deliver_answer(conn, engine, decision_id, sender=None, beats=None, capture=N
 # --- satu tick ----------------------------------------------------------------
 def tick(conn, engine, gate=None, beats=None, runner=None, sender=None, log=None,
          capture=None, busy=None, tab_project=None, pane_cwd=None, gap=MIN_PANE_GAP,
-         sleeper=None):
+         sleeper=None, dirty=wo._MEASURE):
     """Satu putaran timer. Mengembalikan kejadian yang juga dituliskan ke log malam.
 
     Semua yang bisa mengetik atau mengeksekusi (`beats`, `runner`, `sender`) bisa disuntik, jadi
@@ -610,6 +611,10 @@ def tick(conn, engine, gate=None, beats=None, runner=None, sender=None, log=None
     emit = log or events.append
     gate = gate or read_gate(conn, engine)
     lvl, ap, night = gate["level"], gate["autopilot"], gate["night"]
+    # Satu pembacaan git per tick, diwarisi ke claim. `tree_dirty` ada di dalam
+    # pembacaan gerbang itu sendiri, jadi tidak ada pengukuran kedua yang boleh
+    # berbeda dari yang pertama.
+    dirty = night.get("tree_dirty", wo._MEASURE) if night else wo._MEASURE
 
     def ev(action, **rest):
         row = {"ts": wo.now(), "action": action, "level": lvl.get("level"),
@@ -649,7 +654,8 @@ def tick(conn, engine, gate=None, beats=None, runner=None, sender=None, log=None
         reconcile(conn, engine, mode, runner=runner, emit=ev)
         hand_new_work(conn, engine, mode, runner=runner, sender=sender, emit=ev,
                       capture=capture, busy=busy,
-                      tab_project=tab_project, pane_cwd=pane_cwd, gap=gap, sleeper=sleeper)
+                      tab_project=tab_project, pane_cwd=pane_cwd, gap=gap, sleeper=sleeper,
+                      dirty=dirty)
     rest = [b for b in (beats if beats is not None else wo.heartbeat(conn, engine))
             if b["state"] == "AT_REST"]
     if lvl["allows_resume"]:
@@ -909,27 +915,36 @@ def selftest():
             return {"level": {**lvl0, "level": level, "readable": True,
                               "allows_dispatch": allows_d, "allows_resume": allows_r, "why": why or []},
                     "autopilot": {"mode": mode, "off_reason": "selftest"},
-                    "night": {"ok": ok, "why": why or []}}
+                    # `tree_dirty` dinyatakan di sini sebagai PREMIS fixture, bukan sebagai
+                    # pelarian: tanpa kunci ini tick mewarisinya sebagai "belum diukur" dan claim
+                    # akan membaca git NYATA — yang kotor justru karena selftest ini berjalan di
+                    # tengah suntingan. Yang diuji blok ini adalah keputusan drainer, bukan
+                    # keadaan working tree, dan itu sudah dibuktikan di `work_order selftest`.
+                    "night": {"ok": ok, "why": why or [], "tree_dirty": False}}
 
         out = tick(conn, "SQLITE", gate=gate_for("observe", mode="OFF"), beats=[],
-                   sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+                   sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         check("sakelar OFF = tidak ada yang bergerak sama sekali",
               [e["action"] for e in out] == ["CLOSED_OFF"] and not sent and not ran, str(out))
 
         unreadable = {"level": {"readable": False, "level": None, "allows_dispatch": False,
                                 "allows_resume": False, "why": ["tidak terbaca"]},
                       "autopilot": {"mode": "ON"}, "night": {"ok": True, "why": []}}
-        out = tick(conn, "SQLITE", gate=unreadable, beats=[], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+        out = tick(conn, "SQLITE", gate=unreadable, beats=[], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         check("gerbang tak terbaca menutup sebagai UNKNOWN, bukan sebagai observe",
               [e["action"] for e in out] == ["CLOSED_UNKNOWN"], str(out))
 
         out = tick(conn, "SQLITE", gate=gate_for("observe", ok=False, why=["circuit breaker"]),
-                   beats=[], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+                   beats=[], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         check("circuit breaker menutup tick sebelum satu klaim pun",
               [e["action"] for e in out] == ["CLOSED_NIGHT"], str(out))
 
         ran.clear()
-        out = tick(conn, "SQLITE", gate=gate_for("observe"), beats=[], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+        out = tick(conn, "SQLITE", gate=gate_for("observe"), beats=[], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         check("observe = indera saja: nol gerbang, nol kiriman, nol tulisan",
               [e["action"] for e in out] == ["OBSERVED"] and not sent and not ran, str(out))
 
@@ -953,6 +968,7 @@ def selftest():
         ran.clear()
         out = []
         tick(conn, "SQLITE", gate=gate_for("dispatch"), beats=[], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False,
              log=out.append)
         check("dispatch menjalankan gerbang dan mencatat angka keluar",
               ran and any(e["action"] == "GATE_BASELINE" and e["exit"] == 1 for e in out), str(out))
@@ -970,6 +986,7 @@ def selftest():
         sent.clear()
         out = []
         tick(conn, "SQLITE", gate=gate_for("dispatch"), beats=[], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False,
              log=out.append)
         check("baris tanpa cli_engine ditolak NO_TARGET, tidak dikirim ke engine favorit tick ini",
               any(e["action"] == "NO_TARGET" and e["item"] == fresh for e in out)
@@ -1019,6 +1036,7 @@ def selftest():
         sent.clear()
         disp_out = []
         tick(conn, "SQLITE", gate=gate_for("dispatch"), beats=[beat], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False,
              log=disp_out.append)
         check("di tingkat dispatch, AT_REST ditahan dan tidak ada satu pun ketikan",
               not sent and any(e["action"] == "HELD_BY_LEVEL" and e["items"] == [base]
@@ -1026,6 +1044,7 @@ def selftest():
 
         resume_out = []
         tick(conn, "SQLITE", gate=gate_for("resume"), beats=[beat], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False,
              log=resume_out.append)
         check("resume + AT_REST = satu kiriman CONTINUE, dan anggaran ikut naik",
               len(sent) == 1 and sent[0][0] == "qoder"
@@ -1042,6 +1061,7 @@ def selftest():
         sent.clear()
         stuck = []
         tick(conn, "SQLITE", gate=gate_for("resume"), beats=[beat], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False,
              log=stuck.append)
         check("anggaran habis memarkir item dan tidak mengirim apa pun",
               not sent and any(e["action"] == "STUCK_PARKED" and e["item"] == base
@@ -1052,7 +1072,8 @@ def selftest():
         tick(conn, "SQLITE", gate=gate_for("resume"),
              beats=[{"id": base, "state": "WORKING", "claimed_by": "qoder", "why": "spinner"},
                     {"id": base, "state": "UNKNOWN", "claimed_by": "qoder", "why": "pane mati"}],
-             sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0, log=out.append)
+             sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False, log=out.append)
         skipped = [e for e in out if e["action"] == "SKIP_NOT_RESTING"]
         check("WORKING dan UNKNOWN tidak pernah disentuh — UNKNOWN bukan berarti diam",
               not sent and len(skipped) == 2
@@ -1069,6 +1090,7 @@ def selftest():
         sent.clear()
         out = []
         tick(conn, "SQLITE", gate=gate_for("dispatch"), beats=[], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False,
              log=out.append)
         refused = [e for e in out if e["action"] == "CLAIM_REFUSED"]
         check("jendela yang lewat ketahuan saat klaim, bukan dipercaya dari awal tick",
@@ -1154,14 +1176,16 @@ def selftest():
         # masa depan punya tombol untuk melewati §6 — pagar yang bisa dilewati pemakainya bukan pagar.
         sent.clear()
         out = tick(conn, "SQLITE", gate=gate_for("observe", mode="SEMI"), beats=[],
-                   sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+                   sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         acts = [e["action"] for e in out]
         check("SEMI tidak disalahtafsir sebagai OFF — pintu dibuka, tangan belum diangkat",
               "CLOSED_OFF" not in acts and "SEMI_HAND_FLAT" in acts and not sent, str(out))
 
         sent.clear()
         out = tick(conn, "SQLITE", gate=gate_for("dispatch", mode="SEMI"), beats=[],
-                   sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+                   sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         acts = [e["action"] for e in out]
         check("SEMI dengan antrean tanpa perintah operator tidak mengambil apa pun — itu isi kata 'semi'",
               "QUEUE_EMPTY" in acts and not sent, str(out))
@@ -1171,7 +1195,8 @@ def selftest():
         cwd_box["v"] = "/tmp"     # pane target memang berdiri di direktori baris itu
         sent.clear()
         tick(conn, "SQLITE", gate=gate_for("dispatch", mode="SEMI"), beats=[],
-             sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+             sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         check("perintah operator diantar ke mesin yang tertulis di barisnya",
               sent and sent[0][0] == "qoder" and str(op) in sent[0][1], str(sent)[:220])
         check("yang dikirim adalah prompt perintah-orang, bukan tugas roadmap",
@@ -1183,7 +1208,8 @@ def selftest():
         cwd_box["v"] = str(REPO)     # op2 tidak punya ws_path → tujuannya memang REPO
         sent.clear()
         out = tick(conn, "SQLITE", gate=gate_for("dispatch", mode="SEMI"), beats=[],
-                   sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+                   sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         acts = [e["action"] for e in out]
         check("engine yang sedang mengerjakan satu perintah tidak ditumpuki perintah kedua — "
               "'kalau Working, tunggu sampai selesai'",
@@ -1223,7 +1249,8 @@ def selftest():
         sent.clear(); out = []
         hand_new_work(conn, "SQLITE", runner=runner, sender=sender, emit=sink(out),
                       mode="SEMI",
-                      capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+                      capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         check("perintah proyek A tidak pernah diketik ke pane yang sedang berdiri di proyek B",
               out and out[-1]["action"] == "PANE_WRONG_DIR" and not sent
               and wo.get_item(conn, "SQLITE", g3)["status"] == "PENDING", str(out))
@@ -1256,7 +1283,8 @@ def selftest():
         out = []
         hand_new_work(conn, "SQLITE", "SEMI", runner=runner, sender=sender, emit=sink(out),
                       capture=quiet_pane, busy=not_busy,
-                      tab_project=cwd_of, pane_cwd=lambda _t: str(Path.home()), gap=0)
+                      tab_project=cwd_of, pane_cwd=lambda _t: str(Path.home()), gap=0,
+                      dirty=False)
         # Terukur 2026-10-08 11:4x: pane qoder memang duduk di ~/.ai-station (cwd proses
         # foreground-nya) sambil proyek tab-nya ~/Documents/ai-workstation. Jadi cwd pane BUKAN
         # sinyal proyek; menuntut keduanya sama akan menolak hampir setiap pengiriman — aman, tapi
@@ -1281,7 +1309,7 @@ def selftest():
         sent.clear(); out = []
         hand_new_work(conn, "SQLITE", "SEMI", runner=runner, sender=sender, emit=sink(out),
                       capture=quiet_pane, busy=not_busy, tab_project=cwd_of,
-                      pane_cwd=cwd_of, gap=0)
+                      pane_cwd=cwd_of, gap=0, dirty=False)
         check("klaim roadmap yang lease-nya sudah mati tidak membekukan antrean operator selamanya",
               sent and out[-1]["action"] == "WORK_DISPATCHED", str(out[-1:]))
 
@@ -1290,7 +1318,7 @@ def selftest():
             sent.clear(); out = []
             hand_new_work(conn, "SQLITE", bad, runner=runner, sender=sender, emit=sink(out),
                           capture=quiet_pane, busy=not_busy, tab_project=cwd_of,
-                          pane_cwd=cwd_of, gap=0)
+                          pane_cwd=cwd_of, gap=0, dirty=False)
             if bad == "semi":
                 # Bukan "salah satu dari tiga kejadian". Yang harus dibuktikan adalah mode
                 # huruf kecil memperoleh KEDUA sifat SEMI: prompt perintah-orang DAN pagar
@@ -1305,7 +1333,8 @@ def selftest():
                            origin="operator", ws=str(REPO))
                 hand_new_work(conn, "SQLITE", "semi", runner=runner, sender=sender,
                               emit=sink(out), capture=quiet_pane, busy=not_busy,
-                              tab_project=cwd_of, pane_cwd=cwd_of, gap=0, sleeper=lambda _s: None)
+                              tab_project=cwd_of, pane_cwd=cwd_of, gap=0, sleeper=lambda _s: None,
+                              dirty=False)
                 check("mode huruf kecil mendapat prompt SEMI, bukan prompt roadmap",
                       sent and "Perintah operator dari Dashboard" in sent[-1][1], str(sent[-1:])[:220])
                 # Kirim SATU perintah lagi ke engine yang sama: kalau pagar SEMI aktif, ia
@@ -1317,7 +1346,7 @@ def selftest():
                 hand_new_work(conn, "SQLITE", "semi", runner=runner, sender=sender,
                               emit=sink(out2), capture=quiet_pane, busy=not_busy,
                               tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
-                              sleeper=lambda _x: None)
+                              sleeper=lambda _x: None, dirty=False)
                 check("mode huruf kecil juga mendapat pagar satu-perintah-aktif",
                       len(sent) == sent_before
                       and any(e["action"] == "ENGINE_BUSY" for e in out2), str(out2[-1:]))
@@ -1372,7 +1401,8 @@ def selftest():
         sent.clear()
         out = tick(conn, "SQLITE", gate=gate_for("resume", mode="SEMI"),
                    beats=[{"id": rm_claim, "state": "AT_REST", "claimed_by": "qoder",
-                           "why": "dua sinyal setuju"}], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0)
+                           "why": "dua sinyal setuju"}], sender=sender, runner=runner, capture=quiet_pane, busy=not_busy, tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                      dirty=False)
         acts = [e["action"] for e in out]
         check("SEMI tidak mengirim CONTINUE ke klaim roadmap — itu perluasan mandat yang tidak "
               "pernah diberikan", "SKIP_NOT_OPERATOR" in acts and not sent, str(out))
@@ -1389,6 +1419,63 @@ def selftest():
                   stage="before", emit=sink([]))
         check("baris tanpa ws_path masih diukur di REPO — tidak ada satu baris lama yang dipaksa "
               "punya proyek", ran and f"cd {REPO} && pwd" in ran[-1], str(ran[-1:]))
+
+        # --- sifat baru: pelepasan klaim bersyarat, dan daftar siap yang konsisten ----------
+        # Premisnya harus dinyatakan: kegagalan dari blok sebelumnya masih ada di jendela 12 jam
+        # dan akan membuka pemutus, jadi klaim uji ini ditolak karena alasan yang bukan diuji.
+        wo.run(conn, "SQLITE", "UPDATE quest_tasks SET completed_at=datetime('now','-2 days') "
+                               "WHERE status IN ('FAILED','PARKED')")
+        # Engine harus benar-benar bebas: aturan satu-perintah-aktif yang baru dipusatkan di
+        # claim() menolak klaim uji ini kalau masih ada klaim qoder yang lease-nya hidup dari
+        # blok di atas — dan penolakan itu benar, hanya saja bukan yang sedang diukur di sini.
+        wo.run(conn, "SQLITE", "UPDATE quest_tasks SET status='COMPLETED', lease_epoch=0 "
+                               "WHERE status IN ('WORKING','CLAIMED') AND cli_engine='qoder'")
+        keeper = make("selftest-keeper", gate="false", engine_key="qoder", origin="operator",
+                      ws=str(REPO))
+        ok_keep, why_keep = wo.claim(conn, "SQLITE", keeper, "pihak-a", dirty=False, mode="SEMI")
+        check("klaim uji ini sendiri berhasil (kalau tidak, tes di bawah mengukur hal lain)",
+              ok_keep, why_keep)
+        still = wo.release_claim(conn, "SQLITE", keeper, "pihak-b")
+        check("pihak lain TIDAK bisa melepaskan klaim pihak lain",
+              still["claimed_by"] == "pihak-a" and still["status"] == "WORKING", str(still))
+        wo.release_claim(conn, "SQLITE", keeper, "pihak-a")
+        back = wo.get_item(conn, "SQLITE", keeper)
+        check("pemegangnya sendiri bisa melepas, dan barisnya kembali PENDING tanpa pemegang",
+              back["status"] == "PENDING" and not back["claimed_by"]
+              and int(back["lease_epoch"] or 0) == 0, str(back))
+
+        # Daftar siap dan "berikutnya" harus berasal dari aturan yang sama — kalau tidak, angka
+        # Dashboard dan apa yang benar-benar ditawarkan boleh berbeda (itu temuan decider).
+        wo.run(conn, "SQLITE", "DELETE FROM quest_tasks WHERE origin='operator'")
+        a_ok = make("selftest-ready-a", gate="false", engine_key="qoder", origin="operator",
+                    ws=str(REPO))
+        b_hold = make("selftest-ready-b", gate="false", engine_key="qoder", origin="operator",
+                      ws=str(REPO))
+        wo.run(conn, "SQLITE", "UPDATE quest_tasks SET due_epoch=? WHERE id=?",
+               (wo.now() + 600, a_ok))
+        ready_ids = [int(r["id"]) for r in wo.ready_items(conn, "SQLITE", respect_due=True,
+                                                          origin=wo.ORIGIN_OPERATOR,
+                                                          for_engine="qoder")]
+        first = wo.next_item(conn, "SQLITE", respect_due=True, origin=wo.ORIGIN_OPERATOR,
+                             for_engine="qoder")
+        check("baris yang sedang cooldown tidak muncul di daftar siap maupun 'berikutnya'",
+              a_ok not in ready_ids and first and int(first["id"]) == b_hold,
+              str({"ready": ready_ids, "first": first and first["id"]}))
+        check("laporan antrean Dashboard memakai aturan yang sama dengan yang ditawarkan",
+              len(wo.semi_status(conn, "SQLITE")["operator_queue"]) == len(ready_ids),
+              str(wo.semi_status(conn, "SQLITE")["operator_pending"]))
+
+        # Penasihat hanya melapor, tidak menyuruh bekerja. Yang diperiksa adalah TEKS yang
+        # dihasilkannya — bukan teks sumbernya — jadi ini bukti perilaku, bukan pencarian string.
+        try:
+            import queue_advisor as _adv2
+            _adv2.THIS_ENGINE = "qoder"
+            _note = _adv2.render_note("SEMI", "observe", [{"id": 7, "title": "contoh"}], [], [])
+            check("catatan antrean melarang dirinya sendiri dipakai sebagai perintah kerja",
+                  bool(_note) and "bukan perintah" in _note and "jangan mulai" in _note,
+                  str(_note)[:180])
+        except Exception as _e4:  # noqa: BLE001
+            check("catatan antrean bisa diuji", False, f"{type(_e4).__name__}: {_e4}")
 
         path = write_events([{"ts": 1, "action": "SELFTEST"}],
                             path=Path("/tmp/drainer_selftest.jsonl"))

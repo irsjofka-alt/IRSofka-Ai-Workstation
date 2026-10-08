@@ -379,7 +379,7 @@ only agreed with is not a review:
 Order as it will be built: **F8.4 + F10.2** (✅ 01:00) → **F10.8** (🟡 01:30, switch shipped; expiry
 and drainer still owed) → **F10.1** (🟡 01:44, broker shipped; nothing forces an engine to call it yet)
 → **F10.7** (🟡 02:10, the sense shipped; the hand — `CONTINUE` — deliberately not) →
-**F10.3** → F10.4 / F10.5 / F10.6. The seeded queue encodes this through `depends_on`, so an engine
+**F10.3** → F10.4 / F10.5 / F10.6 / F10.9. The seeded queue encodes this through `depends_on`, so an engine
 that skips the order cannot claim.
 
 ### Modules
@@ -696,6 +696,17 @@ that skips the order cannot claim.
   after a verifier clears the work** (decision 6), and **the drainer's timer stays off tonight because the
   operator is back at the desk** (decision 19) — so F10.3's acceptance half, one night of unattended log,
   remains owed by explicit choice rather than by oversight.
+
+- ⬜ **F10.9 Push gate — the answer to decision 6 has to stop being a sentence.** The operator allowed an
+  unattended run to commit and push *on condition* that a verifier clears the work first. That condition
+  currently lives only in §6 prose, which means it binds exactly as far as an engine remembers it — and
+  §12 forbids a rule with two definitions while the ledger has none. What is missing is a row: a push
+  claims nothing until a `decisions`-shaped verdict exists for the commit it is about to publish, written
+  by the resolver ladder with its own `model_id`, `state='COMPLETED'` and the diff it read. A run with no
+  verdict commits locally and lists the pending push in the morning digest; it does not ask the operator,
+  and it does not push. *Acceptance:* with the toggle ON, one commit reaches `origin` carrying a verifier
+  row naming the model that cleared it, and one commit is deliberately made unverifiable (meter hidden) and
+  is still local at dawn — both visible in `action_log`, neither produced by a human hand.
 
 ## Known Boundaries & Constraints
 

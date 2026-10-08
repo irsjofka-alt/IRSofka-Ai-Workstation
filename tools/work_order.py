@@ -1045,6 +1045,21 @@ ROADMAP_ITEMS = [
      "build", None, "cargo test -q reflex_proof"),
     ("f105", "F10.5 dream phase: konsolidasi memori saat idle, berkas tracked hanya lewat digest",
      "build", ["f103"], "python3 tools/work_order.py digest"),
+    # Jawabannya sudah diberikan operator lewat tab Human Decide (decision 6, 2026-10-08 07:00): ON boleh
+    # commit dan push asal ada verifier yang meloloskan lebih dulu. Yang belum ada adalah barisnya —
+    # aturan itu sekarang cuma hidup di §6, tempat ia mengikat sejauh engine mengingatnya, padahal §12
+    # melarang satu kata punya dua definisi.
+    #
+    # Versi pertama gerbang ini membaca action_log dengan `summary LIKE '%push%' AND '%verifier%'` dan
+    # diukur keluar 0 — yang ditemukan adalah kalimat laporan milik engine sendiri, bukan peristiwa.
+    # Gerbang yang cocok dengan prosa selalu benar, jadi bentuknya sekarang peristiwa terstruktur:
+    # kind=push_verified dengan sha dan model yang meloloskan di baris yang sama. Tidak ada satu pun
+    # kode yang memancarkan kind itu hari ini, dan itu memang sisanya.
+    ("f109", "F10.9 push gate: push hanya setelah verdict verifier COMPLETED menyebut model yang "
+             "meloloskan diff-nya; tanpa verdict, commit berhenti lokal dan masuk digest pagi",
+     "build", ["f101", "f103"],
+     "grep -qE '\"kind\": ?\"push_verified\".*sha=[0-9a-f]{7,40}.*model=[A-Za-z0-9._:-]+' "
+     "logs/station_events.jsonl"),
 ]
 
 
@@ -1522,6 +1537,12 @@ def selftest():
         vacuous = [title for _k, title, _p, _d, gate in ROADMAP_ITEMS
                    if "list-timers" in (gate or "")]
         check("tidak ada gerbang ROADMAP yang berupa list-timers telanjang", not vacuous, str(vacuous))
+        # Satu kelas lagi, ditemukan dengan mengukurnya: gerbang f109 versi pertama membaca
+        # action_log.summary dengan LIKE, dan lolos karena kalimat laporan engine sendiri memuat
+        # kata-kata itu. Prosa bukan peristiwa — gerbang tidak boleh membuktikan dirinya dengan teks.
+        prose = [title for _k, title, _p, _d, gate in ROADMAP_ITEMS
+                 if "action_log" in (gate or "") and "LIKE" in (gate or "").upper()]
+        check("tidak ada gerbang ROADMAP yang dibuktikan oleh prosa action_log", not prose, str(prose))
         no_gate = [title for _k, title, _p, _d, gate in ROADMAP_ITEMS if not (gate or "").strip()]
         check("setiap butir ROADMAP yang di-seed membawa gerbang", not no_gate, str(no_gate))
     finally:

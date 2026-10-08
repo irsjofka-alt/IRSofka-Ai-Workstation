@@ -88,20 +88,28 @@ def build_note(cwd: str) -> str | None:
     import work_order as wo
     conn, engine = wo.connect()
     ap = wo.autopilot(conn, engine) or {}
-    mine_all = wo.run(conn, engine,
-                      "SELECT id, title, cli_engine, ws_path, status FROM quest_tasks "
-                      "WHERE origin=%s ORDER BY id" if engine == "POSTGRESQL" else
-                      "SELECT id, title, cli_engine, ws_path, status FROM quest_tasks "
-                      "WHERE origin=? ORDER BY id",
-                      (wo.ORIGIN_OPERATOR,))
+    # `ready_items`, bukan SQL sendiri. Ini kesalahan yang baru saja dikutuk putaran lima dan
+    # kulakukan lagi di berkas yang sama: query `status='PENDING'` milik sendiri, tanpa `norm()`,
+    # tanpa lease, tanpa cooldown. Bedanya kali ini ketahuan HIDUP — penasihat melaporkan baris
+    # #86 dan #88 yang sudah COMPLETED ke sesi ini, persis saat ia dipasang sebagai pagar.
+    ready = wo.ready_items(conn, engine, respect_due=True, origin=wo.ORIGIN_OPERATOR)
+    mine_all = [x for x in ready if norm_ok(x)]
     if not mine_all:
         return None
     mine = select_rows(mine_all, cwd)
-    other_engine = [r for r in mine_all if (r.get("cli_engine") or "").strip() != THIS_ENGINE]
-    other_project = [r for r in mine_all
-                     if (r.get("cli_engine") or "").strip() == THIS_ENGINE and r not in mine]
+    # Dua alasan berbeda tidak boleh dapat satu label: baris milik MESIN lain dan baris milik
+    # mesin ini tapi PROYEK lain adalah dua hal berbeda, dan menyebut keduanya "MESIN LAIN"
+    # membuat operator menyalahkan mesin yang salah.
+    other_engine = [x for x in mine_all if (x.get("cli_engine") or "").strip() != THIS_ENGINE]
+    other_project = [x for x in mine_all
+                     if (x.get("cli_engine") or "").strip() == THIS_ENGINE and x not in mine]
     return render_note((ap.get("mode") or "OFF").upper(), ap.get("level"),
                        mine, other_engine, other_project)
+
+
+def norm_ok(row):
+    """Baris siap yang benar-benar menunggu manusia, bukan yang sedang dikerjakan mesin."""
+    return (row.get("status") or "").upper() == "PENDING"
 
 
 def render_note(mode, level, mine, other_engine, other_project):

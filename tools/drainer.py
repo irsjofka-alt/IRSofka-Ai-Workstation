@@ -433,6 +433,16 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
                  "bukan miliknya")
         return None
 
+    # Prompt disusun SEBELUM klaim, sama seperti di `semi_wake.py`. Alasannya bukan gaya:
+    # `.format()` di bawah klaim berarti satu KeyError meninggalkan baris WORKING tanpa ada yang
+    # mengirim, dan itu kelas bug yang baru dihapus di jalur hook tapi masih hidup di sini.
+    if wanted == "SEMI":
+        prompt = SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=want,
+                                    gate=(full.get("check_command") or "tanpa gerbang"))
+    else:
+        prompt = START_PROMPT.format(id=item["id"], title=item["title"],
+                                     gate=(full.get("check_command") or "tanpa gerbang"))
+
     ok, msg = wo.claim(conn, engine, int(item["id"]), HOLDER, mode=wanted, dirty=dirty)
     if not ok:
         # `claim()` yang memutuskan; di sini hasilnya hanya diterjemahkan menjadi nama kejadian,
@@ -441,17 +451,6 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
              item=int(item["id"]), target=target, why=msg)
         cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
         return None
-    # Salinan aturan "satu perintah aktif" yang dulu ada di sini sudah dihapus. Ia memeriksa
-    # SEBELUM menulis di satu jalur dan SESUDAH menulis di jalur lain (hook), dan selisih itu
-    # cukup untuk dua perintah masuk ke satu mesin. Aturannya sekarang milik `wo.claim()` —
-    # satu tempat, ditegakkan pada saat penulisan — dan yang terjadi di sini hanyalah
-    # menerjemahkan penolakannya menjadi kejadian yang terbaca di log malam.
-    if wanted == "SEMI":
-        prompt = SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=want,
-                                    gate=(full.get("check_command") or "tanpa gerbang"))
-    else:
-        prompt = START_PROMPT.format(id=item["id"], title=item["title"],
-                                     gate=(full.get("check_command") or "tanpa gerbang"))
     try:
         reply = (sender or default_sender)(target, prompt)
         # `tab_project` dan `pane_now` dicatat supaya suatu saat seseorang bisa menguji dugaan
@@ -1470,6 +1469,20 @@ def selftest():
         try:
             import queue_advisor as _adv2
             _adv2.THIS_ENGINE = "qoder"
+            # `build_note` adalah satu-satunya bagian penasihat yang menyentuh database, dan
+            # `main()` menelan SEMUA exception-nya menjadi "diam" — jadi nama yang tidak terdefinisi
+            # di dalamnya tidak akan pernah terlihat sebagai kegagalan. Ini terjadi sungguhan
+            # 2026-10-08 12:2x: suntingan menghapus tiga variabel yang masih dipakai, dan penasihat
+            # berhenti bicara selamanya dengan exit 0. Yang dipanggil di sini adalah fungsi nyata;
+            # kalau ia melempar, tes ini yang berteriak, bukan sesi operator.
+            try:
+                _live = _adv2.build_note(str(REPO))
+                _ok_live = _live is None or ("bukan perintah" in _live and "jangan mulai" in _live)
+            except Exception as _le:  # noqa: BLE001
+                _ok_live = False
+                _live = f"{type(_le).__name__}: {_le}"
+            check("build_note sungguhan berjalan (bukan hanya render), dan tetap melarang dirinya "
+                  "dipakai sebagai perintah", _ok_live, str(_live)[:150])
             _note = _adv2.render_note("SEMI", "observe", [{"id": 7, "title": "contoh"}], [], [])
             check("catatan antrean melarang dirinya sendiri dipakai sebagai perintah kerja",
                   bool(_note) and "bukan perintah" in _note and "jangan mulai" in _note,

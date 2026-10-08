@@ -379,49 +379,94 @@ def claim(conn, engine, item_id, who, dirty=_MEASURE, mode=None):
     # Satu perintah aktif per MESIN, di bawah SEMI. Aturannya tinggal di sini, bukan di pemanggil,
     # karena audit putaran lima menemukan dua salinan yang berbeda: hook memeriksa SEBELUM mengklaim
     # dan drainer memeriksa SESUDAH lalu melepas — selisih itu cukup untuk dua perintah masuk ke
-    # satu mesin. Di tempat yang sama aturan itu juga bisa melihat baris yang sedang ditulis.
-    if ap.get("mode") == "SEMI":
-        engine_of = (item.get("cli_engine") or "").strip()
-        if engine_of:
+    # satu mesin.
+    #
+    # Kunci advisory per mesin membuat pemeriksaan di bawah benar-ben atomik. Tanpanya ia tetap
+    # cek-lalu-tulis: dua pemanggil untuk dua BARIS BERBEDA dengan cli_engine sama bisa sama-sama
+    # melihat "bebas" (keduanya masih PENDING) lalu sama-sama menembus UPDATE bersyaratnya sendiri,
+    # karena WHERE hanya melindungi baris yang ia tulis, bukan baris tetangga. Bukan teori: hook
+    # memilih dari cwd sesi sementara drainer memilih dari tab_project, dan keduanya boleh berbeda.
+    #
+    # `pg_advisory_lock`, bukan `_xact_`, karena koneksi ini autocommit — lock transaksi dilepas
+    # tepat setelah statement pembukanya, yaitu sebelum apa pun diperiksa.
+    # Batas yang diakui: SQLite tidak punya ini. Di sana penulisan diserialisasi file lock, tapi
+    # jendela SELECT→UPDATE tetap ada antar proses. Hari ini tidak ada dua pemanggil bersamaan
+    # (timer OFF, satu hook per mesin); itu keadaan yang harus diingat saat F10.3 menyalakan timer,
+    # bukan sesuatu yang boleh diklaim sudah beres.
+    engine_of = (item.get("cli_engine") or "").strip()
+    lock_key = f"quest-engine:{engine_of}"
+    locked = False
+    if engine == "POSTGRESQL" and ap.get("mode") == "SEMI" and engine_of:
+        try:
+            run(conn, engine, "SELECT pg_advisory_lock(hashtext(%s))", (lock_key,))
+            locked = True
+        except Exception:  # noqa: BLE001 — tanpa lock pun kita masih lebih baik daripada tanpa klaim
+            locked = False
+    try:
+        if ap.get("mode") == "SEMI" and engine_of:
             busy = run(conn, engine,
                        "SELECT id FROM quest_tasks WHERE cli_engine=%s AND id<>%s "
-                       "AND status IN ('WORKING','CLAIMED') AND lease_epoch > %s ORDER BY id LIMIT 3"
+                       "AND status IN ('WORKING','CLAIMED') "
+                       "AND COALESCE(lease_epoch,0) > %s ORDER BY id LIMIT 3"
                        if engine == "POSTGRESQL" else
                        "SELECT id FROM quest_tasks WHERE cli_engine=? AND id<>? "
-                       "AND status IN ('WORKING','CLAIMED') AND lease_epoch > ? ORDER BY id LIMIT 3",
+                       "AND status IN ('WORKING','CLAIMED') "
+                       "AND COALESCE(lease_epoch,0) > ? ORDER BY id LIMIT 3",
                        (engine_of, item_id, now()))
             if busy:
                 return False, (f"ENGINE_BUSY: {engine_of} masih memegang "
                                f"{', '.join('#' + str(r['id']) for r in busy)} — SEMI menunggu "
                                "yang ini selesai sebelum memberi perintah kedua")
 
-    ph = "%s" if engine == "POSTGRESQL" else "?"
-    # UPDATE bersyarat. Versi lama `WHERE id=?` saja: dua pengklaim bisa sama-sama menang, karena
-    # masing-masing menulis lalu membaca kembali NAMANYA SENDIRI — A menulis, A baca (A), B menulis,
-    # B baca (B) — dan keduanya pulang membawa True. Sekarang klaim hanya menembus kalau barisnya
-    # masih bisa diklaim pada detik penulisan, dan yang kalah kena nol baris.
-    q = (f"UPDATE quest_tasks SET status='WORKING', claimed_by={ph}, lease_epoch={ph}, "
-         f"model_assigned={ph} WHERE id={ph} "
-         f"AND (claimed_by IS NULL OR claimed_by={ph} OR lease_epoch <= {ph}) "
-         f"AND status IN ('PENDING','CLAIMED','WORKING')")
-    run(conn, engine, q, (who, now() + LEASE_SECONDS, who, item_id, who, now()))
-    after = get_item(conn, engine, item_id)
-    ok = after and after.get("claimed_by") == who and norm(after.get("status")) == "WORKING"
-    return (True, f"claimed by {who}") if ok else (False, "klaim tidak menembus — barisnya sudah "
-                                                          "dipegang orang lain")
+        ph = "%s" if engine == "POSTGRESQL" else "?"
+        # UPDATE bersyarat. Versi lama `WHERE id=?` saja: dua pengklaim bisa sama-sama menang,
+        # karena masing-masing menulis lalu membaca kembali NAMANYA SENDIRI — A menulis, A baca
+        # (A), B menulis, B baca (B) — dan keduanya pulang membawa True.
+        #
+        # `COALESCE(lease_epoch,0)` bukan kerapian SQL. Tanpa itu, baris yang `claimed_by`-nya
+        # terisi sambil `lease_epoch` masih NULL membuat `lease_epoch <= ?` bernilai NULL, dan
+        # NULL di WHERE tidak pernah benar — baris itu TIDAK BISA DIKLAIM SELAMANYA. Pemeriksaan
+        # Python di atas justru melihat `int(None or 0) = 0` dan menyebutnya "bebas": dua pembacaan
+        # atas data yang sama tidak boleh memberi jawaban berbeda.
+        q = (f"UPDATE quest_tasks SET status='WORKING', claimed_by={ph}, lease_epoch={ph}, "
+             f"model_assigned={ph} WHERE id={ph} "
+             f"AND (claimed_by IS NULL OR claimed_by={ph} OR COALESCE(lease_epoch,0) <= {ph}) "
+             f"AND status IN ('PENDING','CLAIMED','WORKING')")
+        run(conn, engine, q, (who, now() + LEASE_SECONDS, who, item_id, who, now()))
+        after = get_item(conn, engine, item_id)
+        ok = after and after.get("claimed_by") == who and norm(after.get("status")) == "WORKING"
+        if ok:
+            return True, f"claimed by {who}"
+        # Alasan yang benar, bukan dugaan yang paling nyaman. "dipegang orang lain" untuk baris
+        # yang sebenarnya sudah DONE mengirim orang mencari pemegang yang tidak pernah ada.
+        if not after:
+            return False, f"item {item_id} hilang saat diklaim"
+        if after.get("claimed_by") and after.get("claimed_by") != who:
+            return False, f"dipegang {after['claimed_by']} sampai lease berakhir"
+        return False, (f"status {norm(after.get('status'))} tidak bisa diklaim — "
+                       "UPDATE-nya tidak menembus WHERE")
+    finally:
+        if locked:
+            try:
+                run(conn, engine, "SELECT pg_advisory_unlock(hashtext(%s))", (lock_key,))
+            except Exception:  # noqa: BLE001 — koneksi yang tertutup melepas lock sendiri
+                pass
 
 
 def release_claim(conn, engine, item_id, who):
-    """Lepaskan klaim HANYA kalau masih milik kita.
+    """Lepaskan klaim HANYA kalau masih milik kita dan masih berupa klaim.
 
-    Dipindah ke modul pemilik kosakata karena dua jalur butuh pelepasan yang sama dan audit
+    Dipindah ke modul pemilik kosakata karena dua jalur butuh pelepasan yang sama, dan audit
     menemukan `_release_claim` milik drainer menulis `WHERE id=?` tanpa syarat — cukup untuk
-    menghapus klaim orang lain yang baru saja menang.
+    menghapus klaim orang lain yang baru saja menang. `status IN (...)` ditambahkan kemudian:
+    tanpa itu, pelepasan yang terlambat bisa menimpa baris yang sudah divonis COMPLETED atau
+    FAILED oleh pihak lain, dan itu menulis ulang sejarah hasil pekerjaan.
     """
     ph = "%s" if engine == "POSTGRESQL" else "?"
     run(conn, engine,
         f"UPDATE quest_tasks SET status='PENDING', claimed_by=NULL, lease_epoch=0 "
-        f"WHERE id={ph} AND claimed_by={ph}", (item_id, who))
+        f"WHERE id={ph} AND claimed_by={ph} AND status IN ('WORKING','CLAIMED')",
+        (item_id, who))
     return get_item(conn, engine, item_id)
 
 
@@ -2132,6 +2177,30 @@ def selftest():
         ok, msg = guidelines_are_locked()
         check("permintaan mengubah pedoman ditolak dengan alasan, bukan diam",
               not ok and "TERKUNCI" in msg and "LOCKED_GUIDES" in msg, msg)
+        # --- jebakan yang membuat baris tak bisa diklaim selamanya ---
+        # Premisnya harus dinyatakan: kegagalan dari blok sebelumnya masih di jendela 12 jam dan
+        # akan membuka pemutus, jadi klaim ini akan ditolak karena alasan yang bukan diuji di sini.
+        conn.execute("UPDATE quest_tasks SET completed_at=datetime('now','-2 days') "
+                     "WHERE status IN ('FAILED','PARKED')")
+        conn.commit()
+        conn.execute("INSERT INTO quest_tasks (title,status,cli_engine,claimed_by,lease_epoch) "
+                     "VALUES ('jebakan-null-lease','PENDING','qoder','hantu',NULL)")
+        conn.commit()
+        nul_id = int(run(conn, "SQLITE",
+                         "SELECT id FROM quest_tasks WHERE title='jebakan-null-lease'")[0]["id"])
+        ok_n, msg_n = claim(conn, "SQLITE", nul_id, "qoder", dirty=False, mode="ON")
+        check("baris dengan claimed_by terisi tapi lease_epoch NULL TETAP BISA diklaim "
+              "— tanpa COALESCE ia terkunci selamanya", ok_n, msg_n)
+        conn.execute("INSERT INTO quest_tasks (title,status,cli_engine,claimed_by,lease_epoch) "
+                     "VALUES ('sudah-selesai','COMPLETED','qoder','pihak-x',0)")
+        conn.commit()
+        fin_id = int(run(conn, "SQLITE",
+                         "SELECT id FROM quest_tasks WHERE title='sudah-selesai'")[0]["id"])
+        release_claim(conn, "SQLITE", fin_id, "pihak-x")
+        stayed = get_item(conn, "SQLITE", fin_id)
+        check("pelepasan klaim yang terlambat tidak bisa menimpa baris yang sudah divonis",
+              norm(stayed["status"]) == "COMPLETED", str(stayed["status"]))
+
         semi = semi_status(conn, "SQLITE")
         check("layar melaporkan mana yang MENGIKAT, dan ia sama dengan yang diikat kode",
               semi["guidelines_locked"] is True

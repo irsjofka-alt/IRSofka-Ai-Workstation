@@ -44,7 +44,11 @@ SESSION_ENGINE = (sys.argv[1] if len(sys.argv) > 1 else "qoder")
 # kegagalan yang dari luar terlihat sukses.
 BLOCK_DECISION = {"qoder": "block", "antigravity": "continue"}.get(SESSION_ENGINE, "block")
 NIGHT_LOG = Path.home() / ".ai-station" / "logs" / "semi_wake.jsonl"
-GUIDE_MAX_CHARS = 3200          # plafon yang sama dengan yang sudah dipakai auto_restore.py
+# Plafon ini TIDAK sama dengan milik auto_restore.py (3200) dan tidak lagi mengaku begitu:
+# dinaikkan karena anggaran dibagi per berkas, dan dengan 3200 setiap berkas kontrak hanya
+# kebagian ~800 karakter.
+GUIDE_MAX_CHARS = 9000
+GUIDE_MIN_PER_FILE = 900        # walau plafon habis dibagi rata, tiap berkas dapat setidaknya ini
 
 
 def session_cwd(data: dict):
@@ -108,7 +112,7 @@ def read_input() -> dict:
         return {}
 
 
-def guides_for(conn, engine) -> tuple[str, list[str]]:
+def guides_for(conn, engine) -> tuple[str, list[str], int]:
     """Pedoman yang TERKUNCI — dibaca dari kontrak, bukan dari pilihan layar.
 
     Operator mengunci daftar ini 2026-10-08 11:05. Hook yang membaca pilihan dari tabel `workspaces`
@@ -121,24 +125,33 @@ def guides_for(conn, engine) -> tuple[str, list[str]]:
     except Exception as exc:  # noqa: BLE001
         return "", [f"daftar terkunci tidak terbaca: {type(exc).__name__}"]
     blob, taken, notes = [], [], []
-    budget = GUIDE_MAX_CHARS
+    # Anggaran dibelah PER BERKAS, bukan satu kolam yang dihabiskan berkas pertama.
+    # Terukur 2026-10-08 11:28: `documents/AGENTS.md` 27 KB menghabiskan seluruh 3200 karakter,
+    # sehingga ROADMAP / DESIGN_NOTES / ARCHITECTURE tidak terkirim sama sekali — pesan menyebut
+    # "pedoman TERKUNCI" padahal yang sampai cuma awalan satu berkas. Kunci empat berkas yang
+    # mengirim satu berarti engine menaati seperempat kontrak sambil mengira sudah menaati semuanya.
+    wanted = wo.locked_guides()
+    budget = max(GUIDE_MIN_PER_FILE, GUIDE_MAX_CHARS // max(1, len(wanted)))
     for g in wanted:
         p = Path(g["abs"])
-        if not p.is_file():
+        if not g.get("exists") or not p.is_file():
             notes.append(f"{g['path']} hilang dari disk")
             continue
         try:
-            text = p.read_text(encoding="utf-8", errors="replace")[:budget]
+            text = p.read_text(encoding="utf-8", errors="replace")
         except Exception as exc:  # noqa: BLE001
             notes.append(f"{g['path']} tidak terbaca ({type(exc).__name__})")
             continue
-        budget -= len(text)
+        clipped = len(text) > budget
         taken.append(g["path"])
-        blob.append(f"### {g['path']}\n{text}")
-        if budget <= 0:
-            notes.append(f"daftar dipotong pada {GUIDE_MAX_CHARS} karakter — sisa pedoman tidak disertakan")
-            break
-    return "\n\n".join(blob), notes
+        head = text[:budget]
+        blob.append(f"### {g['path']}  (kutipan {len(head)}/{len(text)} karakter — "
+                    f"isi penuh: {g['abs']})\n{head}")
+        if clipped:
+            notes.append(f"{g['path']} dipotong ke {budget} karakter; baca berkasnya untuk penuh")
+    # Jumlah pedoman yang benar-benar terkirim, bukan jumlah baris teks: log melaporkan angka
+    # yang dibaca operator, dan `len(body.splitlines())` menghitung baris dari satu berkas.
+    return "\n\n".join(blob), notes, len(taken)
 
 
 def main() -> int:
@@ -174,12 +187,17 @@ def main() -> int:
             stop_hook_active=bool(data.get("stop_hook_active")))
         return 0
 
-    where = Path(item.get("ws_path") or "").resolve(strict=False) if item.get("ws_path") else None
-    if where is not None and where != cwd:
+    # Satu resolver untuk dua jalur. Audit peer 2026-10-08 menemukan bahwa hook ini memperlakukan
+    # `ws_path` KOSONG sebagai "boleh di proyek mana pun", sementara drainer memperlakukan kosong
+    # sebagai REPO dan menuntut pane berada di REPO. Dua definisi untuk satu kata, dan yang longgar
+    # adalah milik jalur yang menyuntik ke dalam sesi. Sekarang keduanya memanggil
+    # `resolve_workspace`, jadi baris tanpa proyek hanya bisa jalan di REPO — tidak di mana saja.
+    want = wo.resolve_workspace(item)
+    if cwd != want:
         # Baris milik proyek lain TIDAK pernah disuntik ke sesi ini. Menyuntik perintah proyek B ke
         # sesi yang sedang berdiri di direktori A adalah persis kebingungan identitas yang
         # dikhawatirkan operator, dan hasilnya pekerjaan yang dilaporkan di tree yang salah.
-        log("SEMI_OTHER_PROJECT", item=int(item["id"]), row_ws=str(where), session_cwd=str(cwd),
+        log("SEMI_OTHER_PROJECT", item=int(item["id"]), row_ws=str(want), session_cwd=str(cwd),
             engine=SESSION_ENGINE,
             reason="perintah itu bukan untuk proyek sesi ini — ia tetap antre, tidak dibatalkan")
         return 0
@@ -194,7 +212,7 @@ def main() -> int:
 
     import drainer
     full = wo.get_item(conn, engine, int(item["id"])) or item
-    body, notes = guides_for(conn, engine)
+    body, notes, nguides = guides_for(conn, engine)
     prompt = drainer.SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=cwd,
                                         gate=(full.get("check_command") or "tanpa gerbang"))
     if body:
@@ -210,7 +228,7 @@ def main() -> int:
                f"`python3 tools/work_order.py lease {item['id']}`.")
     log("SEMI_INJECTED", item=int(item["id"]), title=str(item["title"])[:80],
         engine=SESSION_ENGINE, decision=BLOCK_DECISION,
-        claim=msg, guides=len(body.splitlines()),
+        claim=msg, guides=nguides,
         stop_hook_active=bool(data.get("stop_hook_active")))
     print(json.dumps({"decision": BLOCK_DECISION, "reason": prompt}, ensure_ascii=False))
     return 0

@@ -106,6 +106,16 @@ Verification Policy:
 - Responses lacking sufficient evidence must be marked `DISPUTED`, not `ANSWERED`.
 - Reviewed engines may dispute verification conclusions with reasoned justification. Truth is evidence-based.
 
+**Each engine's memory is shared memory.** Standing order set by the operator on 2026-10-08 10:44, during
+an unattended run: while working AUTOPILLOT or SEMI, an engine may consult the *other* engine's brain —
+asking Antigravity/Gemini to recall a decision it was party to, or to challenge a reading of the roadmap,
+the plan, or what is in SQL. This is authorised without asking again, because an agent that only trusts its
+own surviving context re-litigates decisions its partner already heard. It is a **memory and audit aid, not
+a second decision-maker**: a peer may remind, dispute, and supply evidence, but a peer answer never replaces
+an operator answer, and every exchange is written to `ai_message` (`ask_peer` → `check_messages` →
+`resolve_message`) so the record — not whoever is awake — decides what was asked. Where a verdict must be
+independent rather than cheap, that is the `decider`/`verifier` tier above, not this one.
+
 **Decision routing — the operator is not a menu.** When an engine faces two or more acceptable paths and
 no measurement decides between them, it does **not** put the choice to the operator. It resolves the
 `resolver` role from `config/slots.yaml` and `config/engines.json` at the moment of use, dispatches the
@@ -201,6 +211,15 @@ for a bounded run; OFF means a human is at the desk and watching. The rules belo
   control of the machine. Raising the hand is the deliberate opposite — `arm` refuses wherever `/dev/tty`
   cannot be opened, which was measured to fail from systemd units, headless spawns and this assistant's
   own shell tool, so no unattended process can widen its own reach.
+- **Three answers to "who owns the machine": OFF, SEMI, ON.** They differ by *basket*, not by
+  strength of hand. OFF = a human is at the desk and nothing moves. **SEMI** = still automatic, but
+  the only work it may take is a command the operator typed himself into SQL (`origin='operator'`);
+  roadmap items are refused by name, in the queue filter *and* inside `claim()`. ON = the computer is
+  given to the engines and anything available may be taken. The `level` ladder is shared by SEMI and
+  ON and has no SEMI variant — raising a hand is still a TTY-only act. SEMI's trigger is the engine's
+  own turn boundary (`hooks/semi_wake.py`, a `Stop` hook): it may block a stop **only as the
+  consequence of having claimed a real PENDING row**, so an empty queue injects nothing and the queue
+  itself is the loop guard. Silence is the failure state this exists to remove.
 - **ON grants panes and headless APIs; it does not grant `ydotool`.** Moving the real mouse and typing
   real keys steals the desktop of a sleeping person, and a misclick into whatever window is frontmost at
   03:00 is the one failure the ledger cannot undo — no `action_log` row restores a file deleted inside an

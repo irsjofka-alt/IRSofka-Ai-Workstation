@@ -697,6 +697,51 @@ that skips the order cannot claim.
   operator is back at the desk** (decision 19) — so F10.3's acceptance half, one night of unattended log,
   remains owed by explicit choice rather than by oversight.
 
+- ✅ **F10.10 Dashboard — the Station becomes a per-project command center, and SEMI stops being
+  a word without a mechanism.** Shipped 2026-10-08 10:50, commits `4df4a08`…`0d9df2e` + the verb fix.
+  The operator's complaint was usable as written: *berantakan, tidak eye catching, harus scroll ke
+  bawah sangat banyak* — and the cause was mechanical, not aesthetic: `.card` was constructed at eight
+  places in `station.html` and had **no CSS rule at all**, so every card was a transparent div with
+  browser-default headings on a dark background, inside a container that was `flex-direction:column`
+  by construction. The file also had **zero `@media` blocks** and no spacing scale. It now has three
+  columns, a real card, and a fold for the eight stacked diagnostic sections.
+  Renamed from *Human Decide*, moved to the top of the nav, with `#decide` kept as a live alias so an
+  old bookmark does not die because a tab was renamed; hash is now written back and listened to.
+
+  **SEMI is a mode, not a level** — a third answer to *who owns the machine*, stored in
+  `autopilot_state.mode` beside the switch, never in a second table. Its whole content is the basket:
+  `origin='operator'` rows only, enforced twice — in `next_item(origin=…)` and again inside `claim()`,
+  because a limit that only filters the queue is a limit the caller can skip. The night breaker and
+  the dirty-tree rule apply unchanged; a selftest check proves a roadmap row is refused *by name*
+  while an operator row is accepted in the same queue.
+
+  **The trigger is the engine's own turn boundary.** Measured in `qodercli-1.1.65` before designing
+  on it: `Stop` is a real hook event, `decision` accepts `"block"` (normalised to `"deny"`), and a
+  blocking Stop hook returns `{blocked, inject, retryAsStopHook}` — so `hooks/semi_wake.py` can hand a
+  queued command to the session that is already running without touching a pane, `ydotool`, or a
+  timer. Blocking is only ever the consequence of a successful claim on a PENDING row, so an empty
+  queue injects nothing and **SEMI cannot run away**: the queue is the loop guard, which is why
+  `stop_hook_active` is deliberately *not* used to cap it (that would limit the operator to one
+  command per turn). Proven live at 10:50: item 85 → `{"decision":"block"}`, a 4138-character prompt,
+  `claimed_by=qoder`, and `logs/semi_wake.jsonl` naming the item.
+
+  **Project identity got exactly one new word.** Three notions of "where work happens" already lived
+  here — `REPO` (the only execution use being `drainer.py:133 cd {REPO} && gate`), `TabProfile.workspace`,
+  and the `current_project` symlink Rust never reads — which is precisely the *confusing identitas* the
+  operator warned about. `quest_tasks.ws_path` is the new one, NULL meaning the old behaviour exactly,
+  and the gate now runs in the row's own directory: an engine working on one tree while its verdict is
+  read from another is a report about someone else. `workspaces` is a registry that **never claims the
+  focus** — `is_focus` is derived from the symlink at read time, and a selftest check asserts the table
+  has no `active` column to drift out of agreement.
+
+  Three defects were caught by looking at real data rather than by testing: `log(why, **rest)`
+  collided with call sites passing `why=` so the hook's *refusal* path raised `TypeError`, and the
+  crash handler had the same defect — a trigger that crashes while reporting a refusal is worse than
+  one that stays quiet; guideline dedupe keyed on the *relative* path, so this project's `AGENTS.md`
+  silently deleted the workstation's from the list; and the Dashboard's word `guidelines` did not
+  match the CLI verb `guides`, so the first real write failed with argparse exit 2. All three fixed at
+  the source, not papered over — the last by renaming the verb rather than adding a mapping table,
+  because a mapping is where two words for one thing hide. Selftests: work_order 110 → 135, drainer 59 → 83.
 - ⬜ **F10.9 Push gate — the answer to decision 6 has to stop being a sentence.** The operator allowed an
   unattended run to commit and push *on condition* that a verifier clears the work first. That condition
   currently lives only in §6 prose, which means it binds exactly as far as an engine remembers it — and

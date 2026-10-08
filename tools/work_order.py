@@ -2265,11 +2265,11 @@ def main(argv=None):
     p.add_argument("--ws", default="", help="direktori proyek; kosong = seperti dulu (REPO)")
     p.add_argument("--by", default="operator")
     p = sub.add_parser("ws", help="daftar / buat / fokus proyek, dan pilih pedoman MD-nya")
-    p.add_argument("action", choices=["list", "create", "focus", "guides", "detect"])
+    p.add_argument("action", choices=["list", "create", "focus", "guidelines", "detect"])
     p.add_argument("first", nargs="?", default="", help="nama untuk create, id/nama/path untuk focus")
     p.add_argument("--path", default="", help="direktori proyek (create)")
     p.add_argument("--name", default="", help="nama tampilan (create)")
-    p.add_argument("--files", default="", help="daftar pedoman terpisah koma (guides)")
+    p.add_argument("--files", default="", help="daftar pedoman terpisah koma (guidelines)")
     p.add_argument("--by", default="operator-gui")
     p = sub.add_parser("arm"); p.add_argument("level", choices=list(LEVELS))
     p.add_argument("--minutes", type=int, default=ARM_DEFAULT_MINUTES)
@@ -2364,7 +2364,7 @@ def main(argv=None):
             ok, msg = focus_workspace(conn, engine, a.first or a.path, a.by)
             print(json.dumps({"ok": ok, "why": msg, "focus": str(focused_workspace() or "")}))
             return 0 if ok else 1
-        else:  # guides
+        else:  # guidelines
             rows = run(conn, engine, "SELECT id FROM workspaces ORDER BY id")
             target = a.first or ((rows[0] if rows else {}).get("id"))
             ok, msg = set_guidelines(conn, engine, int(target),

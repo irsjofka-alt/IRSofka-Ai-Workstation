@@ -158,6 +158,41 @@ def guides_for(conn, engine) -> tuple[str, list[str], int]:
     return "\n\n".join(blob), notes, len(taken)
 
 
+def prepare_prompt(item, cwd):
+    """Susun prompt SEBELUM ada klaim — dan kembalikan None kalau gagal, bukan melempar.
+
+    Ini alasan fungsinya dipisah: property yang ingin ditegakkan adalah "tidak ada baris yang
+    tertinggal WORKING tanpa ada yang menyuntik". Selama pembentuk prompt hidup di dalam `main`
+    setelah `claim`, satu exception dari `import drainer`, `get_item`, atau `.format` akan
+    meninggalkan klaim itu — dan satu-satunya bukti yang tersisa adalah log SEMI_BROKE dengan
+    exit 0. Dibuat fungsi terpisah, property-nya bisa dites: bikin fungsi ini gagal, lalu
+    tunjukkan bahwa tidak ada apa pun yang diklaim.
+    """
+    import work_order as wo
+    try:
+        import drainer
+        conn, engine = wo.connect()
+        full = wo.get_item(conn, engine, int(item["id"])) or item
+        body, notes, nguides = guides_for(conn, engine)
+        prompt = drainer.SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=cwd,
+                                            gate=(full.get("check_command") or "tanpa gerbang"))
+    except Exception as exc:  # noqa: BLE001 — sebelum ada klaim, gagal berarti diam
+        log("SEMI_PREPARE_FAILED", item=int(item["id"]), engine=SESSION_ENGINE,
+            reason=f"{type(exc).__name__}: {exc}",
+            note="belum ada yang diklaim — barisnya tetap PENDING dan akan dicoba lagi")
+        return None, 0
+    if body:
+        prompt += "\n\nPedoman yang mengikat (TERKUNCI oleh kontrak):\n" + body
+    if notes:
+        prompt += "\n\nCatatan pedoman: " + "; ".join(notes)
+    # SEMI_PROMPT ditulis untuk jalur timer, di mana drainer memegang lease sampai engine mulai.
+    # Di jalur hook ini klaimnya atas nama mesin ini sendiri, jadi kalimat itu dikoreksi.
+    prompt += (f"\n\nCatatan jalur: hook ini akan mengklaim item {item['id']} atas nama "
+               f"{SESSION_ENGINE} (bukan drainer). Perpanjang lease dengan "
+               f"`python3 tools/work_order.py lease {item['id']}`.")
+    return prompt, nguides
+
+
 def main() -> int:
     data = read_input()
     cwd_raw = session_cwd(data)
@@ -178,6 +213,24 @@ def main() -> int:
         # dan batas giliran berikutnya yang akan memanggil kita lagi.
         log("SEMI_NOT_IDLE", engine=SESSION_ENGINE,
             reason="laporan sesi: masih ada pekerjaan latar — penghentian ini bukan akhirnya")
+        return 0
+
+    # Satu perintah aktif per mesin. Jalur drainer sudah punya aturan ini (`ENGINE_BUSY`); tanpa
+    # padanannya di sini, setiap `Stop` bisa menyuntik perintah BARU sementara mesin masih memegang
+    # item yang belum di-complete — persis yang dilarang kalimat "kalau Working, tunggu sampai
+    # selesai". Yang menunggu tidak hilang: ia tetap PENDING dan diambil pada batas giliran
+    # berikutnya setelah yang ini selesai.
+    held = wo.run(conn, engine,
+                  "SELECT id, lease_epoch FROM quest_tasks WHERE cli_engine=%s "
+                  "AND status IN ('WORKING','CLAIMED') AND lease_epoch > %s ORDER BY id"
+                  if engine == "POSTGRESQL" else
+                  "SELECT id, lease_epoch FROM quest_tasks WHERE cli_engine=? "
+                  "AND status IN ('WORKING','CLAIMED') AND lease_epoch > ? ORDER BY id",
+                  (SESSION_ENGINE, wo.now()))
+    if held:
+        log("SEMI_ENGINE_BUSY", engine=SESSION_ENGINE, waiting=[int(r["id"]) for r in held],
+            reason="mesin ini masih memegang item yang lease-nya hidup — antrean menunggu, "
+                   "tidak ditumpuk")
         return 0
 
     item = wo.next_item(conn, engine, respect_due=True, origin=wo.ORIGIN_OPERATOR,
@@ -211,29 +264,9 @@ def main() -> int:
     # melempar setelahnya — `__main__` menelannya sebagai SEMI_BROKE dengan exit 0, dan barisnya
     # tinggal WORKING tanpa ada yang menyuntik. Itulah persis kegagalan yang temuan (f) minta
     # dihapus, dan memperbaiki salah satu cabangnya saja tidak menghapus akarnya.
-    try:
-        import drainer
-        full = wo.get_item(conn, engine, int(item["id"])) or item
-        body, notes, nguides = guides_for(conn, engine)
-        prompt = drainer.SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=cwd,
-                                            gate=(full.get("check_command") or "tanpa gerbang"))
-    except Exception as exc:  # noqa: BLE001 — sebelum ada klaim, gagal berarti diam
-        log("SEMI_PREPARE_FAILED", item=int(item["id"]), engine=SESSION_ENGINE,
-            reason=f"{type(exc).__name__}: {exc}",
-            note="belum ada yang diklaim — barisnya tetap PENDING dan akan dicoba lagi")
+    prompt, nguides = prepare_prompt(item, cwd)
+    if prompt is None:
         return 0
-
-    if body:
-        prompt += "\n\nPedoman yang mengikat (TERKUNCI oleh kontrak):\n" + body
-    if notes:
-        prompt += "\n\nCatatan pedoman: " + "; ".join(notes)
-    # SEMI_PROMPT ditulis untuk jalur timer, di mana drainer memegang lease sampai engine mulai.
-    # Di jalur hook ini klaimnya atas nama mesin ini sendiri, jadi kalimat itu dikoreksi —
-    # instruksi yang salah tentang siapa yang memegang lease membuat engine membuang giliran
-    # untuk mencari tahu.
-    prompt += (f"\n\nCatatan jalur: hook ini akan mengklaim item {item['id']} atas nama "
-               f"{SESSION_ENGINE} (bukan drainer). Perpanjang lease dengan "
-               f"`python3 tools/work_order.py lease {item['id']}`.")
 
     ok, msg = wo.claim(conn, engine, int(item["id"]), SESSION_ENGINE)
     if not ok:

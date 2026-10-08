@@ -1372,6 +1372,14 @@ def queue_command(conn, engine, title: str, cli_engine: str, gate: str = "",
     if known and target not in known:
         return False, f"{target!r} bukan tab terdaftar (terdaftar: {', '.join(known)})", None
     where = (ws_path or "").strip()
+    if not where:
+        # Kosong berarti REPO, dan tab qoder TIDAK duduk di REPO — jadi perintah tanpa proyek adalah
+        # baris yang tidak bisa dikirim oleh jalur mana pun: drainer menolaknya (PANE_WRONG_DIR) dan
+        # hook menolaknya (SEMI_OTHER_PROJECT). Yang ditolak secara senyap akan dibaca operator
+        # sebagai "perintahku hilang". Kalau fokus terbaca, ia jadi default; kalau tidak, kata
+        # kosong tetap kata kosong dan alasannya ikut dilaporkan.
+        focus = focused_workspace()
+        where = str(focus) if focus else ""
     if where:
         p = Path(where).expanduser()
         if not p.is_dir():

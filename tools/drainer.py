@@ -244,8 +244,15 @@ def gate_item(conn, engine, item, runner=None, stage="after", emit=None):
 def reconcile(conn, engine, mode, runner=None, emit=None):
     """Vonis atas klaim drainer yang masih hidup: gerbang diulang, angka keluar yang bicara."""
     emit = emit or (lambda *a, **kw: None)   # bentuk panggilan: (action, **isi)
+    wanted = (mode or "").upper()
+    if wanted not in ("ON", "SEMI"):
+        # Sama seperti hand_new_work: mode yang tidak dikenal bukan berarti "kerjakan semuanya".
+        # Di sini yang dipertaruhkan adalah MENJALANKAN check_command milik baris roadmap.
+        emit("MODE_UNKNOWN", where="reconcile", mode=str(mode),
+             why="tidak ada gerbang yang dijalankan")
+        return
     for row in open_claims(conn, engine, holder=HOLDER):
-        if mode == "SEMI" and (row.get("origin") or "legacy") != wo.ORIGIN_OPERATOR:
+        if wanted == "SEMI" and (row.get("origin") or "legacy") != wo.ORIGIN_OPERATOR:
             # `reconcile` MENJALANKAN check_command baris itu. Di bawah SEMI menjalankan shell
             # milik baris roadmap adalah pekerjaan yang tidak pernah diminta operator, walau
             # klaimnya tertinggal dari ON sebelumnya. Barisnya tidak dihukum: hanya ditahan.
@@ -294,8 +301,9 @@ def pane_is_quiet(target, capture=None, busy=None, gap=MIN_PANE_GAP, sleeper=Non
     menekan Enter atas nama mesin adalah satu-satunya kegagalan di jalur ini yang tidak bisa
     dibatalkan dengan mengembalikan baris database — yang hilang adalah apa yang sedang ia ketik.
 
-    None dari pembacaan mana pun = UNKNOWN = jangan mengetik (invarian 5). Dua pembacaan tanpa jeda
-    juga ditolak: di sana "tidak berubah" adalah tautologi, bukan pengamatan.
+    None dari pembacaan mana pun = UNKNOWN = jangan mengetik (invarian 5). Jeda tidak bisa
+    dinolkan: `effective_gap` memaksa lantai, dan tes tidak tidur karena SLEEPER-nya yang disuntik
+    lewat `hand_new_work`/`tick` — bukan karena aturannya dilonggarkan.
     """
     import cross_verify as cv
     capture = capture or cv.capture_pane
@@ -328,7 +336,8 @@ def _as_path(text):
 
 
 def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
-                  capture=None, busy=None, tab_project=None, pane_cwd=None, gap=MIN_PANE_GAP):
+                  capture=None, busy=None, tab_project=None, pane_cwd=None, gap=MIN_PANE_GAP,
+                  sleeper=None):
     """Serahkan satu item baru ke engine yang ditunjuk barisnya. Tidak pernah menebak tujuan.
 
     Mesin mana yang mengerjakan adalah milik kolom `cli_engine` pada baris itu — operator menyuntingnya
@@ -384,7 +393,7 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
     # --- dua pagar yang sebelumnya tidak ada di jalur ini (temuan audit peer, 2026-10-08) ------
     # (1) PANE BUTA. Jalur ini membaca SQL lalu langsung mengetik; SQL tidak tahu ada orang yang
     #     sedang menulis di pane itu.
-    quiet = pane_is_quiet(target, capture=capture, busy=busy, gap=gap)
+    quiet = pane_is_quiet(target, capture=capture, busy=busy, gap=gap, sleeper=sleeper)
     if not quiet["quiet"]:
         cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
         emit("PANE_NOT_QUIET", item=int(item["id"]), target=target, why=quiet["why"],
@@ -426,7 +435,7 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
         emit("CLAIM_REFUSED", item=int(item["id"]), why=msg)
         cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
         return None
-    if mode == "SEMI":
+    if wanted == "SEMI":
         # Lease yang masih hidup. Tanpa syarat ini, satu klaim roadmap yang tertinggal dari ON —
         # yang di SEMI justru ditahan `HELD_BY_MODE` dan tidak pernah diselesaikan siapa pun —
         # memblokir SETIAP perintah operator untuk engine itu selamanya: kemacetan total yang
@@ -443,7 +452,7 @@ def hand_new_work(conn, engine, mode, runner=None, sender=None, emit=None,
                  why="SEMI menunggu engine ini selesai lebih dulu — bekerja berarti menunggu, "
                      "bukan menumpuki pane")
             return None
-    if mode == "SEMI":
+    if wanted == "SEMI":
         prompt = SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=want,
                                     gate=(full.get("check_command") or "tanpa gerbang"))
     else:
@@ -471,10 +480,15 @@ def nudge_resting(conn, engine, mode, beats=None, sender=None, emit=None):
     """
     emit = emit or (lambda *a, **kw: None)   # bentuk panggilan: (action, **isi)
     sender = sender or default_sender
+    wanted = (mode or "").upper()
+    if wanted not in ("ON", "SEMI"):
+        emit("MODE_UNKNOWN", where="nudge_resting", mode=str(mode),
+             why="tidak ada CONTINUE yang dikirim")
+        return
     if beats is None:
         beats = wo.heartbeat(conn, engine)
     for b in beats:
-        if mode == "SEMI":
+        if wanted == "SEMI":
             row = wo.get_item(conn, engine, int(b["id"])) or {}
             if (row.get("origin") or "legacy") != wo.ORIGIN_OPERATOR:
                 emit("SKIP_NOT_OPERATOR", item=b["id"], who=b["claimed_by"],
@@ -584,7 +598,8 @@ def deliver_answer(conn, engine, decision_id, sender=None, beats=None, capture=N
 
 # --- satu tick ----------------------------------------------------------------
 def tick(conn, engine, gate=None, beats=None, runner=None, sender=None, log=None,
-         capture=None, busy=None, tab_project=None, pane_cwd=None, gap=MIN_PANE_GAP):
+         capture=None, busy=None, tab_project=None, pane_cwd=None, gap=MIN_PANE_GAP,
+         sleeper=None):
     """Satu putaran timer. Mengembalikan kejadian yang juga dituliskan ke log malam.
 
     Semua yang bisa mengetik atau mengeksekusi (`beats`, `runner`, `sender`) bisa disuntik, jadi
@@ -613,7 +628,7 @@ def tick(conn, engine, gate=None, beats=None, runner=None, sender=None, log=None
     # SEMI membuka pintu yang sama dengan ON dan mengambil keranjang yang lebih kecil. Yang membedakan
     # keduanya di sini bukan seberapa jauh tangan boleh pergi — itu tangga `level`, dan ia tidak punya
     # versi SEMI — melainkan APA yang boleh diambil dari antrean.
-    mode = ap.get("mode")
+    mode = (ap.get("mode") or "").upper()
     origin = wo.ORIGIN_OPERATOR if mode == "SEMI" else None
     if not night.get("ok"):
         ev("CLOSED_NIGHT", why=night.get("why"))
@@ -634,7 +649,7 @@ def tick(conn, engine, gate=None, beats=None, runner=None, sender=None, log=None
         reconcile(conn, engine, mode, runner=runner, emit=ev)
         hand_new_work(conn, engine, mode, runner=runner, sender=sender, emit=ev,
                       capture=capture, busy=busy,
-                      tab_project=tab_project, pane_cwd=pane_cwd, gap=gap)
+                      tab_project=tab_project, pane_cwd=pane_cwd, gap=gap, sleeper=sleeper)
     rest = [b for b in (beats if beats is not None else wo.heartbeat(conn, engine))
             if b["state"] == "AT_REST"]
     if lvl["allows_resume"]:
@@ -664,6 +679,8 @@ def selftest():
     """Tick diuji dengan indera dan tangan suntikan di SQLite sementara: nol proses, nol ketikan,
     nol koneksi daemon — dan nol tulisan ke basis data produksi."""
     import sqlite3
+    import drainer as _keep
+    _orig_prompt = _keep.SEMI_PROMPT
     results = []
 
     def check(name, cond, detail=""):
@@ -710,6 +727,7 @@ def selftest():
     for name in ("tick", "reconcile", "hand_new_work", "nudge_resting", "gate_item", "read_gate"):
         check(f"{name}() tidak pernah memanggil tangan manusia",
               "deliver_answer" not in segments.get(name, ""), name)
+    #bekas: cek urutan berbasis teks diganti tes yang MENJALANKAN, lihat "persiapan gagal"
     for needed in ("wo.heartbeat", "wo.drain_level", "wo.nudge", "wo.next_item", "cw.run_grouped",
                    "cv.daemon_post"):
         check(f"memakai {needed}, bukan menduakalinya", needed.split(".", 1)[1] in timer_code)
@@ -732,6 +750,26 @@ def selftest():
             check(f"hook SEMI tidak memakai {banned!r}", not hit, "; ".join(hit))
         check("hook SEMI hanya bisa bicara sesudah satu klaim berhasil — antrean adalah pagarnya",
               "wo.claim(" in hsegs.get("main", ""), str(sorted(hsegs)))
+        # Urutan klaim-vs-cetak dulu "dibuktikan" dengan mencari posisinya di teks. Yang dibuktikan
+        # di sini adalah sifat yang membuat urutan itu penting: `prepare_prompt` TIDAK PERNAH
+        # melempar — ia mengembalikan None — sehingga tidak ada jalur di mana kegagalan terjadi
+        # setelah ada klaim. Klaim adalah satu-satunya tulisan, dan ia hanya dilalui kalau
+        # persiapan sudah selesai.
+        try:
+            sys.path.insert(0, str(wo.REPO / "hooks"))
+            import semi_wake as _sw2
+            _saved_fmt = None
+            import drainer as _self_mod
+            _broken = dict(id=999, title="x")
+            _self_mod.SEMI_PROMPT = object()      # .format tidak ada -> TypeError di dalam
+            _res = _sw2.prepare_prompt(_broken, Path("/tmp"))
+            check("persiapan yang rusak mengembalikan None, bukan melempar — jadi tidak ada "
+                  "kemungkinan ia gagal SETELAH klaim", _res == (None, 0), str(_res)[:80])
+        except Exception as _e3:  # noqa: BLE001
+            check("persiapan bisa diuji", False, f"{type(_e3).__name__}: {_e3}")
+        finally:
+            import drainer as _self_mod2
+            _self_mod2.SEMI_PROMPT = _orig_prompt
         check("hook SEMI membaca mode dari database pada setiap tembakan, bukan dari harapan",
               "wo.autopilot(" in hsegs.get("main", ""))
         check("hook SEMI menyaring asal baris, jadi ia tidak pernah mengambil item roadmap",
@@ -1254,10 +1292,40 @@ def selftest():
                           capture=quiet_pane, busy=not_busy, tab_project=cwd_of,
                           pane_cwd=cwd_of, gap=0)
             if bad == "semi":
-                ok_case = out and out[-1]["action"] in ("WORK_DISPATCHED", "ENGINE_BUSY",
-                                                        "QUEUE_EMPTY")
-                check("mode huruf kecil dikenali dan tetap memakai keranjang SEMI", ok_case,
-                      str(out[-1:]))
+                # Bukan "salah satu dari tiga kejadian". Yang harus dibuktikan adalah mode
+                # huruf kecil memperoleh KEDUA sifat SEMI: prompt perintah-orang DAN pagar
+                # satu-perintah-aktif. Versi sebelumnya menerima hasil apa pun, jadi ia tetap
+                # hijau ketika bug normalisasi mengirim START_PROMPT roadmap tanpa pagar.
+                wo.run(conn, "SQLITE",
+                       "UPDATE quest_tasks SET status='COMPLETED', lease_epoch=0 "
+                       "WHERE status IN ('WORKING','CLAIMED') AND cli_engine='qoder'")
+                wo.run(conn, "SQLITE", "UPDATE quest_tasks SET due_epoch=0")
+                sent.clear(); out = []
+                opx = make("selftest-semi-lowercase", gate="false", engine_key="qoder",
+                           origin="operator", ws=str(REPO))
+                hand_new_work(conn, "SQLITE", "semi", runner=runner, sender=sender,
+                              emit=sink(out), capture=quiet_pane, busy=not_busy,
+                              tab_project=cwd_of, pane_cwd=cwd_of, gap=0, sleeper=lambda _s: None)
+                check("mode huruf kecil mendapat prompt SEMI, bukan prompt roadmap",
+                      sent and "Perintah operator dari Dashboard" in sent[-1][1], str(sent[-1:])[:220])
+                # Kirim SATU perintah lagi ke engine yang sama: kalau pagar SEMI aktif, ia
+                # ditahan. Kalau tidak (bug normalisasi), ia terkirim dan `sent` bertambah.
+                sent_before = len(sent)
+                opy = make("selftest-semi-lowercase-2", gate="false", engine_key="qoder",
+                           origin="operator", ws=str(REPO))
+                out2 = []
+                hand_new_work(conn, "SQLITE", "semi", runner=runner, sender=sender,
+                              emit=sink(out2), capture=quiet_pane, busy=not_busy,
+                              tab_project=cwd_of, pane_cwd=cwd_of, gap=0,
+                              sleeper=lambda _x: None)
+                check("mode huruf kecil juga mendapat pagar satu-perintah-aktif",
+                      len(sent) == sent_before
+                      and any(e["action"] == "ENGINE_BUSY" for e in out2), str(out2[-1:]))
+                held_now = [r for r in open_claims(conn, "SQLITE")
+                            if (r.get("cli_engine") or "") == "qoder"
+                            and int(r.get("lease_epoch") or 0) > wo.now()]
+                check("setelah pengiriman, engine memang memegang satu klaim (pagar punya gigi)",
+                      len(held_now) >= 1, str(held_now))
             else:
                 check(f"mode {bad!r} tidak mengirim apa pun dan tidak mengambil keranjang penuh",
                       not sent and any(e["action"] == "MODE_UNKNOWN" for e in out), str(out))
@@ -1287,6 +1355,10 @@ def selftest():
         # (Sebelumnya ada cek di sini dengan `... or True` — dan cek yang selalu hijau adalah bug
         # yang kemarin kutangkap di gerbang f109, jadi ia dibuang, tidak diperhalus.)
         wo.run(conn, "SQLITE", "DELETE FROM quest_tasks WHERE id=?", (op2,))
+        # Bersihkan sisa antrean operator dari blok-blok di atas (beberapa sengaja dibiarkan
+        # PENDING untuk menguji pagar lain). Tanpa ini, "keranjang SEMI kosong" bergantung pada
+        # baris dari tes lain dan hasilnya berubah kalau urutan tes berubah.
+        wo.run(conn, "SQLITE", "DELETE FROM quest_tasks WHERE origin='operator'")
         free = make("selftest-full-auto-row", gate="false", engine_key="qoder")
         wide = next_ready(conn, "SQLITE")
         narrow = next_ready(conn, "SQLITE", origin=wo.ORIGIN_OPERATOR)

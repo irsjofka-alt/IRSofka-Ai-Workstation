@@ -147,6 +147,56 @@
         "probe": null,
         "parser": "none"
       }
+    },
+    "gemini-verify": {
+      "kind": "cli",
+      "binary": "agy",
+      "role": "reviewer",
+      "model": "gemini-3.8-flash-high",
+      "template": [
+        "agy",
+        "--model",
+        "{model}",
+        "--print",
+        "{prompt}",
+        "--output-format",
+        "json"
+      ],
+      "breath": "panjang — jendela 5h dan weekly grup 'Gemini Models' dibaca dari meter yang sama",
+      "quota_gate": {
+        "engine": "antigravity",
+        "scope": "Gemini Models",
+        "windows": [
+          "5h",
+          "weekly"
+        ]
+      },
+      "note": "Headless seperti tier Claude: `agy -p` tidak bisa menyetujui izin tool, jadi BUKTI harus ikut terkirim dalam prompt (--file), tidak dicari sendiri. Ditambahkan 2026-10-08 12:3x atas perintah operator setelah pool 'Claude and GPT models' habis (5h 0%, weekly 4%) sementara 'Gemini Models' 97% — diukur dari meter, bukan dari ingatan. Yang diperiksa tetap independen: yang menulis kode adalah Qoder, yang memverifikasi adalah Antigravity."
+    },
+    "gemini-pro": {
+      "kind": "cli",
+      "binary": "agy",
+      "role": "decider",
+      "model": "gemini-3.1-pro-high",
+      "template": [
+        "agy",
+        "--model",
+        "{model}",
+        "--print",
+        "{prompt}",
+        "--output-format",
+        "json"
+      ],
+      "breath": "paling panjang — dipakai kalau brief tidak muat atau butuh penalaran lebih dalam",
+      "quota_gate": {
+        "engine": "antigravity",
+        "scope": "Gemini Models",
+        "windows": [
+          "5h",
+          "weekly"
+        ]
+      },
+      "note": "Headless seperti tier Claude: `agy -p` tidak bisa menyetujui izin tool, jadi BUKTI harus ikut terkirim dalam prompt (--file), tidak dicari sendiri. Ditambahkan 2026-10-08 12:3x atas perintah operator setelah pool 'Claude and GPT models' habis (5h 0%, weekly 4%) sementara 'Gemini Models' 97% — diukur dari meter, bukan dari ingatan. Yang diperiksa tetap independen: yang menulis kode adalah Qoder, yang memverifikasi adalah Antigravity."
     }
   },
   "local_tiers": {

@@ -1,82 +1,66 @@
-# AI Workstation Team & Capability Slots Configuration
-version: "1.0.0"
-
-active_team: "programmer_squad"
-
+version: 1.0.0
+active_team: programmer_squad
 teams:
-  - id: "programmer_squad"
-    name: "Team Programmers (Antigravity & Qoder)"
-    description: "Kolaborasi antara Antigravity CLI untuk arsitektur/implementasi dan Qoder CLI untuk review/audit"
-    roles:
-      - role_id: "architect"
-        title: "Lead Architect"
-        model: "gemini-3.1-pro"
-        effort: "high"
-      - role_id: "implementer"
-        title: "Code Implementer"
-        engine: "antigravity_cli"
-        instruction_ref: "skills/coding_standards.md"
-      - role_id: "auditor"
-        title: "QA & Code Auditor"
-        engine: "qoder_cli"
-        instruction_ref: "skills/coding_standards.md"
-      # Verifier roles map to an engine; they do NOT restate its model, quota pool or
-      # windows. Those live in config/engines.json and are resolved there at the moment
-      # of use (contract §12: one word, defined once). A copy here would be a second
-      # definition that silently disagrees after the next edit — the validator refuses it.
-      - role_id: "decider"
-        title: "Independent Verifier (final decide)"
-        registry_key: "claude-opus"
-      - role_id: "verifier"
-        title: "Second-tier Verifier (same pool, cheaper)"
-        registry_key: "claude-sonnet"
-      # Decision routing (contract §4, operator standing order 2026-10-08). A preference-level
-      # choice is never put to the operator: it is resolved here, rung by rung. Each rung is a
-      # registry key and never restates its model, pool or windows — those are defined once, in
-      # config/engines.json, and read at the moment of use. A rung whose meter cannot be read is
-      # skipped UNAVAILABLE and the next rung is tried; when every rung fails the question lands
-      # ESCALATED, never answered by a substitute engine picked in the moment.
-      - role_id: "resolver"          # rung 1 — the model the operator named
-        title: "Decision Resolver (unattended choice)"
-        registry_key: "gemini"
-      - role_id: "resolver-alt"      # rung 2 — a pool the working architect does not draw on
-        title: "Decision Resolver fallback"
-        registry_key: "claude-sonnet"
-      - role_id: "resolver-local"   # rung 3 — no quota at all; VRAM gate (§7) still applies
-        title: "Decision Resolver, local tier, last rung"
-        registry_key: "local"
-
-  - id: "visual_operator"
-    name: "Visual & Desktop Automation Squad"
-    description: "Tim 'Mata & Tangan' untuk mengoperasikan aplikasi GUI saat MCP tidak tersedia"
-    roles:
-      - role_id: "eye"
-        title: "Visual Observer"
-        model: "gemini-3.8-flash"
-        effort: "medium"
-      - role_id: "hand"
-        title: "Wayland Input Actuator"
-        driver: "ydotool"
-
-  - id: "daily_assistant"
-    name: "Pop!_OS Desktop Companion"
-    description: "Asisten percakapan cepat dan eksekusi tugas sehari-hari Linux"
-    roles:
-      - role_id: "companion"
-        title: "System Companion"
-        model: "qwen2.5:7b"
-        provider: "ollama"
-        tools:
-          - "xdg-open"
-          - "pactl"
-          - "notify-send"
-          - "system_timers"
-
-  - id: "analysis_team"
-    name: "Deep Analysis & Business Intelligence"
-    description: "Membaca data, log, atau dokumen besar dengan context window raksasa"
-    roles:
-      - role_id: "analyst"
-        title: "High-Context Analyst"
-        model: "qwen-3.8-flash"
-        context_window: "1M"
+- id: programmer_squad
+  name: Team Programmers (Antigravity & Qoder)
+  description: Kolaborasi antara Antigravity CLI untuk arsitektur/implementasi dan Qoder CLI untuk review/audit
+  roles:
+  - role_id: architect
+    title: Lead Architect
+    model: gemini-3.1-pro
+    effort: high
+  - role_id: implementer
+    title: Code Implementer
+    engine: antigravity_cli
+    instruction_ref: skills/coding_standards.md
+  - role_id: auditor
+    title: QA & Code Auditor
+    engine: qoder_cli
+    instruction_ref: skills/coding_standards.md
+  - role_id: decider
+    title: Independent Verifier (final decide, Gemini 3.1 Pro High)
+    registry_key: gemini-pro
+  - role_id: verifier
+    title: Second-tier Verifier (Gemini 3.8 Flash High)
+    registry_key: gemini-verify
+  - role_id: resolver
+    title: Decision Resolver (unattended choice)
+    registry_key: gemini
+  - role_id: resolver-alt
+    title: Decision Resolver fallback
+    registry_key: gemini-verify
+  - role_id: resolver-local
+    title: Decision Resolver, local tier, last rung
+    registry_key: local
+- id: visual_operator
+  name: Visual & Desktop Automation Squad
+  description: Tim 'Mata & Tangan' untuk mengoperasikan aplikasi GUI saat MCP tidak tersedia
+  roles:
+  - role_id: eye
+    title: Visual Observer
+    model: gemini-3.8-flash
+    effort: medium
+  - role_id: hand
+    title: Wayland Input Actuator
+    driver: ydotool
+- id: daily_assistant
+  name: Pop!_OS Desktop Companion
+  description: Asisten percakapan cepat dan eksekusi tugas sehari-hari Linux
+  roles:
+  - role_id: companion
+    title: System Companion
+    model: qwen2.5:7b
+    provider: ollama
+    tools:
+    - xdg-open
+    - pactl
+    - notify-send
+    - system_timers
+- id: analysis_team
+  name: Deep Analysis & Business Intelligence
+  description: Membaca data, log, atau dokumen besar dengan context window raksasa
+  roles:
+  - role_id: analyst
+    title: High-Context Analyst
+    model: qwen-3.8-flash
+    context_window: 1M

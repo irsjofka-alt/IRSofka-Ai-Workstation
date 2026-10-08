@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import shlex
 import sys
 from datetime import datetime
 from pathlib import Path
@@ -75,6 +76,21 @@ START_PROMPT = (
     "prosa. Kalau tersangkut keputusan preferensi, jangan tanya saya — `decide` + `route`."
 )
 
+# Yang dikirim ke engine ketika yang memegang mesin adalah perintah orang, bukan antrean roadmap.
+# Bedanya dengan START_PROMPT bukan hiasan: SEMI berarti ada manusia yang sedang mengawasi, jadi
+# yang dikerjakan SATU perintah yang dia tulis sendiri, dan mengambil item roadmap adalah perluasan
+# mandat yang tidak pernah dia berikan.
+SEMI_PROMPT = (
+    "Perintah operator dari Dashboard (Semi Autopilot): item {id} — {title}. "
+    "Proyek baris ini: `{ws}` — kerjakan di direktori itu, bukan di ~/.ai-station. Drainer memegang "
+    "lease sampai kamu mulai: perpanjang dengan `python3 tools/work_order.py lease {id}`. "
+    "Gerbang penerimaannya: `{gate}`. Ada manusia di meja yang sedang melihat, jadi selesaikan SATU "
+    "perintah ini lalu tutup dengan `complete {id} --evidence \"<perintah yang benar-benar lolos>\"` "
+    "— bukti menyebut angka keluar dan direktori, bukan prosa. Jangan ambil item roadmap: SEMI hanya "
+    "mengerjakan apa yang operator tulis sendiri ke SQL. Keputusan level preferensi tetap jangan "
+    "ditanyakan ke dia: `decide` lalu `route`."
+)
+
 
 # --- pembacaan ----------------------------------------------------------------
 def read_gate(conn, engine):
@@ -110,8 +126,13 @@ def wo_p(engine):
     return "%s" if engine == "POSTGRESQL" else "?"
 
 
-def next_ready(conn, engine):
-    return wo.next_item(conn, engine, respect_due=True)
+def next_ready(conn, engine, origin=None):
+    """Item berikutnya yang siap, dengan batas asal yang diminta pemanggil.
+
+    `origin` diteruskan, tidak disaring di sini: "apa berikutnya" punya satu pemilik (`next_item`)
+    dan drainer hanya meminjamnya. Menyaring di sisi drainer membuat dua definisi antrean.
+    """
+    return wo.next_item(conn, engine, respect_due=True, origin=origin)
 
 
 # --- tulisan ------------------------------------------------------------------
@@ -128,10 +149,24 @@ def default_runner(cmd, timeout=CHECK_TIMEOUT):
     Jalur subprocess biasa dengan timeout hanya membunuh anak langsung; satu panggilan yang
     menggantung pernah terbukti meninggalkan cucu yang tetap memegang RSS. `run_grouped` memulai
     perintah di sesi proses sendiri dan menyapu seluruh grupnya — termasuk pada jalur sukses.
+
+    Direktori TIDAK lagi diputuskan di sini. `cd {REPO}` yang lama membuat setiap gerbang di dunia
+    mengukur workstation, termasuk gerbang milik proyek lain — dan engine yang mengerjakan proyek A
+    sementara vonisnya dibaca dari tree B adalah laporan tentang orang lain, bukan tentang dirinya.
+    Yang memilih direktori sekarang hanya `gate_command`, dan satu baris hanya punya satu jawaban.
     """
     import call_workers as cw
-    return cw.run_grouped(["bash", "-lc", f"cd {REPO} && {cmd}"], timeout=timeout,
-                          text=True, merge_stderr=True)
+    return cw.run_grouped(["bash", "-lc", cmd], timeout=timeout, text=True, merge_stderr=True)
+
+
+def gate_command(item, command):
+    """Bungkus gerbang dengan direktori milik baris ini — di-kuip, bukan disambungkan mentah.
+
+    `ws_path` kosong berarti `REPO`, persis seperti sebelum kolom itu ada, sehingga enam puluh baris
+    lama tidak perlu dipaksa punya proyek sebelum mereka memang punya satu.
+    """
+    cwd = shlex.quote(str(wo.resolve_workspace(item)))
+    return f"cd {cwd} && {command}"
 
 
 def default_sender(target, prompt):
@@ -178,15 +213,18 @@ def gate_item(conn, engine, item, runner=None, stage="after", emit=None):
         return {"item": item_id, "exit": None, "refused": verb}
 
     try:
-        done = runner(command, CHECK_TIMEOUT)
+        done = runner(gate_command(item, command), CHECK_TIMEOUT)
         code = int(getattr(done, "returncode", -1))
         tail = (getattr(done, "stdout", "") or "")[-200:].strip()
     except Exception as exc:  # noqa: BLE001 — gerbang yang meledak adalah gerbang yang gagal
         code, tail = -1, f"{type(exc).__name__}: {exc}"
 
     if code == 0:
+        # Bukti menyebut direktori yang sebenarnya diukur. "exit 0: cargo test" tanpa tempat adalah
+        # laporan yang bisa dibaca sebagai kelulusan tree mana pun — dan setelah kolom ws_path ada,
+        # itu justru tree yang salah.
         wo.finish(conn, engine, item_id, "COMPLETED",
-                  evidence=f"drainer gate ({stage}) exit 0: {command[:180]}")
+                  evidence=f"drainer gate ({stage}) exit 0: {gate_command(item, command)[:180]}")
         emit("GATE_PASSED", item=item_id, exit=code, stage=stage, title=item.get("title"))
     elif stage == "before":
         emit("GATE_BASELINE", item=item_id, exit=code, stage=stage, out=tail)
@@ -212,7 +250,15 @@ def reconcile(conn, engine, runner=None, emit=None):
         gate_item(conn, engine, row, runner=runner, stage="after", emit=emit)
 
 
-def hand_new_work(conn, engine, runner=None, sender=None, emit=None):
+def _release_claim(conn, engine, item_id):
+    """Tarik kembali klaim drainer: baris tanpa pemegang adalah laporan bahwa ada yang mengerjakan
+    padahal tidak ada — kembalikan persis seperti keadaan sebelum tick ini menyentuhnya."""
+    wo.run(conn, engine,
+           f"UPDATE quest_tasks SET status='PENDING', claimed_by=NULL, lease_epoch=0 "
+           f"WHERE id={wo_p(engine)}", (int(item_id),))
+
+
+def hand_new_work(conn, engine, runner=None, sender=None, emit=None, mode="ON", origin=None):
     """Serahkan satu item baru ke engine yang ditunjuk barisnya. Tidak pernah menebak tujuan.
 
     Mesin mana yang mengerjakan adalah milik kolom `cli_engine` pada baris itu — operator menyuntingnya
@@ -222,11 +268,19 @@ def hand_new_work(conn, engine, runner=None, sender=None, emit=None):
     Drainer mengklaim atas namanya sendiri supaya tidak ada dua klaim atas item yang sama malam itu;
     HOLDER tidak punya pane, jadi `heartbeat` selalu menjawab UNKNOWN untuknya dan jalur resume tidak
     akan pernah bisa mengetuknya — aman secara konstruksi, bukan karena ada yang ingat menjaga.
+
+    `mode`/`origin` adalah seluruh beda SEMI dengan FULL AUTO di sisi pengiriman: SEMI hanya mengambil
+    baris `origin='operator'`, dan ia menunggu satu engine menyelesaikan perintahnya sebelum memberi
+    perintah kedua. Yang terakhir itu jawaban untuk "kalau melihat kamu Working, nunggu sampai
+    selesai": mesin yang sedang mengerjakan sesuatu tidak ditumpuki, karena dua perintah dalam satu
+    pane bukan dua pekerjaan — yang satu akan tertelan yang lain dan keduanya tercatat jalan.
+    ON tidak mendapat aturan ini: tidak ada pengawas yang menunggui giliran, dan memperlambat
+    semalam untuk sebuah kesamaan yang tidak diminta adalah penurunan, bukan penguatan.
     """
     emit = emit or (lambda *a, **kw: None)   # bentuk panggilan: (action, **isi)
-    item = next_ready(conn, engine)
+    item = next_ready(conn, engine, origin=origin)
     if not item:
-        emit("QUEUE_EMPTY")
+        emit("QUEUE_EMPTY", origin=origin or "apa pun")
         return None
     full = wo.get_item(conn, engine, int(item["id"])) or item
     # Baseline dulu, sebelum klaim: item yang gerbangnya sudah lolos tidak pernah perlu dikerjakan.
@@ -240,33 +294,58 @@ def hand_new_work(conn, engine, runner=None, sender=None, emit=None):
         return None
     target = (full.get("cli_engine") or "").strip()
     if not target:
-        # Tidak ada tujuan: klaim drainer ditarik kembali, bukan dibiarkan menggantung. Baris yang
-        # statusnya WORKING tanpa pemegang adalah laporan bahwa ada yang mengerjakan padahal tidak
-        # ada — jadi item ini dikembalikan persis seperti keadaannya sebelum tick ini menyentuhnya.
-        wo.run(conn, engine,
-               f"UPDATE quest_tasks SET status='PENDING', claimed_by=NULL, lease_epoch=0 "
-               f"WHERE id={wo_p(engine)}", (int(item["id"]),))
+        _release_claim(conn, engine, item["id"])
         emit("NO_TARGET", item=int(item["id"]), why="kolom cli_engine kosong — memilih engine "
              "dari ingatan dilarang, jadi item ini menunggu orang mengisinya")
         return None
-    prompt = START_PROMPT.format(id=item["id"], title=item["title"],
-                                 gate=(full.get("check_command") or "tanpa gerbang"))
+    if mode == "SEMI":
+        busy = [r for r in open_claims(conn, engine)
+                if (r.get("cli_engine") or "").strip() == target
+                and int(r["id"]) != int(item["id"])]
+        if busy:
+            _release_claim(conn, engine, item["id"])
+            cooldown(conn, engine, int(item["id"]), CLAIM_COOLDOWN)
+            emit("ENGINE_BUSY", item=int(item["id"]), target=target,
+                 waiting=[int(r["id"]) for r in busy],
+                 why="SEMI menunggu engine ini selesai lebih dulu — bekerja berarti menunggu, "
+                     "bukan menumpuki pane")
+            return None
+    if mode == "SEMI":
+        prompt = SEMI_PROMPT.format(id=item["id"], title=item["title"],
+                                    ws=wo.resolve_workspace(full),
+                                    gate=(full.get("check_command") or "tanpa gerbang"))
+    else:
+        prompt = START_PROMPT.format(id=item["id"], title=item["title"],
+                                     gate=(full.get("check_command") or "tanpa gerbang"))
     try:
         reply = (sender or default_sender)(target, prompt)
-        emit("WORK_DISPATCHED", item=int(item["id"]), target=target, reply=str(reply)[:200])
+        emit("WORK_DISPATCHED", item=int(item["id"]), target=target, mode=mode,
+             reply=str(reply)[:200])
     except Exception as exc:  # noqa: BLE001 — kegagalan kirim dicatat, tidak dikarang ulang
         emit("SEND_FAILED", item=int(item["id"]), target=target,
              why=f"{type(exc).__name__}: {exc}")
     return {"item": int(item["id"]), "target": target}
 
 
-def nudge_resting(conn, engine, beats=None, sender=None, emit=None):
-    """CONTINUE untuk klaim yang terbukti istirahat — anggaran dihitung oleh `wo.nudge`."""
+def nudge_resting(conn, engine, beats=None, sender=None, emit=None, mode="ON"):
+    """CONTINUE untuk klaim yang terbukti istirahat — anggaran dihitung oleh `wo.nudge`.
+
+    Di bawah SEMI hanya klaim atas perintah operator yang boleh disentuh: menaikkan `CONTINUE` ke
+    pane yang sedang memegang item roadmap adalah cara memperluas mandat SEMI tanpa ada yang
+    mengangkatnya, dan pagar yang bisa dilebarkan sendiri bukan pagar.
+    """
     emit = emit or (lambda *a, **kw: None)   # bentuk panggilan: (action, **isi)
     sender = sender or default_sender
     if beats is None:
         beats = wo.heartbeat(conn, engine)
     for b in beats:
+        if mode == "SEMI":
+            row = wo.get_item(conn, engine, int(b["id"])) or {}
+            if (row.get("origin") or "legacy") != wo.ORIGIN_OPERATOR:
+                emit("SKIP_NOT_OPERATOR", item=b["id"], who=b["claimed_by"],
+                     origin=row.get("origin") or "legacy",
+                     why="SEMI tidak menegur pekerjaan roadmap — naikkan ke ON untuk itu")
+                continue
         if b["state"] != "AT_REST":
             emit("SKIP_NOT_RESTING", item=b["id"], who=b["claimed_by"], state=b["state"],
                  why=b["why"])
@@ -392,24 +471,37 @@ def tick(conn, engine, gate=None, beats=None, runner=None, sender=None, log=None
     if lvl.get("readable") is not True:
         ev("CLOSED_UNKNOWN", why=lvl.get("why"))
         return events
-    if ap.get("mode") != "ON":
+    if ap.get("mode") not in ("ON", "SEMI"):
         ev("CLOSED_OFF", why=ap.get("off_reason") or "sakelar OFF")
         return events
+    # SEMI membuka pintu yang sama dengan ON dan mengambil keranjang yang lebih kecil. Yang membedakan
+    # keduanya di sini bukan seberapa jauh tangan boleh pergi — itu tangga `level`, dan ia tidak punya
+    # versi SEMI — melainkan APA yang boleh diambil dari antrean.
+    mode = ap.get("mode")
+    origin = wo.ORIGIN_OPERATOR if mode == "SEMI" else None
     if not night.get("ok"):
         ev("CLOSED_NIGHT", why=night.get("why"))
         return events
     if lvl["level"] == "observe":
         ev("OBSERVED", claims=len(open_claims(conn, engine)),
-           next=(next_ready(conn, engine) or {}).get("id"), rest=lvl.get("why"))
+           next=(next_ready(conn, engine, origin=origin) or {}).get("id"), rest=lvl.get("why"),
+           mode=mode)
+        if mode == "SEMI":
+            # Di SEMI, `observe` adalah kegagalan yang terlihat: operator sedang di meja, dan
+            # diamnya tangan berarti perintah yang dia tulis tidak akan pernah sampai. Dijawab
+            # dengan jujur, bukan dengan menaikkan level diam-diam.
+            ev("SEMI_HAND_FLAT", why="level masih observe — naikkan dari terminal: arm dispatch",
+               operator_queue=(next_ready(conn, engine, origin=origin) or {}).get("id"))
         return events
 
     if lvl["allows_dispatch"]:
         reconcile(conn, engine, runner=runner, emit=ev)
-        hand_new_work(conn, engine, runner=runner, sender=sender, emit=ev)
+        hand_new_work(conn, engine, runner=runner, sender=sender, emit=ev,
+                      mode=mode, origin=origin)
     rest = [b for b in (beats if beats is not None else wo.heartbeat(conn, engine))
             if b["state"] == "AT_REST"]
     if lvl["allows_resume"]:
-        nudge_resting(conn, engine, beats=beats, sender=sender, emit=ev)
+        nudge_resting(conn, engine, beats=beats, sender=sender, emit=ev, mode=mode)
     elif rest:
         ev("HELD_BY_LEVEL", items=[b["id"] for b in rest],
            why="AT_REST terbukti, tangan tidak diangkat — naikkan dari terminal: arm resume")
@@ -473,6 +565,29 @@ def selftest():
                    "cv.daemon_post"):
         check(f"memakai {needed}, bukan menduakalinya", needed.split(".", 1)[1] in timer_code)
 
+    # Pemicu SEMI (F10.10) adalah berkas TERPISAH di luar modul ini, dan klaim bahwa ia tidak
+    # menyentuh pane harus ditegakkan dengan pemindaian yang sama — bukan dengan peringatan di
+    # komentar. Satu suntingan yang menambahkan `default_sender(...)` ke hook akan mengubah
+    # "menyuntik prompt ke sesi sendiri" menjadi "mengetik ke pane siapa pun", dan itu perbedaan
+    # yang tidak bisa dilihat dari hasilnya sampai seseorang kehilangan pekerjaannya.
+    hook_file = wo.REPO / "hooks" / "semi_wake.py"
+    hsrc = hook_file.read_text() if hook_file.is_file() else ""
+    check("pemicu SEMI ada di tempat yang didaftarkan", bool(hsrc.strip()), str(hook_file))
+    if hsrc:
+        hsegs = {n.name: (_ast.get_source_segment(hsrc, n) or "")
+                 for n in _ast.parse(hsrc).body
+                 if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+        for banned in ("deliver_answer", "default_sender", "daemon_post", "/api/cli/run",
+                       "send-keys", "ydotool", "set_level(", "arm(", "tmux", "subprocess"):
+            hit = [f"{banned} di {fn}()" for fn, body in hsegs.items() if banned in body]
+            check(f"hook SEMI tidak memakai {banned!r}", not hit, "; ".join(hit))
+        check("hook SEMI hanya bisa bicara sesudah satu klaim berhasil — antrean adalah pagarnya",
+              "wo.claim(" in hsegs.get("main", ""), str(sorted(hsegs)))
+        check("hook SEMI membaca mode dari database pada setiap tembakan, bukan dari harapan",
+              "wo.autopilot(" in hsegs.get("main", ""))
+        check("hook SEMI menyaring asal baris, jadi ia tidak pernah mengambil item roadmap",
+              "origin=wo.ORIGIN_OPERATOR" in hsegs.get("main", ""))
+
     tmp = Path(f"/tmp/drainer_selftest_{wo.now()}.db")
     conn = sqlite3.connect(str(tmp))
     conn.row_factory = sqlite3.Row
@@ -503,11 +618,12 @@ def selftest():
             return row
         return _emit
 
-    def make(title, status="PENDING", gate="true", engine_key=None, holder=None, lease=None):
+    def make(title, status="PENDING", gate="true", engine_key=None, holder=None, lease=None,
+             origin=None, ws=None):
         wo.run(conn, "SQLITE",
                "INSERT INTO quest_tasks (title, status, check_command, cli_engine, claimed_by, "
-               "lease_epoch) VALUES (?,?,?,?,?,?)",
-               (title, status, gate, engine_key, holder, lease))
+               "lease_epoch, origin, ws_path) VALUES (?,?,?,?,?,?,?,?)",
+               (title, status, gate, engine_key, holder, lease, origin, ws))
         return int(wo.run(conn, "SQLITE",
                           "SELECT id FROM quest_tasks WHERE title=?", (title,))[0]["id"])
 
@@ -748,6 +864,90 @@ def selftest():
               not deliver_answer(conn, "SQLITE", q_open, sender=sender,
                                  beats=[{"id": lonely, "state": "AT_REST", "claimed_by": "qoder",
                                          "why": "x"}])["sent"])
+
+        # --- F10.10 SEMI: otomatis dengan pengawas -------------------------------------
+        # Yang diuji di blok ini bukan "apakah drainer masih hidup", melainkan BEDA yang membuatnya
+        # layak jadi mode ketiga: keranjang mana yang diambil, kapan ia menunggu, dan di direktori
+        # mana gerbangnya diukur.
+        #
+        # Baris autopilot fixture DIBIARKAN OFF sementara gerbangnya disuntik sebagai SEMI, dan itu
+        # bukan kecurangan yang diam: `claim()` membaca pemutus dari baris database, dan baris itu
+        # akan membaca git NYATA — yang kotor justru karena selftest ini sedang berjalan di tengah
+        # suntingan. Arah penyampangan ini aman (fixture lebih longgar dari produksi), dan aturan
+        # "SEMI juga ditutup pemutus" dibuktikan di modul yang punya kata itu,
+        # `work_order selftest: pemutus malam menutup SEMI persis seperti menutup ON`. Menambahkan
+        # knob `dirty` ke jalur dispatch akan jauh lebih mudah, dan itu berarti setiap pemanggil
+        # masa depan punya tombol untuk melewati §6 — pagar yang bisa dilewati pemakainya bukan pagar.
+        sent.clear()
+        out = tick(conn, "SQLITE", gate=gate_for("observe", mode="SEMI"), beats=[],
+                   sender=sender, runner=runner)
+        acts = [e["action"] for e in out]
+        check("SEMI tidak disalahtafsir sebagai OFF — pintu dibuka, tangan belum diangkat",
+              "CLOSED_OFF" not in acts and "SEMI_HAND_FLAT" in acts and not sent, str(out))
+
+        sent.clear()
+        out = tick(conn, "SQLITE", gate=gate_for("dispatch", mode="SEMI"), beats=[],
+                   sender=sender, runner=runner)
+        acts = [e["action"] for e in out]
+        check("SEMI dengan antrean tanpa perintah operator tidak mengambil apa pun — itu isi kata 'semi'",
+              "QUEUE_EMPTY" in acts and not sent, str(out))
+
+        op = make("selftest-semi-cmd", gate="false", engine_key="qoder",
+                  origin="operator", ws="/tmp")
+        sent.clear()
+        tick(conn, "SQLITE", gate=gate_for("dispatch", mode="SEMI"), beats=[],
+             sender=sender, runner=runner)
+        check("perintah operator diantar ke mesin yang tertulis di barisnya",
+              sent and sent[0][0] == "qoder" and str(op) in sent[0][1], str(sent)[:220])
+        check("yang dikirim adalah prompt perintah-orang, bukan tugas roadmap",
+              sent and "Perintah operator dari Dashboard" in sent[0][1], str(sent)[:160])
+        check("prompt SEMI menyebut direktori baris, jadi engine tidak dikerjakan di tree lain",
+              sent and "/tmp" in sent[0][1], str(sent)[:220])
+
+        op2 = make("selftest-semi-cmd-2", gate="false", engine_key="qoder", origin="operator")
+        sent.clear()
+        out = tick(conn, "SQLITE", gate=gate_for("dispatch", mode="SEMI"), beats=[],
+                   sender=sender, runner=runner)
+        acts = [e["action"] for e in out]
+        check("engine yang sedang mengerjakan satu perintah tidak ditumpuki perintah kedua — "
+              "'kalau Working, tunggu sampai selesai'",
+              "ENGINE_BUSY" in acts and not sent, str(out))
+
+        # Beda mode diukur pada ANTREAN YANG SAMA, bukan dengan dua fixture berbeda: satu baris yang
+        # bukan perintah operator harus terlihat oleh FULL AUTO dan tidak terlihat oleh SEMI.
+        # (Sebelumnya ada cek di sini dengan `... or True` — dan cek yang selalu hijau adalah bug
+        # yang kemarin kutangkap di gerbang f109, jadi ia dibuang, tidak diperhalus.)
+        wo.run(conn, "SQLITE", "DELETE FROM quest_tasks WHERE id=?", (op2,))
+        free = make("selftest-full-auto-row", gate="false", engine_key="qoder")
+        wide = next_ready(conn, "SQLITE")
+        narrow = next_ready(conn, "SQLITE", origin=wo.ORIGIN_OPERATOR)
+        check("perbedaan FULL AUTO dan SEMI adalah isi keranjang — baris bebas terlihat oleh yang "
+              "pertama dan tidak terlihat oleh yang kedua, pada antrean yang sama",
+              wide and int(wide["id"]) == free and narrow is None,
+              str({"wide": wide and wide["id"], "semi": narrow}))
+
+        rm_claim = make("selftest-semi-roadmap-claim", status="WORKING", engine_key="qoder",
+                        holder="qoder", lease=wo.now() + 600)
+        sent.clear()
+        out = tick(conn, "SQLITE", gate=gate_for("resume", mode="SEMI"),
+                   beats=[{"id": rm_claim, "state": "AT_REST", "claimed_by": "qoder",
+                           "why": "dua sinyal setuju"}], sender=sender, runner=runner)
+        acts = [e["action"] for e in out]
+        check("SEMI tidak mengirim CONTINUE ke klaim roadmap — itu perluasan mandat yang tidak "
+              "pernah diberikan", "SKIP_NOT_OPERATOR" in acts and not sent, str(out))
+
+        ran.clear()
+        probe = make("selftest-gate-cwd", gate="pwd", engine_key="qoder", ws="/tmp")
+        gate_item(conn, "SQLITE", wo.get_item(conn, "SQLITE", probe), runner=runner,
+                  stage="before", emit=sink([]))
+        check("gerbang baris proyek dijalankan di direktori baris itu",
+              ran and "cd /tmp && pwd" in ran[-1], str(ran[-1:]))
+        ran.clear()
+        probe_old = make("selftest-gate-repo", gate="pwd", engine_key="qoder")
+        gate_item(conn, "SQLITE", wo.get_item(conn, "SQLITE", probe_old), runner=runner,
+                  stage="before", emit=sink([]))
+        check("baris tanpa ws_path masih diukur di REPO — tidak ada satu baris lama yang dipaksa "
+              "punya proyek", ran and f"cd {REPO} && pwd" in ran[-1], str(ran[-1:]))
 
         path = write_events([{"ts": 1, "action": "SELFTEST"}],
                             path=Path("/tmp/drainer_selftest.jsonl"))

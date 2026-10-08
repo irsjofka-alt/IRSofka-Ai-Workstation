@@ -1192,13 +1192,37 @@ def known_engines() -> list[str]:
         return []
 
 
-def detect_guidelines(root: Path | None) -> list[dict]:
-    """Berkas .md yang TERDETEKSI, bukan yang diketik bebas.
+# Pedoman yang mengikat sebuah perintah adalah KONTRAK, dan kontrak tidak bisa dipilih-pilih oleh
+# layar yang iaikatinya. Operator mengunci daftar ini pada 2026-10-08 11:05: "LOCK saja MD nya,
+# jangan sampai bisa diganti — aturan ketat untuk Ai-Workstation, kontrak tidak boleh diganggu
+# gugat." Sebuah kotak centang yang bisa mematikan AGENTS.md adalah tombol "jadilah tidak disiplin"
+# yang kebetulan sudah tersedia, dan §12.3 melarang kontrol yang menghitung kebijakannya sendiri.
+# Karena itu tidak ada lagi jalur tulis: daftar ini dibaca dari kode, bukan dari kolom database.
+LOCKED_GUIDES = ("documents/AGENTS.md", "ROADMAP.md",
+                 "brain/DESIGN_NOTES.md", "brain/memory/projects/ARCHITECTURE.md")
 
-    Dua sumber dan tidak ada yang ketiga: markdown di dalam proyek sendiri (kedalaman dan jumlah
-    dibatasi, direktori benda-jelek dilewati) dan pedoman milik workstation di REPO. Menandai
-    `canonical` supaya layar bisa membedakan "pedoman proyek" dari "pedoman mesin" — keduanya
-    dibaca engine, tapi yang kedua berlaku bahkan ketika Bro fokus ke proyek game di disk lain.
+
+def locked_guides() -> list[dict]:
+    """Berkas kontrak yang berlaku di SEMUA proyek.
+
+    Berkas yang Hilang TIDAK disaring diam-diam. Menghilangkan satu nama dari daftar karena path-nya
+    tidak ada adalah cara membuat kunci mengecil tanpa suara — yang harus terjadi adalah layar
+    menunjukkannya merah, bukan daftar yang tiba-tiba lebih pendek.
+    """
+    out = []
+    for rel in LOCKED_GUIDES:
+        p = REPO / rel
+        out.append({"path": rel, "abs": str(p), "canonical": True, "locked": True,
+                    "exists": p.is_file(), "size": p.stat().st_size if p.is_file() else None})
+    return out
+
+
+def detect_guidelines(root: Path | None) -> list[dict]:
+    """Hanya untuk MELAPORKAN apa yang ada di proyek — bukan untuk dipilih.
+
+    Dipakai layar supaya Bro melihat berkas MD mana yang sebenarnya ada di proyeknya. Yang mengikat
+    perintah adalah `locked_guides()`, dan keduanya sengaja fungsi berbeda: kalau satu daftar bisa
+    ditulis, daftar itu bukan kontrak lagi.
     """
     found: list[dict] = []
     seen: set[str] = set()
@@ -1287,28 +1311,16 @@ def create_workspace(conn, engine, display_name: str, path: str) -> tuple[bool, 
     return True, f"proyek {rows[0]['display_name']} {label} di {real}", int(rows[0]["id"])
 
 
-def set_guidelines(conn, engine, ws_id: int, paths: list[str]) -> tuple[bool, str]:
-    """Simpan pilihan pedoman sebuah proyek. Yang disimpan hanya path TERDETEKSI.
+def guidelines_are_locked() -> tuple[bool, str]:
+    """Satu-satunya jawaban atas permintaan mengubah pedoman: ditolak, dengan alasannya.
 
-    Yang disimpan adalah path absolut, bukan nama relatif, dan alasannya terukur: proyek ini punya
-    `AGENTS.md` dan workstation juga punya `AGENTS.md`. Menyimpan nama saja membuat keduanya
-    tidak bisa dibedakan saat dibaca kembali — dan engine yang menebak pedoman mana yang sedang
-    ia patuhi adalah engine yang menyetujui aturan yang bukan tempat aturan itu ditulis.
+    Fungsinya sengaja tidak menerima parameter apa pun. Begitu ada jalur tulis yang bisa dipanggil,
+    ia akan dipanggil — oleh layar, oleh skrip, atau oleh engine yang sedang buru-buru — dan kontrak
+    yang bisa dimatikan dari UI bukan kontrak lagi.
     """
-    rows = run(conn, engine, "SELECT id, path FROM workspaces WHERE id=%s"
-               if engine == "POSTGRESQL" else "SELECT id, path FROM workspaces WHERE id=?", (ws_id,))
-    if not rows:
-        return False, f"workspace {ws_id} tidak ada"
-    allowed = {g["abs"] for g in detect_guidelines(Path(rows[0]["path"]))}
-    kept = [p for p in paths if p in allowed]
-    dropped = [p for p in paths if p not in allowed]
-    run(conn, engine, "UPDATE workspaces SET guidelines=%s WHERE id=%s"
-        if engine == "POSTGRESQL" else "UPDATE workspaces SET guidelines=? WHERE id=?",
-        (",".join(kept), ws_id))
-    msg = f"{len(kept)} pedoman tersimpan"
-    if dropped:
-        msg += f"; {len(dropped)} ditolak karena tidak terdeteksi: {', '.join(dropped[:3])}"
-    return True, msg
+    return False, ("pedoman TERKUNCI oleh kontrak §12.3: daftar MD ditentukan di "
+                   "tools/work_order.py (LOCKED_GUIDES), bukan dari layar dan bukan dari database. "
+                   "Yang mengikat: " + ", ".join(LOCKED_GUIDES))
 
 
 def focus_workspace(conn, engine, needle: str, who: str = "operator-gui") -> tuple[bool, str]:
@@ -1397,7 +1409,11 @@ def semi_status(conn, engine) -> dict:
             "engines_with_a_claim": sorted({r["cli_engine"] for r in working if r.get("cli_engine")}),
             "focus": listed["focus"], "focus_readable": listed["focus_readable"],
             "workspaces": listed["workspaces"],
-            "guidelines_available": detect_guidelines(focused_workspace())[:GUIDE_MAX_FILES],
+            "guidelines_locked": True,
+            # `binding` adalah yang MENGIKAT sebuah perintah; `present` hanya laporan tentang apa
+            # yang ada di proyek itu, dan layar tidak boleh menukar keduanya.
+            "guidelines_binding": locked_guides(),
+            "guidelines_present": detect_guidelines(focused_workspace()),
             "known_engines": known_engines()}
 
 
@@ -1980,17 +1996,35 @@ def selftest():
         check("pedoman tidak menawarkan berkas penunjuk yang dimulai dengan titik",
               not [g for g in det if Path(g["abs"]).name.startswith(".")], str(det))
         abs_rm = str((clash / "ROADMAP.md").resolve())
-        # Workspace uji memakai direktori probe itu sendiri, bukan /tmp: deteksi dibatasi
-        # GUIDE_MAX_FILES, jadi di /tmp yang berisi puluhan folder berkas ujiku tidak pernah
-        # masuk daftar boleh-pilih dan tesnya akan menguji hal lain dari yang kusangka.
         ok, msg, ws2 = create_workspace(conn, "SQLITE", "Proyek Clash", str(clash))
         check("proyek kedua terdaftar di samping yang pertama", ok and ws2 and ws2 != ws_id, msg)
-        ok, msg = set_guidelines(conn, "SQLITE", ws2, [abs_rm, "rahasia.md"])
-        check("pedoman hanya menerima yang terdeteksi dan menyebut yang dibuang",
-              ok and msg.startswith("1 pedoman tersimpan") and "rahasia.md" in msg, msg)
-        saved = next(w for w in list_workspaces(conn, "SQLITE")["workspaces"] if w["id"] == ws2)
-        check("yang disimpan adalah path absolut, bukan nama yang bisa berarti dua berkas",
-              saved["guidelines"] == abs_rm, str(saved["guidelines"]))
+        # --- pedoman TERKUNCI (perintah operator 2026-10-08 11:05) ---
+        # Yang diuji bukan isinya, melainkan ketiadaan jalan: kalau masih ada satu pun fungsi yang
+        # bisa menulis daftar ini, "terkunci" cuma label di layar.
+        bound = locked_guides()
+        check("kontrak yang mengikat selalu ada dan tidak bisa kosong karena pilihan layar",
+              {"documents/AGENTS.md", "ROADMAP.md"} <= {g["path"] for g in bound}
+              and all(g["locked"] and g["canonical"] for g in bound), str(bound))
+        # Kunci yang menyebut berkas yang tidak ada BUKAN kunci. Yang menemukannya duluan adalah
+        # daftar ini menyebut "AGENTS.md" di root REPO, tempat berkas itu memang tidak pernah ada.
+        gone = [g["path"] for g in bound if not g["exists"]]
+        check("setiap nama yang dikunci benar-benar ada di disk", not gone, str(gone))
+        check("nama yang hilang dilaporkan, tidak disaring diam-diam dari daftar",
+              len(bound) == len(LOCKED_GUIDES), f"{len(bound)} dari {len(LOCKED_GUIDES)}")
+        check("tidak ada lagi jalur tulis untuk pedoman", "set_guidelines" not in globals(),
+              "set_guidelines masih ada — kunci bisa dibuka dari kode")
+        ok, msg = guidelines_are_locked()
+        check("permintaan mengubah pedoman ditolak dengan alasan, bukan diam",
+              not ok and "TERKUNCI" in msg and "LOCKED_GUIDES" in msg, msg)
+        semi = semi_status(conn, "SQLITE")
+        check("layar melaporkan mana yang MENGIKAT, dan ia sama dengan yang diikat kode",
+              semi["guidelines_locked"] is True
+              and [g["path"] for g in semi["guidelines_binding"]] == [g["path"] for g in bound],
+              str(semi["guidelines_binding"]))
+        check("MD yang hanya ADA di proyek dilaporkan terpisah, tidak menyamar jadi pedoman",
+              "guidelines_present" in semi
+              and {g["path"] for g in semi["guidelines_present"]} != {g["path"] for g in bound},
+              str([g["path"] for g in semi["guidelines_present"]][:4]))
         semi = semi_status(conn, "SQLITE")
         check("semi_status menurunkan antrean operator, daftar proyek, dan tab terdaftar",
               semi["operator_pending"] >= 1 and isinstance(semi["workspaces"], list)
@@ -2364,13 +2398,10 @@ def main(argv=None):
             ok, msg = focus_workspace(conn, engine, a.first or a.path, a.by)
             print(json.dumps({"ok": ok, "why": msg, "focus": str(focused_workspace() or "")}))
             return 0 if ok else 1
-        else:  # guidelines
-            rows = run(conn, engine, "SELECT id FROM workspaces ORDER BY id")
-            target = a.first or ((rows[0] if rows else {}).get("id"))
-            ok, msg = set_guidelines(conn, engine, int(target),
-                                     [x.strip() for x in a.files.split(",") if x.strip()])
-            print(json.dumps({"ok": ok, "why": msg}))
-            return 0 if ok else 1
+        else:  # guidelines — permintaan mengubah, bukan membaca; selalu ditolak
+            ok, msg = guidelines_are_locked()
+            print(json.dumps({"ok": ok, "why": msg, "locked": True}))
+            return 1
     elif a.cmd == "stalled":
         print(json.dumps(stalled(conn, engine), default=str, indent=2))
     elif a.cmd == "autopilot":

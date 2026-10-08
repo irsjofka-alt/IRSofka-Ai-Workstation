@@ -253,6 +253,10 @@
   .guide:hover { color: var(--ink); border-color: var(--ink-faint); }
   .guide.on { color: var(--accent); border-color: #1d4b48; background: #10201f; }
   .guide.can { color: var(--violet); border-color: #322a4d; }
+  /* Terkunci: tidak ada pointer, tidak ada hover — benda ini tidak bisa diklik, dan layar tidak
+     boleh berpura-pura bisa. */
+  .guide.locked { cursor: default; color: var(--violet); border-color: #322a4d; background: #10131f; }
+  .guide.locked:hover { color: var(--violet); border-color: #322a4d; }
   .compose textarea { min-height: 74px; }
   .reply { font-size: 11.5px; font-family: var(--mono); margin-top: 8px; color: var(--ink-faint);
            word-break: break-word; white-space: pre-wrap; }
@@ -1108,47 +1112,30 @@
 
   function guidesCard(host) {
     var w = ap.workspace || {};
-    var focus = (w.workspaces || []).filter(function (x) { return x.is_focus; })[0] || null;
-    /* Kunci pilihan adalah path ABSOLUT berkas, bukan namanya. Proyek ini dan workstation sama-sama
-       punya AGENTS.md; kalau yang disimpan hanya "AGENTS.md", tidak ada yang bisa mengatakan
-       aturan yang mana yang sedang dipatuhi engine. */
-    var chosen = ((focus || {}).guidelines || "").split(",").map(function (s) { return s.trim(); });
-    var card = dashCard("Pedoman (handler)", "MD yang dibaca engine bersama perintah ini. "
-      + "Yang ditandai ungu milik workstation dan berlaku di proyek mana pun.");
-    var avail = w.guidelines_available || [];
-    if (!avail.length) {
-      card.appendChild(el("p", null, "tidak ada .md yang terdeteksi di proyek ini."));
-      host.appendChild(card); return;
-    }
-    var chips = el("div", "chips");
-    avail.forEach(function (g) {
-      var on = chosen.indexOf(g.abs) >= 0;
-      var c = el("span", "guide" + (on ? " on" : "") + (g.canonical ? " can" : ""),
-                 (on ? "☑ " : "☐ ") + g.path);
-      c.title = g.abs;
-      c.addEventListener("click", function () {
-        var i = chosen.indexOf(g.abs);
-        if (i >= 0) { chosen.splice(i, 1); } else { chosen.push(g.abs); }
-        var sel = chosen.indexOf(g.abs) >= 0;
-        c.className = "guide" + (sel ? " on" : "") + (g.canonical ? " can" : "");
-        c.textContent = (sel ? "☑ " : "☐ ") + g.path;
-      });
-      chips.appendChild(c);
-    });
-    card.appendChild(chips);
-    var bar = el("div", "savebar");
-    var out = el("div", "reply");
-    if (!focus) {
-      bar.appendChild(el("span", "note", "pilih proyek dulu — pedoman disimpan per proyek"));
+    /* TERKUNCI. Operator mengunci daftar ini 2026-10-08 11:05: kontrak Ai-Workstation tidak boleh
+       diganggu gugat dari layar yang iaikatinya. Karena itu tidak ada kotak centang dan tidak ada
+       tombol simpan di sini — sebuah kontrol yang bisa mematikan AGENTS.md adalah tombol
+       "jadilah tidak disiplin" yang kebetulan disediakan, dan §12.3 melarang kontrol yang
+       menghitung kebijakannya sendiri. Yang dirender hanyalah apa yang dikembalikan Python. */
+    var card = dashCard("Pedoman (handler) — terkunci",
+      "MD yang mengikat setiap perintah, sama di semua proyek. Tidak bisa dipilih, disimpan, "
+      + "atau dimatikan dari halaman ini.");
+    var bound = w.guidelines_binding || [];
+    if (!bound.length) {
+      card.appendChild(el("p", null, "daftar terkunci tidak terbaca — dilaporkan kosong, tidak ditebak."));
     } else {
-      var gBtn = el("button", "btn primary", "Simpan pedoman");
-      gBtn.addEventListener("click", function () {
-        postWork({ action: "guidelines", workspace: String(focus.id), files: chosen }, out);
+      var chips = el("div", "chips");
+      bound.forEach(function (g) {
+        var c = el("span", "guide can locked", "🔒 " + g.path);
+        c.title = g.abs + " — " + g.size + " byte";
+        chips.appendChild(c);
       });
-      bar.appendChild(gBtn);
+      card.appendChild(chips);
+      var kb = bound.reduce(function (n, g) { return n + (g.size || 0); }, 0);
+      card.appendChild(el("div", "ledger",
+        "didefinisikan di tools/work_order.py · LOCKED_GUIDES · " + bound.length + " berkas, "
+        + Math.round(kb / 1024) + " KB di disk"));
     }
-    card.appendChild(bar);
-    card.appendChild(out);
     host.appendChild(card);
   }
 

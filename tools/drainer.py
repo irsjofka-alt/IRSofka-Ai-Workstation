@@ -588,6 +588,22 @@ def selftest():
         check("hook SEMI menyaring asal baris, jadi ia tidak pernah mengambil item roadmap",
               "origin=wo.ORIGIN_OPERATOR" in hsegs.get("main", ""))
 
+    # Penasehat antrean (F10.10) sengaja HANYA bicara. Ia menempelkan isi antrean ke prompt lewat
+    # `additionalContext`, dan batas antara nasihat dan tangan adalah apakah ia boleh mengubah baris.
+    adv_file = wo.REPO / "hooks" / "queue_advisor.py"
+    asrc = adv_file.read_text() if adv_file.is_file() else ""
+    check("penasehat antrean ada", bool(asrc.strip()), str(adv_file))
+    if asrc:
+        asegs = {n.name: (_ast.get_source_segment(asrc, n) or "")
+                 for n in _ast.parse(asrc).body
+                 if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef))}
+        for banned in ("claim(", "finish(", "deliver", "default_sender", "daemon_post",
+                       "/api/cli/run", "UPDATE ", "INSERT ", "decision", "ydotool", "subprocess"):
+            hit = [f"{banned} di {fn}()" for fn, body in asegs.items() if banned in body]
+            check(f"penasehat antrean tidak memakai {banned!r}", not hit, "; ".join(hit))
+        check("penasehat hanya melaporkan antrean milik proyek ini",
+              "ws_path" in asegs.get("build_note", ""), "build_note tidak memfilter proyek")
+
     tmp = Path(f"/tmp/drainer_selftest_{wo.now()}.db")
     conn = sqlite3.connect(str(tmp))
     conn.row_factory = sqlite3.Row

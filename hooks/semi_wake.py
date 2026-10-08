@@ -75,42 +75,37 @@ def read_input() -> dict:
         return {}
 
 
-def guides_for(conn, engine, cwd: Path) -> tuple[str, list[str]]:
-    """Pedoman proyek yang sedang dibuka, dibaca dari registry lewat path — bukan dari ingatan."""
+def guides_for(conn, engine) -> tuple[str, list[str]]:
+    """Pedoman yang TERKUNCI — dibaca dari kontrak, bukan dari pilihan layar.
+
+    Operator mengunci daftar ini 2026-10-08 11:05. Hook yang membaca pilihan dari tabel `workspaces`
+    akan patuh pada siapa pun yang bisa menulis ke tabel itu, dan itu membuat kontrak bisa
+    dimatikan dari UI yang seharusnya iaikatinya.
+    """
     try:
         import work_order as wo
-        listed = wo.list_workspaces(conn, engine)["workspaces"]
+        wanted = wo.locked_guides()
     except Exception as exc:  # noqa: BLE001
-        return "", [f"registry tidak terbaca: {type(exc).__name__}"]
-    hit = next((w for w in listed
-                if Path(w["path"]).resolve(strict=False) == cwd), None)
-    if not hit or not (hit.get("guidelines") or "").strip():
-        return "", []
+        return "", [f"daftar terkunci tidak terbaca: {type(exc).__name__}"]
     blob, taken, notes = [], [], []
     budget = GUIDE_MAX_CHARS
-    # Yang disimpan di registry adalah path ABSOLUT, bukan nama relatif: proyek ini punya
-    # AGENTS.md dan workstation juga punya AGENTS.md, dan menyaring keduanya dengan satu nama
-    # berarti engine patuh pada berkas yang tidak bisa ditunjuk.
-    for raw in [x.strip() for x in (hit.get("guidelines") or "").split(",") if x.strip()]:
-        p = Path(raw)
-        if not p.is_absolute():
-            p = Path(hit["path"]) / raw
-        label = raw
+    for g in wanted:
+        p = Path(g["abs"])
         if not p.is_file():
-            notes.append(f"{label} hilang dari disk")
+            notes.append(f"{g['path']} hilang dari disk")
             continue
         try:
             text = p.read_text(encoding="utf-8", errors="replace")[:budget]
         except Exception as exc:  # noqa: BLE001
-            notes.append(f"{label} tidak terbaca ({type(exc).__name__})")
+            notes.append(f"{g['path']} tidak terbaca ({type(exc).__name__})")
             continue
         budget -= len(text)
-        taken.append(label)
-        blob.append(f"### {label}\n{text}")
+        taken.append(g["path"])
+        blob.append(f"### {g['path']}\n{text}")
         if budget <= 0:
             notes.append(f"daftar dipotong pada {GUIDE_MAX_CHARS} karakter — sisa pedoman tidak disertakan")
             break
-    return "\n\n".join(blob), ([f"{r}: {n}" for r, n in zip(taken, notes)] if notes else notes)
+    return "\n\n".join(blob), notes
 
 
 def main() -> int:
@@ -155,7 +150,7 @@ def main() -> int:
 
     import drainer
     full = wo.get_item(conn, engine, int(item["id"])) or item
-    body, notes = guides_for(conn, engine, cwd)
+    body, notes = guides_for(conn, engine)
     prompt = drainer.SEMI_PROMPT.format(id=item["id"], title=item["title"], ws=cwd,
                                         gate=(full.get("check_command") or "tanpa gerbang"))
     if body:

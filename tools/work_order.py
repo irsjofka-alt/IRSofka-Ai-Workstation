@@ -1208,11 +1208,16 @@ def detect_guidelines(root: Path | None) -> list[dict]:
             rel = str(path.relative_to(base))
         except ValueError:
             return
-        if rel in seen:
+        abs_key = str(path.resolve(strict=False))
+        # Kunci yang dibaca adalah berkasnya, bukan nama relatifnya. Pernah diukur di mesin ini:
+        # proyek Ai-Workstation punya AGENTS.md sendiri, dan karena dedupe memakai nama relatif,
+        # AGENTS.md MILIK WORKSTATION hilang dari daftar — pedoman yang berlaku di semua proyek
+        # lenyap hanya karena kebetulan memakai huruf yang sama.
+        if abs_key in seen:
             return
-        seen.add(rel)
-        found.append({"path": rel, "abs": str(path), "canonical": canonical,
-                      "size": path.stat().st_size})
+        seen.add(abs_key)
+        found.append({"path": rel, "abs": abs_key, "canonical": canonical,
+                      "base": str(base), "size": path.stat().st_size})
 
     if root and root.is_dir():
         for dirpath, dirnames, filenames in os.walk(root):
@@ -1222,6 +1227,11 @@ def detect_guidelines(root: Path | None) -> list[dict]:
             else:
                 dirnames[:] = [d for d in dirnames if d not in GUIDE_SKIP and not d.startswith(".")]
             for name in sorted(filenames):
+                # Berkas titik adalah bukan-dokumen: `.ai_brain_link.md` ditulis brain_bridge sebagai
+                # penunjuk, dan membiarkannya ikut terpilih berarti pedoman proyek didaftarkan berisi
+                # jarum, bukan isinya.
+                if name.startswith("."):
+                    continue
                 if name.lower().endswith(".md") and len(found) < GUIDE_MAX_FILES:
                     add(Path(dirpath) / name, root, False)
     for rel in CANONICAL_GUIDES:
@@ -1278,12 +1288,18 @@ def create_workspace(conn, engine, display_name: str, path: str) -> tuple[bool, 
 
 
 def set_guidelines(conn, engine, ws_id: int, paths: list[str]) -> tuple[bool, str]:
-    """Simpan pilihan pedoman sebuah proyek. Yang disimpan hanya path TERDETEKSI."""
+    """Simpan pilihan pedoman sebuah proyek. Yang disimpan hanya path TERDETEKSI.
+
+    Yang disimpan adalah path absolut, bukan nama relatif, dan alasannya terukur: proyek ini punya
+    `AGENTS.md` dan workstation juga punya `AGENTS.md`. Menyimpan nama saja membuat keduanya
+    tidak bisa dibedakan saat dibaca kembali — dan engine yang menebak pedoman mana yang sedang
+    ia patuhi adalah engine yang menyetujui aturan yang bukan tempat aturan itu ditulis.
+    """
     rows = run(conn, engine, "SELECT id, path FROM workspaces WHERE id=%s"
                if engine == "POSTGRESQL" else "SELECT id, path FROM workspaces WHERE id=?", (ws_id,))
     if not rows:
         return False, f"workspace {ws_id} tidak ada"
-    allowed = {g["path"] for g in detect_guidelines(Path(rows[0]["path"]))}
+    allowed = {g["abs"] for g in detect_guidelines(Path(rows[0]["path"]))}
     kept = [p for p in paths if p in allowed]
     dropped = [p for p in paths if p not in allowed]
     run(conn, engine, "UPDATE workspaces SET guidelines=%s WHERE id=%s"
@@ -1362,9 +1378,11 @@ def semi_status(conn, engine) -> dict:
     """Yang SEMI butuhkan untuk melaporkan dirinya sendiri — semuanya turunan, tidak ada angka karangan."""
     listed = list_workspaces(conn, engine)
     pend = run(conn, engine,
-               "SELECT COUNT(*) AS n FROM quest_tasks WHERE origin=%s AND status IN ('PENDING','CLAIMED')"
+               "SELECT id, title, cli_engine, ws_path, status, due_epoch FROM quest_tasks "
+               "WHERE origin=%s AND status='PENDING' ORDER BY id"
                if engine == "POSTGRESQL" else
-               "SELECT COUNT(*) AS n FROM quest_tasks WHERE origin=? AND status IN ('PENDING','CLAIMED')",
+               "SELECT id, title, cli_engine, ws_path, status, due_epoch FROM quest_tasks "
+               "WHERE origin=? AND status='PENDING' ORDER BY id",
                (ORIGIN_OPERATOR,))
     working = run(conn, engine,
                   "SELECT id, title, cli_engine, claimed_by FROM quest_tasks "
@@ -1373,7 +1391,8 @@ def semi_status(conn, engine) -> dict:
                   "SELECT id, title, cli_engine, claimed_by FROM quest_tasks "
                   "WHERE origin=? AND status IN ('WORKING','CLAIMED') ORDER BY id",
                   (ORIGIN_OPERATOR,))
-    return {"operator_pending": int(pend[0]["n"]) if pend else 0,
+    return {"operator_pending": len(pend),
+            "operator_queue": pend,
             "operator_working": working,
             "engines_with_a_claim": sorted({r["cli_engine"] for r in working if r.get("cli_engine")}),
             "focus": listed["focus"], "focus_readable": listed["focus_readable"],
@@ -1947,9 +1966,31 @@ def selftest():
               ok and len(same) == 1, f"{msg} rows={len(same)}")
         ok, msg = focus_workspace(conn, "SQLITE", "proyek-yang-tidak-ada")
         check("focus menolak nama tak terdaftar sebelum menyentuh symlink", not ok, msg)
-        ok, msg = set_guidelines(conn, "SQLITE", ws_id, ["ROADMAP.md", "rahasia.md"])
+        # Regresi yang ditemukan lewat data hidup, bukan lewat tes: dedupe pedoman semula memakai
+        # NAMA RELATIF, dan karena proyek Ai-Workstation punya AGENTS.md sendiri, AGENTS.md milik
+        # workstation lenyap dari daftar. Pedoman yang berlaku di semua proyek hilang hanya karena
+        # memakai huruf yang sama.
+        clash = Path("/tmp/ws_clash")
+        clash.mkdir(exist_ok=True)
+        (clash / "ROADMAP.md").write_text("proyek", encoding="utf-8")
+        det = detect_guidelines(clash)
+        pairs = {(g["path"], g["canonical"]) for g in det}
+        check("proyek dan workstation boleh punya berkas bernama sama — keduanya tetap terdaftar",
+              ("ROADMAP.md", False) in pairs and ("ROADMAP.md", True) in pairs, str(sorted(pairs)))
+        check("pedoman tidak menawarkan berkas penunjuk yang dimulai dengan titik",
+              not [g for g in det if Path(g["abs"]).name.startswith(".")], str(det))
+        abs_rm = str((clash / "ROADMAP.md").resolve())
+        # Workspace uji memakai direktori probe itu sendiri, bukan /tmp: deteksi dibatasi
+        # GUIDE_MAX_FILES, jadi di /tmp yang berisi puluhan folder berkas ujiku tidak pernah
+        # masuk daftar boleh-pilih dan tesnya akan menguji hal lain dari yang kusangka.
+        ok, msg, ws2 = create_workspace(conn, "SQLITE", "Proyek Clash", str(clash))
+        check("proyek kedua terdaftar di samping yang pertama", ok and ws2 and ws2 != ws_id, msg)
+        ok, msg = set_guidelines(conn, "SQLITE", ws2, [abs_rm, "rahasia.md"])
         check("pedoman hanya menerima yang terdeteksi dan menyebut yang dibuang",
               ok and msg.startswith("1 pedoman tersimpan") and "rahasia.md" in msg, msg)
+        saved = next(w for w in list_workspaces(conn, "SQLITE")["workspaces"] if w["id"] == ws2)
+        check("yang disimpan adalah path absolut, bukan nama yang bisa berarti dua berkas",
+              saved["guidelines"] == abs_rm, str(saved["guidelines"]))
         semi = semi_status(conn, "SQLITE")
         check("semi_status menurunkan antrean operator, daftar proyek, dan tab terdaftar",
               semi["operator_pending"] >= 1 and isinstance(semi["workspaces"], list)
